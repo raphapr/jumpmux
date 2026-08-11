@@ -1,10 +1,6 @@
 # jumpmux
 
-jumpmux is a terminal dashboard for moving between Git worktrees and live Pi agents in tmux.
-
-```console
-jumpmux
-```
+jumpmux is a terminal dashboard for moving between Git worktrees and live Pi agents in tmux. It is inspired by [Workmux](https://github.com/raine/workmux), but takes a more opinionated approach.
 
 ## Tabs
 
@@ -21,7 +17,7 @@ Selecting an agent focuses its tmux pane. Selecting a worktree focuses its agent
 - [Pi](https://pi.dev)
 - [Worktrunk](https://worktrunk.dev/) (optional) for default-branch detection and worktree actions
 - [GitHub CLI](https://cli.github.com/) (optional) for PR data and browser actions
-- A Nerd Font for detailed icons, or `JUMPMUX_PLAIN=1` for text symbols
+- A Nerd Font for detailed icons
 
 ## Install
 
@@ -32,7 +28,7 @@ jumpmux setup
 
 `jumpmux setup` installs `jumpmux-status.ts` in Pi's global extensions directory. Restart Pi or run `/reload` in each open Pi session.
 
-The extension reports the current pane's agent state. It adds `🤖` to the tmux window label while Pi works and `✅` when Pi finishes. Focusing the pane clears the done icon.
+The extension reports the current pane's agent state.
 
 ## Keys
 
