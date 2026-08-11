@@ -377,7 +377,7 @@ func withTmuxWindowLock(pane string, action func() error) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	deadline := time.Now().Add(tmuxTimeout)
 	for {
 		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
@@ -392,7 +392,7 @@ func withTmuxWindowLock(pane string, action func() error) error {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	defer func() { _ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN) }()
 	return action()
 }
 
@@ -592,14 +592,12 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	temporary := file.Name()
-	defer os.Remove(temporary)
+	defer func() { _ = os.Remove(temporary) }()
 	if err := file.Chmod(mode); err != nil {
-		file.Close()
-		return err
+		return errors.Join(err, file.Close())
 	}
 	if _, err := file.Write(data); err != nil {
-		file.Close()
-		return err
+		return errors.Join(err, file.Close())
 	}
 	if err := file.Close(); err != nil {
 		return err

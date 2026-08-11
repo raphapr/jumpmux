@@ -421,7 +421,7 @@ func countFileLines(path string, _ os.FileInfo) int {
 		return 0
 	}
 	file := os.NewFile(uintptr(fd), path)
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		return 0
