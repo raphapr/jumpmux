@@ -1,11 +1,16 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -13,10 +18,12 @@ import (
 )
 
 const (
-	refreshInterval = 2 * time.Second
-	clockInterval   = 250 * time.Millisecond
-	staleThreshold  = time.Hour
-	maxDiffOutput   = 1 << 20
+	refreshInterval      = 2 * time.Second
+	gitRefreshPeriod     = 5 * time.Second
+	previewRefreshPeriod = 500 * time.Millisecond
+	clockInterval        = 250 * time.Millisecond
+	staleThreshold       = time.Hour
+	maxDiffOutput        = 1 << 20
 )
 
 var spinnerFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -35,31 +42,37 @@ var (
 )
 
 type dashboardModel struct {
-	cwd                               string
-	now                               time.Time
-	tab, index                        int
-	width, height                     int
-	agents, allAgents                 []item
-	worktrees                         []item
-	scope                             scopeMode
-	scheme                            colorScheme
-	launchSession                     string
-	worktreeGeneration                uint64
-	previewRequest, diffRequest       uint64
-	filter, diff, help                bool
-	query                             string
-	queries                           [2]string
-	preview                           previewData
-	previewOffset, diffOff, xOffset   int
-	loading                           bool
-	agentsLoaded, worktreesLoaded     bool
-	agentsInFlight, worktreesInFlight bool
-	worktreePending                   int
-	err, agentErr, worktreeErr        error
-	chosen                            bool
-	selection                         item
-	lastClickTarget                   string
-	lastClickAt                       time.Time
+	cwd                                                 string
+	now                                                 time.Time
+	tab, index                                          int
+	width, height                                       int
+	agents, allAgents                                   []item
+	worktrees                                           []item
+	agentGit, gitCache, prCache                         map[string]item
+	scope                                               scopeMode
+	scheme                                              colorScheme
+	launchSession                                       string
+	worktreeGeneration                                  uint64
+	previewRequest, diffRequest                         uint64
+	filter, diff, help                                  bool
+	query                                               string
+	queries                                             [2]string
+	preview                                             previewData
+	previewOffset, diffOff, xOffset, previewSize        int
+	loading                                             bool
+	agentsLoaded, worktreesLoaded                       bool
+	agentsInFlight, agentGitInFlight, worktreesInFlight bool
+	agentGitRefreshed, previewRefreshed                 time.Time
+	worktreePending                                     int
+	err, agentErr, worktreeErr                          error
+	chosen                                              bool
+	selection                                           item
+	lastClickTarget                                     string
+	lastClickAt                                         time.Time
+	worktreeBackend                                     worktreeBackend
+	action                                              dashboardAction
+	actionInput                                         string
+	actionTarget                                        item
 }
 
 type dashboardData struct {
@@ -68,6 +81,22 @@ type dashboardData struct {
 }
 
 type dashboardDataMsg dashboardData
+
+type agentGitMsg []item
+
+type dashboardAction uint8
+
+const (
+	actionNone dashboardAction = iota
+	actionAddWorktree
+	actionRemoveWorktree
+	actionRunning
+)
+
+type worktreeActionMsg struct {
+	action dashboardAction
+	err    error
+}
 
 type worktreeStage uint8
 
@@ -86,14 +115,15 @@ type worktreeDataMsg struct {
 }
 
 type previewData struct {
-	request    uint64
-	scheme     colorScheme
-	target     string
-	updated    time.Time
-	title      string
-	lines      []string
-	rightTitle string
-	rightLines []string
+	request      uint64
+	scheme       colorScheme
+	target       string
+	updated      time.Time
+	title        string
+	lines        []string
+	rightTitle   string
+	rightLines   []string
+	followBottom bool
 }
 
 type previewMsg previewData
@@ -117,12 +147,23 @@ type clockMsg time.Time
 
 func newDashboard(cwd string) dashboardModel {
 	applyColorScheme(schemeDefault)
-	return dashboardModel{cwd: cwd, now: time.Now(), width: 80, height: 24, scheme: schemeDefault, worktreeGeneration: 1, agentsInFlight: true, worktreesInFlight: true}
+	return dashboardModel{cwd: cwd, now: time.Now(), width: 80, height: 24, previewSize: defaultPreviewSize, scheme: schemeDefault, worktreeBackend: backendAuto, worktreeGeneration: 1, agentGit: map[string]item{}, gitCache: map[string]item{}, prCache: map[string]item{}, agentsInFlight: true, worktreesInFlight: true}
 }
 
 func newDashboardForLaunch(cwd, launchSession string, forceSession bool) dashboardModel {
 	model := newDashboard(cwd)
+	model.gitCache = loadGitStatusCache()
+	model.prCache = loadPRStatusCache()
+	model.agentGit = maps.Clone(model.gitCache)
+	for path, cached := range model.prCache {
+		detail := model.agentGit[path]
+		detail.kind, detail.target, detail.cwd = "worktree", path, path
+		copyPRStatus(&detail, cached)
+		model.agentGit[path] = detail
+	}
 	model.scope = loadScopeMode()
+	model.previewSize = loadPreviewSize()
+	model.worktreeBackend, model.err = loadWorktreeBackend()
 	model.scheme = loadColorScheme()
 	applyColorScheme(model.scheme)
 	model.launchSession = launchSession
@@ -149,6 +190,10 @@ func refreshAgents() tea.Cmd {
 		agents, err := listLiveAgents()
 		return dashboardDataMsg(dashboardData{agents: agents, err: err})
 	}
+}
+
+func refreshAgentGit(agents []item) tea.Cmd {
+	return func() tea.Msg { return agentGitMsg(agentGitDetails(agents)) }
 }
 
 func refreshWorktreeList(cwd string, generation uint64) tea.Cmd {
@@ -182,31 +227,26 @@ func loadPreview(item item, scheme colorScheme, request uint64) tea.Cmd {
 	return func() tea.Msg {
 		preview := previewData{request: request, scheme: scheme, target: item.target, updated: item.updated}
 		if item.kind == "session" {
-			var user, assistant string
-			var err error
-			if item.sessionFile != "" {
-				user, assistant, err = sessionExcerpts(item.sessionFile)
-			}
-			themeMu.RLock()
-			defer themeMu.RUnlock()
-			if appliedColorScheme != scheme {
+			output, err := tmuxOutput(
+				"display-message", "-p", "-t", item.pane, "#{cursor_y}\t#{pane_height}",
+				";", "capture-pane", "-p", "-e", "-S", "-200", "-t", item.pane,
+			)
+			preview.title = "Preview: " + worktreeName(item.cwd)
+			preview.followBottom = true
+			if err != nil {
+				preview.lines = []string{"(pane not available)"}
 				return previewMsg(preview)
 			}
-			preview.title = "Preview: " + worktreeName(item.cwd)
-			preview.lines = []string{
-				mutedStyle.Render("Status    ") + statusView(item, time.Now()),
-				mutedStyle.Render("Pane      ") + textStyle.Render(safeText(item.muxSessionName+":"+item.muxWindowName+" "+item.pane)),
-				mutedStyle.Render("Path      ") + textStyle.Render(safeText(compactHome(item.cwd))),
-				mutedStyle.Render("Modified  ") + textStyle.Render(item.updated.Format(time.RFC1123)),
-				"",
-				infoStyle.Render("● ") + headerStyle.Render("User"),
-				"  " + safeText(user),
-				"",
-				successStyle.Render("● ") + headerStyle.Render("Assistant"),
-				"  " + safeText(assistant),
+			lines := paneHistoryLines(output)
+			if len(lines) == 0 {
+				preview.lines = []string{"(empty output)"}
+				return previewMsg(preview)
 			}
-			if err != nil {
-				preview.lines = append(preview.lines, "", dangerStyle.Render("Preview error: "+safeText(err.Error())))
+			for _, line := range lines {
+				preview.lines = append(preview.lines, sanitizePaneLine(strings.TrimSuffix(line, "\r")))
+			}
+			if len(preview.lines) == 0 {
+				preview.lines = []string{"(empty output)"}
 			}
 			return previewMsg(preview)
 		}
@@ -302,6 +342,9 @@ func loadDiff(item item, request uint64) tea.Cmd {
 
 func (m *dashboardModel) requestPreview(item item) tea.Cmd {
 	m.previewRequest++
+	if item.kind == "session" {
+		m.previewRefreshed = time.Now()
+	}
 	request, scheme := m.previewRequest, m.scheme
 	if m.preview.target != item.target {
 		m.previewOffset, m.xOffset, m.loading = 0, 0, true
@@ -330,7 +373,11 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(commands...)
 	case clockMsg:
 		m.now = time.Time(msg)
-		return m, nextClock()
+		commands := []tea.Cmd{nextClock()}
+		if selected, ok := m.selected(); ok && selected.kind == "session" && !m.diff && m.now.Sub(m.previewRefreshed) >= previewRefreshPeriod {
+			commands = append(commands, m.requestPreview(selected))
+		}
+		return m, tea.Batch(commands...)
 	case dashboardDataMsg:
 		m.agentsInFlight, m.agentsLoaded, m.agentErr = false, true, msg.err
 		if msg.err != nil {
@@ -341,12 +388,60 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyAgentScope()
 		attachAgentsToWorktrees(m.worktrees, m.allAgents)
 		m.restoreSelection(target)
+		activePaths := make(map[string]bool, len(m.allAgents))
+		for _, agent := range m.allAgents {
+			activePaths[agent.cwd] = true
+		}
+		for path := range m.agentGit {
+			if !activePaths[path] {
+				delete(m.agentGit, path)
+			}
+		}
+		commands := []tea.Cmd{}
+		if len(m.allAgents) > 0 && !m.agentGitInFlight && time.Since(m.agentGitRefreshed) >= gitRefreshPeriod {
+			m.agentGitInFlight = true
+			m.agentGitRefreshed = time.Now()
+			commands = append(commands, refreshAgentGit(m.allAgents))
+		}
 		if selected, ok := m.selected(); ok && selected.kind == "session" && !m.diff {
 			if m.preview.target != selected.target || !m.preview.updated.Equal(selected.updated) {
-				return m, m.requestPreview(selected)
+				commands = append(commands, m.requestPreview(selected))
 			}
 		} else if !m.diff && !ok {
 			m.preview, m.loading = previewData{}, false
+		}
+		return m, tea.Batch(commands...)
+	case agentGitMsg:
+		m.agentGitInFlight = false
+		if m.agentGit == nil {
+			m.agentGit = map[string]item{}
+		}
+		if m.gitCache == nil {
+			m.gitCache = map[string]item{}
+		}
+		if m.prCache == nil {
+			m.prCache = map[string]item{}
+		}
+		activePaths := make(map[string]bool, len(m.allAgents))
+		for _, agent := range m.allAgents {
+			activePaths[agent.cwd] = true
+		}
+		for _, detail := range msg {
+			if !activePaths[detail.cwd] {
+				continue
+			}
+			if !detail.prLoaded {
+				copyPRStatus(&detail, m.agentGit[detail.cwd])
+			}
+			m.agentGit[detail.cwd] = detail
+			m.gitCache[detail.cwd] = detail
+			if detail.prLoaded {
+				if detail.prNumber == 0 {
+					delete(m.prCache, detail.cwd)
+				} else {
+					m.prCache[detail.cwd] = detail
+				}
+			}
 		}
 		return m, nil
 	case worktreeDataMsg:
@@ -361,6 +456,20 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			target := m.selectedTarget()
 			m.worktrees = mergeWorktreeData(m.worktrees, msg.worktrees, msg.stage)
+			cached := make([]item, 0, len(m.worktrees))
+			for _, worktree := range m.worktrees {
+				if detail, ok := m.gitCache[worktree.cwd]; ok {
+					cached = append(cached, detail)
+				}
+			}
+			m.worktrees = mergeWorktreeData(m.worktrees, cached, worktreeGitStage)
+			cached = cached[:0]
+			for _, worktree := range m.worktrees {
+				if detail, ok := m.prCache[worktree.cwd]; ok {
+					cached = append(cached, detail)
+				}
+			}
+			m.worktrees = mergeWorktreeData(m.worktrees, cached, worktreePRStage)
 			m.restoreSelection(target)
 			attachAgentsToWorktrees(m.worktrees, m.allAgents)
 			m.worktreePending = 3
@@ -377,6 +486,31 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.worktreeErr = msg.err
 		} else {
 			m.worktrees = mergeWorktreeData(m.worktrees, msg.worktrees, msg.stage)
+			if msg.stage == worktreeGitStage {
+				if m.gitCache == nil {
+					m.gitCache = map[string]item{}
+				}
+				for _, detail := range msg.worktrees {
+					if detail.gitLoaded {
+						m.gitCache[detail.cwd] = detail
+					}
+				}
+			}
+			if msg.stage == worktreePRStage {
+				if m.prCache == nil {
+					m.prCache = map[string]item{}
+				}
+				for _, detail := range msg.worktrees {
+					if !detail.prLoaded {
+						continue
+					}
+					if detail.prNumber == 0 {
+						delete(m.prCache, detail.cwd)
+					} else {
+						m.prCache[detail.cwd] = detail
+					}
+				}
+			}
 		}
 		m.restoreSelection(target)
 		m.worktreePending = max(0, m.worktreePending-1)
@@ -401,9 +535,13 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.diff && msg.request == m.previewRequest && msg.scheme == m.scheme {
 			if selected, ok := m.selected(); ok && selected.target == msg.target {
 				reset := m.preview.target != msg.target
+				wasAtBottom := m.previewOffset == m.clampOffset(len(m.preview.lines), m.preview.lines)
 				m.preview = previewData(msg)
 				if reset {
 					m.previewOffset, m.xOffset = 0, 0
+				}
+				if msg.followBottom && (reset || wasAtBottom) {
+					m.previewOffset = m.clampOffset(len(msg.lines), msg.lines)
 				} else {
 					m.previewOffset = m.clampOffset(m.previewOffset, msg.lines)
 				}
@@ -417,6 +555,14 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.preview = previewData{target: msg.target, title: msg.title, lines: msg.lines, rightTitle: fmt.Sprintf("Files (%d)", len(msg.files)), rightLines: msg.files}
 				m.diffOff, m.xOffset, m.loading = 0, 0, false
 			}
+		}
+		return m, nil
+	case worktreeActionMsg:
+		m.action, m.actionInput, m.actionTarget, m.err = actionNone, "", item{}, msg.err
+		if msg.err == nil && (msg.action == actionAddWorktree || msg.action == actionRemoveWorktree) {
+			m.worktreesInFlight = true
+			m.worktreeGeneration++
+			return m, refreshWorktreeList(m.cwd, m.worktreeGeneration)
 		}
 		return m, nil
 	case tea.MouseMsg:
@@ -491,6 +637,9 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.action != actionNone {
+		return m.handleActionKey(msg)
+	}
 	if m.filter {
 		switch key {
 		case "enter":
@@ -514,6 +663,14 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.requestPreview(selected)
 		}
 		m.preview, m.loading = previewData{}, false
+		return m, nil
+	}
+	if key == "+" || key == "=" || key == "-" || key == "_" {
+		delta := previewSizeStep
+		if key == "-" || key == "_" {
+			delta = -delta
+		}
+		m.resizePreview(delta)
 		return m, nil
 	}
 	if m.diff {
@@ -540,6 +697,7 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	m.err = nil
 	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
 		index := int(key[0] - '1')
 		rows := m.rows()
@@ -566,14 +724,14 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "tab":
 		return m.switchTab(1 - m.tab)
-	case "T":
+	case "t":
 		m.scheme = m.scheme.next()
 		applyColorScheme(m.scheme)
 		m.err = saveColorScheme(m.scheme)
 		if selected, ok := m.selected(); ok {
 			return m, m.requestPreview(selected)
 		}
-	case "F":
+	case "s":
 		if m.tab != 0 {
 			return m, nil
 		}
@@ -588,18 +746,34 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.preview, m.loading = previewData{}, false
 	case "/":
 		m.filter = true
+	case "a":
+		if m.tab == 1 {
+			m.action, m.actionInput, m.err = actionAddWorktree, "", nil
+		}
 	case "r":
-		var commands []tea.Cmd
-		if !m.agentsInFlight {
-			m.agentsInFlight = true
-			commands = append(commands, refreshAgents())
+		if m.tab == 1 {
+			selected, ok := m.selected()
+			if !ok || selected.kind != "worktree" {
+				return m, nil
+			}
+			if selected.current {
+				m.err = errors.New("cannot remove the current worktree")
+				return m, nil
+			}
+			if len(m.worktrees) > 0 && samePath(selected.cwd, m.worktrees[0].cwd) {
+				m.err = errors.New("cannot remove the primary worktree")
+				return m, nil
+			}
+			m.action, m.actionTarget, m.err = actionRemoveWorktree, selected, nil
 		}
-		if !m.worktreesInFlight {
-			m.worktreesInFlight = true
-			m.worktreeGeneration++
-			commands = append(commands, refreshWorktreeList(m.cwd, m.worktreeGeneration))
+	case "o":
+		if selected, ok := m.selected(); ok {
+			pr := m.gitItem(selected)
+			m.err = nil
+			return m, func() tea.Msg {
+				return worktreeActionMsg{err: openPullRequest(selected.cwd, pr.prNumber)}
+			}
 		}
-		return m, tea.Batch(commands...)
 	case "d":
 		if selected, ok := m.selected(); ok {
 			m.diff, m.loading = true, true
@@ -629,6 +803,46 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key == "j" || key == "down" || key == "k" || key == "up" {
 		if selected, ok := m.selected(); ok {
 			return m, m.requestPreview(selected)
+		}
+	}
+	return m, nil
+}
+
+func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+	switch m.action {
+	case actionAddWorktree:
+		switch key {
+		case "esc":
+			m.action, m.actionInput = actionNone, ""
+		case "enter":
+			branch := strings.TrimSpace(m.actionInput)
+			if branch == "" {
+				return m, nil
+			}
+			m.action, m.err = actionRunning, nil
+			return m, func() tea.Msg {
+				return worktreeActionMsg{action: actionAddWorktree, err: addWorktree(m.cwd, branch, m.worktreeBackend)}
+			}
+		case "backspace", "ctrl+h":
+			runes := []rune(m.actionInput)
+			if len(runes) > 0 {
+				m.actionInput = string(runes[:len(runes)-1])
+			}
+		default:
+			if len(msg.Runes) > 0 {
+				m.actionInput += string(msg.Runes)
+			}
+		}
+	case actionRemoveWorktree:
+		switch key {
+		case "y":
+			m.action, m.err = actionRunning, nil
+			return m, func() tea.Msg {
+				return worktreeActionMsg{action: actionRemoveWorktree, err: removeWorktree(m.cwd, m.actionTarget.cwd, m.worktreeBackend)}
+			}
+		case "n", "esc":
+			m.action, m.actionTarget = actionNone, item{}
 		}
 	}
 	return m, nil
@@ -751,7 +965,7 @@ func mergeWorktreeData(current, incoming []item, stage worktreeStage) []item {
 				old.kind, old.cwd, old.branch, old.title = fresh.kind, fresh.cwd, fresh.branch, fresh.title
 				old.current = old.current || fresh.current
 				if branchChanged {
-					old.prNumber, old.prState, old.prDraft = 0, "", false
+					old.prNumber, old.prState, old.prDraft, old.prCheck, old.prLoaded = 0, "", false, "", false
 					old.dirty, old.gitLoaded = false, false
 					old.baseBranch = ""
 					old.committedAdded, old.committedRemoved = 0, 0
@@ -790,9 +1004,9 @@ func mergeWorktreeData(current, incoming []item, stage worktreeStage) []item {
 			current[index].hasConflict = detail.hasConflict
 			current[index].isRebasing = detail.isRebasing
 		case worktreePRStage:
-			current[index].prNumber = detail.prNumber
-			current[index].prState = detail.prState
-			current[index].prDraft = detail.prDraft
+			if detail.prLoaded {
+				copyPRStatus(&current[index], detail)
+			}
 		case worktreeMuxStage:
 			current[index].current = detail.current
 			if current[index].sessionTitle == "" {
@@ -807,9 +1021,22 @@ func mergeWorktreeData(current, incoming []item, stage worktreeStage) []item {
 	return current
 }
 
+func copyPRStatus(dst *item, src item) {
+	dst.prNumber, dst.prState, dst.prDraft, dst.prCheck, dst.prLoaded = src.prNumber, src.prState, src.prDraft, src.prCheck, src.prLoaded
+}
+
 func (m dashboardModel) contentHeight() int { return max(0, m.height-3) }
-func (m dashboardModel) tableHeight() int   { return max(2, m.contentHeight()*40/100) }
+func (m dashboardModel) tableHeight() int {
+	return max(2, m.contentHeight()*(100-m.previewSize)/100)
+}
 func (m dashboardModel) previewHeight() int { return max(3, m.contentHeight()-m.tableHeight()) }
+
+func (m *dashboardModel) resizePreview(delta int) {
+	m.previewSize = max(minPreviewSize, min(maxPreviewSize, m.previewSize+delta))
+	m.err = savePreviewSize(m.previewSize)
+	m.previewOffset = m.clampOffset(m.previewOffset, m.preview.lines)
+	m.diffOff = m.clampOffset(m.diffOff, m.preview.lines)
+}
 
 func (m dashboardModel) visibleRowStart() int {
 	visible := max(0, m.tableHeight()-1)
@@ -893,16 +1120,23 @@ type tableColumns struct {
 }
 
 func (m dashboardModel) columns(width int, rows []item) tableColumns {
-	project, worktree, git := 8, 9, 5
+	project, worktree, git, pr := 8, 9, 5, 4
 	for _, item := range rows {
+		gitItem := m.gitItem(item)
 		project = max(project, ansi.StringWidth(projectName(item.cwd))+2)
 		worktree = max(worktree, ansi.StringWidth(m.displayWorktree(item))+1)
-		git = max(git, ansi.StringWidth(gitStatusText(m.gitItem(item), m.now))+1)
+		git = max(git, ansi.StringWidth(gitStatusText(gitItem, m.now))+1)
+		pr = max(pr, ansi.StringWidth(prText(gitItem, m.now)))
 	}
 	project = min(project, 22)
 	worktree = min(worktree, 26)
 	git = min(git, 30)
-	if width < 60 {
+	pr = min(pr, 20) + 1
+	minimumFullWidth := 4 + 22 + pr + 4 + 5 + 8
+	if m.tab == 0 {
+		minimumFullWidth = 4 + 22 + pr + 7 + 10 + 8
+	}
+	if width < max(60, minimumFullWidth) {
 		worktree = min(worktree, 12)
 		git = min(git, 12)
 		if m.tab == 0 {
@@ -910,9 +1144,9 @@ func (m dashboardModel) columns(width int, rows []item) tableColumns {
 		}
 		return tableColumns{worktree: worktree, git: git, status: 4, tail: max(1, width-4-worktree-git-4)}
 	}
-	reserve := 4 + 7 + 4 + 5 + 8
+	reserve := 4 + pr + 4 + 5 + 8
 	if m.tab == 0 {
-		reserve = 4 + 7 + 7 + 10 + 8
+		reserve = 4 + pr + 7 + 10 + 8
 	}
 	budget := max(22, width-reserve)
 	for project+worktree+git > budget {
@@ -927,13 +1161,13 @@ func (m dashboardModel) columns(width int, rows []item) tableColumns {
 			break
 		}
 	}
-	fixed := 4 + project + worktree + git + 7
+	fixed := 4 + project + worktree + git + pr
 	if m.tab == 0 {
 		fixed += 7 + 10
-		return tableColumns{project: project, worktree: worktree, git: git, pr: 7, status: 7, elapsed: 10, tail: max(1, width-fixed)}
+		return tableColumns{project: project, worktree: worktree, git: git, pr: pr, status: 7, elapsed: 10, tail: max(1, width-fixed)}
 	}
 	fixed += 4 + 5
-	return tableColumns{project: project, worktree: worktree, git: git, pr: 7, status: 4, elapsed: 5, tail: max(1, width-fixed)}
+	return tableColumns{project: project, worktree: worktree, git: git, pr: pr, status: 4, elapsed: 5, tail: max(1, width-fixed)}
 }
 
 func (m dashboardModel) tableHeader(width int, c tableColumns) string {
@@ -972,7 +1206,11 @@ func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) st
 		prefix = renderCell(currentWorktreeStyle, "▏ ", 2, background)
 	}
 
-	line := prefix + renderCell(keycapStyle, fmt.Sprintf("%d", index+1), 2, background) + renderCell(textStyle, projectName(item.cwd), c.project, background) + renderCell(worktreeStyle, m.displayWorktree(item), c.worktree, background) + gitStatusCell(gitItem, c.git, m.now, background) + prCell(gitItem, c.pr, background)
+	jumpKey := ""
+	if index < 9 {
+		jumpKey = strconv.Itoa(index + 1)
+	}
+	line := prefix + renderCell(keycapStyle, jumpKey, 2, background) + renderCell(textStyle, projectName(item.cwd), c.project, background) + renderCell(worktreeStyle, m.displayWorktree(item), c.worktree, background) + gitStatusCell(gitItem, c.git, m.now, background) + prCell(gitItem, c.pr, m.now, background)
 	if m.tab == 0 {
 		line += statusCell(item, c.status, m.now, background) + elapsedCell(item.updated, c.elapsed, m.now, background) + renderCell(textStyle, item.title, c.tail, background)
 	} else {
@@ -999,8 +1237,15 @@ func (m dashboardModel) gitItem(selected item) item {
 	if selected.kind == "worktree" {
 		return selected
 	}
-	if wt, ok := m.matchingWorktree(selected); ok {
-		return wt
+	worktree, hasWorktree := m.matchingWorktree(selected)
+	if hasWorktree && worktree.gitLoaded {
+		return worktree
+	}
+	if detail, ok := m.agentGit[selected.cwd]; ok {
+		return detail
+	}
+	if hasWorktree {
+		return worktree
 	}
 	return item{}
 }
@@ -1042,15 +1287,24 @@ func (m dashboardModel) renderPreview(width int) string {
 }
 
 func (m dashboardModel) renderFooter(width int) string {
-	refreshErr := m.agentErr
+	switch m.action {
+	case actionAddWorktree:
+		return padANSI("  "+keycapStyle.Render("a Add")+textStyle.Render(" branch: ")+keycapStyle.Render(safeText(m.actionInput))+keycapStyle.Render("_")+"  "+mutedStyle.Render("Enter")+textStyle.Render(" create  ")+mutedStyle.Render("Esc")+textStyle.Render(" cancel"), width)
+	case actionRemoveWorktree:
+		return padANSI("  "+warningStyle.Render("Remove "+safeText(m.displayWorktree(m.actionTarget))+"?")+"  "+mutedStyle.Render("y")+textStyle.Render(" confirm  ")+mutedStyle.Render("n/Esc")+textStyle.Render(" cancel"), width)
+	case actionRunning:
+		return padANSI("  "+infoStyle.Render("Working…"), width)
+	}
+
+	viewErr := m.agentErr
 	if m.tab == 1 {
-		refreshErr = m.worktreeErr
+		viewErr = m.worktreeErr
 	}
 	if m.err != nil {
-		refreshErr = m.err
+		viewErr = m.err
 	}
-	if refreshErr != nil {
-		return padANSI(dangerStyle.Render("  Refresh error: "+safeText(refreshErr.Error())), width)
+	if viewErr != nil {
+		return padANSI(dangerStyle.Render("  Error: "+safeText(viewErr.Error())), width)
 	}
 	if m.filter {
 		return padANSI("  "+keycapStyle.Render("/"+safeText(m.query))+keycapStyle.Render("_")+"  "+mutedStyle.Render("Enter")+textStyle.Render(" accept  ")+mutedStyle.Render("Esc")+textStyle.Render(" clear"), width)
@@ -1063,17 +1317,26 @@ func (m dashboardModel) renderFooter(width int) string {
 	if m.tab == 1 {
 		tab = "Agents"
 	}
-	parts := []string{footerCommand("↵", "Open"), footerCommand("/", filterLabel), footerCommand("Tab", tab)}
 	if width < 60 {
-		parts = []string{footerCommand("↵", "Open"), footerCommand("/", truncate(filterLabel, 8)), mutedStyle.Render("Tab"), mutedStyle.Render("?"), mutedStyle.Render("q")}
+		parts := []string{mutedStyle.Render("↵"), mutedStyle.Render("/"), mutedStyle.Render("Tab"), mutedStyle.Render("?"), mutedStyle.Render("q")}
+		if m.tab == 1 {
+			parts = []string{mutedStyle.Render("a"), mutedStyle.Render("r"), mutedStyle.Render("o"), mutedStyle.Render("↵"), mutedStyle.Render("Tab"), mutedStyle.Render("?"), mutedStyle.Render("q")}
+		}
 		return padANSI("  "+strings.Join(parts, borderStyle.Render(" │ ")), width)
 	}
-	if width >= 100 {
-		parts = append([]string{footerCommand("d", "Diff")}, parts...)
-		if m.tab == 0 {
-			parts = append(parts, footerToggle("F", "Scope ("+m.scope.label()+")", m.scope == scopeSession))
+
+	var parts []string
+	if m.tab == 0 {
+		parts = []string{footerCommand("↵", "Open"), footerCommand("o", "PR"), footerCommand("/", filterLabel), footerCommand("Tab", tab), footerToggle("s", "Scope ("+m.scope.label()+")", m.scope == scopeSession)}
+		if width >= 100 {
+			parts = append([]string{footerCommand("d", "Diff")}, parts...)
+			parts = append(parts, footerCommand("t", "Theme"))
 		}
-		parts = append(parts, footerCommand("T", "Theme"), footerCommand("r", "Refresh"))
+	} else {
+		parts = []string{footerCommand("a", "Add"), footerCommand("r", "Remove"), footerCommand("o", "PR"), footerCommand("↵", "Open"), footerCommand("/", filterLabel), footerCommand("Tab", tab)}
+		if width >= 100 {
+			parts = append(parts, footerCommand("t", "Theme"))
+		}
 	}
 	parts = append(parts, footerCommand("?", "Help"), footerCommand("q", "Quit"))
 	return padANSI("  "+strings.Join(parts, borderStyle.Render(" │ ")), width)
@@ -1101,11 +1364,14 @@ func (m dashboardModel) renderHelp(width int) string {
 		"/             Filter active tab",
 		"Esc           Clear filter",
 		"d             Open Git diff",
+		"a             Add worktree (Worktrees)",
+		"r             Remove worktree (Worktrees)",
+		"o             Open pull request",
 		"Ctrl+u/d      Page preview or diff",
 		"h/l           Pan long lines",
-		"F             Toggle agent scope",
-		"T             Cycle color scheme",
-		"r             Refresh",
+		"+/-           Resize preview by 10%",
+		"s             Toggle agent scope",
+		"t             Cycle color scheme",
 		"q             Quit",
 	}
 	body := renderPanel("Help", lines, width, m.height-1, 0, 0, false)
@@ -1157,6 +1423,104 @@ func renderPanel(title string, lines []string, width, height, offset, xOffset in
 	}
 	out = append(out, borderStyle.Render("└"+strings.Repeat("─", innerWidth)+"┘"))
 	return strings.Join(out, "\n")
+}
+
+func paneHistoryLines(output string) []string {
+	metadata, capture, ok := strings.Cut(output, "\n")
+	if !ok {
+		return nil
+	}
+	fields := strings.Split(strings.TrimSuffix(metadata, "\r"), "\t")
+	if len(fields) != 2 {
+		return nil
+	}
+	cursor, cursorErr := strconv.Atoi(fields[0])
+	height, heightErr := strconv.Atoi(fields[1])
+	if cursorErr != nil || heightErr != nil || cursor < 0 || height < 1 {
+		return nil
+	}
+	capture = strings.TrimSuffix(capture, "\n")
+	lines := strings.Split(capture, "\n")
+	visibleStart := max(0, len(lines)-height)
+	prompt := visibleStart + cursor
+	if prompt < visibleStart || prompt >= len(lines) {
+		return nil
+	}
+	return lines[:max(visibleStart, prompt-1)]
+}
+
+func sanitizePaneLine(line string) string {
+	var output strings.Builder
+	hasStyle := false
+	for index := 0; index < len(line); {
+		if line[index] == '\x1b' {
+			next, sgr := paneEscape(line, index)
+			if sgr {
+				output.WriteString(line[index:next])
+				hasStyle = true
+			}
+			index = next
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(line[index:])
+		if r == '\t' || unicode.IsControl(r) {
+			output.WriteByte(' ')
+		} else {
+			output.WriteString(line[index : index+size])
+		}
+		index += size
+	}
+	if hasStyle {
+		output.WriteString("\x1b[0m")
+	}
+	return output.String()
+}
+
+func paneEscape(line string, start int) (next int, sgr bool) {
+	if start+1 >= len(line) {
+		return len(line), false
+	}
+	switch line[start+1] {
+	case '[':
+		for index := start + 2; index < len(line); index++ {
+			if line[index] < 0x40 || line[index] > 0x7e {
+				continue
+			}
+			if line[index] != 'm' {
+				return index + 1, false
+			}
+			for _, parameter := range line[start+2 : index] {
+				if (parameter < '0' || parameter > '9') && parameter != ';' && parameter != ':' {
+					return index + 1, false
+				}
+			}
+			return index + 1, true
+		}
+		return len(line), false
+	case ']':
+		for index := start + 2; index < len(line); index++ {
+			if line[index] == '\a' {
+				return index + 1, false
+			}
+			if line[index] == '\x1b' && index+1 < len(line) && line[index+1] == '\\' {
+				return index + 2, false
+			}
+		}
+		return len(line), false
+	case 'P', 'X', '^', '_':
+		for index := start + 2; index+1 < len(line); index++ {
+			if line[index] == '\x1b' && line[index+1] == '\\' {
+				return index + 2, false
+			}
+		}
+		return len(line), false
+	default:
+		next := start + 2
+		if strings.ContainsRune("()#%*+-./", rune(line[start+1])) && next < len(line) {
+			next++
+		}
+		return next, false
+	}
 }
 
 func clipLine(value string, width, offset int) string {
@@ -1229,39 +1593,54 @@ func projectName(path string) string {
 
 func worktreeName(path string) string { return filepath.Base(filepath.Clean(path)) }
 
-func prText(item item) string {
-	if item.prNumber == 0 {
-		return "-"
-	}
-	icon := prOpenIcon
-	if item.prDraft {
-		icon = prDraftIcon
-	} else {
-		switch item.prState {
-		case "MERGED":
-			icon = prMergedIcon
-		case "CLOSED":
-			icon = prClosedIcon
-		}
-	}
-	return fmt.Sprintf("#%d %s", item.prNumber, icon)
+type prStatusSpan struct {
+	text  string
+	style lipgloss.Style
 }
 
-func prCell(item item, width int, background *lipgloss.AdaptiveColor) string {
-	style := textStyle
-	if item.prNumber == 0 || item.prDraft {
-		style = mutedStyle
+func prStatusSpans(item item, now time.Time) []prStatusSpan {
+	if item.prNumber == 0 {
+		return []prStatusSpan{{text: "-", style: mutedStyle}}
+	}
+	icon, style := prOpenIcon, successStyle
+	if item.prDraft {
+		icon, style = prDraftIcon, mutedStyle
 	} else {
 		switch item.prState {
-		case "OPEN":
-			style = successStyle
 		case "MERGED":
-			style = accentStyle
+			icon, style = prMergedIcon, accentStyle
 		case "CLOSED":
-			style = dangerStyle
+			icon, style = prClosedIcon, dangerStyle
 		}
 	}
-	return renderCell(style, prText(item), width, background)
+	spans := []prStatusSpan{{text: fmt.Sprintf("#%d", item.prNumber), style: style}, {text: icon, style: style}}
+	switch item.prCheck {
+	case checkSuccess:
+		spans = append(spans, prStatusSpan{text: checkSuccessIcon, style: successStyle})
+	case checkFailure:
+		spans = append(spans, prStatusSpan{text: checkFailureIcon, style: dangerStyle})
+	case checkPending:
+		spans = append(spans, prStatusSpan{text: spinnerFrame(now), style: accentStyle})
+	}
+	return spans
+}
+
+func prText(item item, now time.Time) string {
+	spans := prStatusSpans(item, now)
+	parts := make([]string, len(spans))
+	for index, span := range spans {
+		parts[index] = span.text
+	}
+	return strings.Join(parts, " ")
+}
+
+func prCell(item item, width int, now time.Time, background *lipgloss.AdaptiveColor) string {
+	spans := prStatusSpans(item, now)
+	parts := make([]string, len(spans))
+	for index, span := range spans {
+		parts[index] = withBackground(span.style, background).Render(span.text)
+	}
+	return padANSIBackground(strings.Join(parts, withBackground(textStyle, background).Render(" ")), width, background)
 }
 
 type gitStatusSpan struct {
@@ -1342,17 +1721,38 @@ func gitStatusCell(item item, width int, now time.Time, background *lipgloss.Ada
 }
 
 func elapsedCell(value time.Time, width int, now time.Time, background *lipgloss.AdaptiveColor) string {
-	style := accentStyle
-	age := now.Sub(value)
 	if value.IsZero() {
 		return renderCell(mutedStyle, "-", width, background)
 	}
-	if age < 5*time.Minute {
-		style = successStyle
-	} else if age < time.Hour {
-		style = warningStyle
+	base := elapsedStyle(now.Sub(value))
+	inactive := base.Faint(true)
+	parts := strings.Split(elapsedClock(value, now), ":")
+	if len(parts) != 3 {
+		return renderCell(inactive, strings.Join(parts, ":"), width, background)
 	}
-	return renderCell(style, elapsedClock(value, now), width, background)
+	hoursStyle, minutesStyle := base, base
+	if parts[0] == "00" {
+		hoursStyle = inactive
+	}
+	if parts[1] == "00" {
+		minutesStyle = inactive
+	}
+	rendered := withBackground(hoursStyle, background).Render(parts[0]) +
+		withBackground(inactive, background).Render(":") +
+		withBackground(minutesStyle, background).Render(parts[1]) +
+		withBackground(inactive, background).Render(":") +
+		withBackground(base, background).Render(parts[2])
+	return padANSIBackground(rendered, width, background)
+}
+
+func elapsedStyle(age time.Duration) lipgloss.Style {
+	if age < 5*time.Minute {
+		return successStyle
+	}
+	if age < time.Hour {
+		return warningStyle
+	}
+	return accentStyle.Faint(true)
 }
 
 func gitStatusView(item item) string {
@@ -1453,11 +1853,7 @@ func elapsedClock(value, now time.Time) string {
 	if d < 0 {
 		d = 0
 	}
-	hours := int(d.Hours())
-	if hours > 99 {
-		return fmt.Sprintf("%dh", hours)
-	}
-	return fmt.Sprintf("%02d:%02d:%02d", hours, int(d.Minutes())%60, int(d.Seconds())%60)
+	return fmt.Sprintf("%02d:%02d:%02d", int(d.Hours()), int(d.Minutes())%60, int(d.Seconds())%60)
 }
 
 func colorDiff(line string) string {

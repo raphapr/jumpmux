@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,25 +16,6 @@ import (
 )
 
 func TestParsers(t *testing.T) {
-	t.Run("Pi session", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "session.jsonl")
-		data := `{"type":"session","version":3,"id":"abc","timestamp":"2026-01-01T00:00:00Z","cwd":"/tmp"}
-{"type":"message","id":"1","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"Fix the build"}]}}
-{"type":"message","id":"2","parentId":"1","message":{"role":"assistant","content":"I will inspect the failure."}}
-`
-		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		user, assistant, err := sessionExcerpts(path)
-		if err != nil || user != "Fix the build" || assistant != "I will inspect the failure." {
-			t.Fatalf("unexpected excerpts: user=%q assistant=%q err=%v", user, assistant, err)
-		}
-		user, assistant, err = sessionExcerpts(filepath.Join(t.TempDir(), "not-created-yet.jsonl"))
-		if err != nil || user != "" || assistant != "" {
-			t.Fatalf("new session preview: user=%q assistant=%q err=%v", user, assistant, err)
-		}
-	})
-
 	t.Run("git worktrees", func(t *testing.T) {
 		data := []byte("worktree /repo\x00HEAD abc\x00branch refs/heads/main\x00\x00worktree /repo-feature\x00HEAD def\x00detached")
 		got := parseWorktrees(data)
@@ -43,8 +25,8 @@ func TestParsers(t *testing.T) {
 	})
 
 	t.Run("pull requests", func(t *testing.T) {
-		got := parsePullRequests([]byte(`[{"number":42,"state":"OPEN","isDraft":false,"headRefName":"feature"}]`))
-		if got["feature"].Number != 42 || got["feature"].State != "OPEN" {
+		got := parsePullRequests([]byte(`[{"number":42,"state":"OPEN","isDraft":false,"headRefName":"feature","statusCheckRollup":[{"status":"COMPLETED","conclusion":"SUCCESS"},{"status":"COMPLETED","conclusion":"FAILURE"}]}]`))
+		if got["feature"].Number != 42 || got["feature"].State != "OPEN" || got["feature"].Check != checkFailure {
 			t.Fatalf("unexpected pull requests: %#v", got)
 		}
 	})
@@ -158,6 +140,43 @@ func TestPIExtensionSetup(t *testing.T) {
 	}
 	if string(data) != string(piExtension) {
 		t.Fatal("installed extension differs from embedded source")
+	}
+}
+
+func TestAgentPreviewCapturesPaneHistory(t *testing.T) {
+	bin := t.TempDir()
+	script := "#!/bin/sh\nprintf '1\\t4\\n\\033]0;owned\\007first\\033[2J line\\n\\033[31msecond line\\033[0m\\n\\033[90m────────────────\\033[0m\\ncustom input> \\033[7m \\033[0m\\n\\033[90m────────────────\\033[0m\\ncustom footer\\n'\n"
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	applyColorScheme(schemeDefault)
+	message := loadPreview(item{kind: "session", target: "%7", pane: "%7", cwd: "/repo"}, schemeDefault, 1)().(previewMsg)
+	if !message.followBottom || message.title != "Preview: repo" || len(message.lines) != 2 || message.lines[0] != "first line" || ansi.Strip(message.lines[1]) != "second line" {
+		t.Fatalf("pane preview = %#v", message)
+	}
+	if !strings.Contains(message.lines[1], "\x1b[31m") || strings.Contains(strings.Join(message.lines, ""), "\x1b]") || strings.Contains(strings.Join(message.lines, ""), "\x1b[2J") {
+		t.Fatalf("pane preview did not preserve only SGR color: %#v", message.lines)
+	}
+}
+
+func TestAgentPreviewFollowsBottomUntilScrolled(t *testing.T) {
+	model := newDashboard("/repo")
+	model.agents = []item{{kind: "session", target: "%7", pane: "%7", cwd: "/repo"}}
+	model.previewRequest = 1
+	lines := make([]string, 30)
+	updated, _ := model.Update(previewMsg(previewData{request: 1, scheme: schemeDefault, target: "%7", lines: lines, followBottom: true}))
+	model = updated.(dashboardModel)
+	bottom := model.clampOffset(len(lines), lines)
+	if model.previewOffset != bottom {
+		t.Fatalf("initial pane preview offset = %d, want %d", model.previewOffset, bottom)
+	}
+
+	model.previewOffset = 2
+	model.previewRequest = 2
+	updated, _ = model.Update(previewMsg(previewData{request: 2, scheme: schemeDefault, target: "%7", lines: append(lines, "new"), followBottom: true}))
+	if got := updated.(dashboardModel).previewOffset; got != 2 {
+		t.Fatalf("scrolled pane preview jumped to %d", got)
 	}
 }
 
@@ -286,7 +305,7 @@ func TestColorSchemes(t *testing.T) {
 		t.Fatalf("loaded scheme = %s", model.scheme.slug())
 	}
 
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'T'}})
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
 	got := updated.(dashboardModel)
 	if got.scheme != schemeGlacierSignal || loadColorScheme() != schemeGlacierSignal {
 		t.Fatalf("cycled scheme = %s", got.scheme.slug())
@@ -310,10 +329,224 @@ func TestDashboardScope(t *testing.T) {
 		t.Fatalf("session scope = %#v", model.agents)
 	}
 
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'F'}})
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 	got := updated.(dashboardModel)
 	if got.scope != scopeAll || len(got.agents) != 2 || loadScopeMode() != scopeAll {
 		t.Fatalf("all scope = %s, agents = %#v", got.scope.label(), got.agents)
+	}
+}
+
+func TestPreviewSize(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	model := newDashboard("/repo")
+	model.width, model.height = 80, 33
+	if model.previewSize != 50 || model.tableHeight() != 15 || model.previewHeight() != 15 {
+		t.Fatalf("default split = %d%%, table=%d preview=%d", model.previewSize, model.tableHeight(), model.previewHeight())
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
+	model = updated.(dashboardModel)
+	if model.previewSize != 60 || model.tableHeight() != 12 || model.previewHeight() != 18 || loadPreviewSize() != 60 {
+		t.Fatalf("grown split = %d%%, table=%d preview=%d", model.previewSize, model.tableHeight(), model.previewHeight())
+	}
+	path, err := settingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("preview size mode: info=%v err=%v", info, err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "{\"preview_size\":60}\n" {
+		t.Fatalf("settings file: %q err=%v", data, err)
+	}
+
+	loaded := newDashboardForLaunch("/repo", "", false)
+	if loaded.previewSize != 60 {
+		t.Fatalf("persisted preview size = %d", loaded.previewSize)
+	}
+	updated, _ = loaded.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'-'}})
+	if got := updated.(dashboardModel).previewSize; got != 50 {
+		t.Fatalf("shrunk preview size = %d", got)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := legacyPreviewSizePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWrite(legacy, []byte("70\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadPreviewSize(); got != 70 {
+		t.Fatalf("legacy preview size = %d", got)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "{\"preview_size\":70}\n" {
+		t.Fatalf("migrated settings file: %q err=%v", data, err)
+	}
+}
+
+func TestWorktreeBackendConfig(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if backend, err := loadWorktreeBackend(); err != nil || backend != backendAuto {
+		t.Fatalf("default backend = %q err=%v", backend, err)
+	}
+	path, err := configPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(path) != "config.toml" {
+		t.Fatalf("config path = %s", path)
+	}
+	if err := atomicWrite(path, []byte("# jumpmux\nworktree_backend = \"git\" # native Git\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if backend, err := loadWorktreeBackend(); err != nil || backend != backendGit {
+		t.Fatalf("configured backend = %q err=%v", backend, err)
+	}
+	if err := atomicWrite(path, []byte("worktree_backend = 'wt'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if backend, err := loadWorktreeBackend(); err != nil || backend != backendWT {
+		t.Fatalf("literal-string backend = %q err=%v", backend, err)
+	}
+	if err := atomicWrite(path, []byte("worktree_backend = invalid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadWorktreeBackend(); err == nil {
+		t.Fatal("unquoted TOML backend was accepted")
+	}
+	if err := atomicWrite(path, []byte("worktree_backend = \"invalid\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadWorktreeBackend(); err == nil {
+		t.Fatal("invalid backend was accepted")
+	}
+}
+
+func TestNativeGitWorktreeActionsKeepBranch(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.com"}, {"commit", "--allow-empty", "-qm", "base"}} {
+		if output, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	if err := addWorktree(repo, "feature/test", backendGit); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(parent, "repo__worktrees", "feature", "test")
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("created worktree: %v", err)
+	}
+	if err := removeWorktree(repo, worktree, backendGit); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(worktree); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removed worktree still exists: %v", err)
+	}
+	if output, err := exec.Command("git", "-C", repo, "show-ref", "--verify", "refs/heads/feature/test").CombinedOutput(); err != nil {
+		t.Fatalf("native removal deleted branch: %v\n%s", err, output)
+	}
+}
+
+func TestWorktrunkActionCommands(t *testing.T) {
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.com"}, {"commit", "--allow-empty", "-qm", "base"}} {
+		if output, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	bin, log := t.TempDir(), filepath.Join(t.TempDir(), "wt.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$WT_LOG\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "wt"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WT_LOG", log)
+	if err := addWorktree(repo, "feature", backendWT); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeWorktree(repo, filepath.Join(filepath.Dir(repo), "feature"), backendWT); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := string(data)
+	if !strings.Contains(commands, "-C "+repo+" switch --create feature --no-cd --format=json") || !strings.Contains(commands, "-y -C "+repo+" remove ") || !strings.Contains(commands, "--foreground") {
+		t.Fatalf("worktrunk commands:\n%s", commands)
+	}
+}
+
+func TestOpenPullRequestCommand(t *testing.T) {
+	repo, bin, log := t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "gh.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >\"$GH_LOG\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GH_LOG", log)
+	if err := openPullRequest(repo, 23); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != "pr view 23 --web" {
+		t.Fatalf("gh command = %q", data)
+	}
+}
+
+func TestDashboardWorktreeActionModes(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height, model.tab = 120, 30, 1
+	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main"}, {kind: "worktree", target: "/feature", cwd: "/feature", branch: "feature"}}
+	model.index = 1
+	footer := ansi.Strip(model.renderFooter(120))
+	for _, expected := range []string{"a Add", "r Remove", "o PR", "t Theme"} {
+		if !strings.Contains(footer, expected) {
+			t.Fatalf("worktree footer missing %q: %s", expected, footer)
+		}
+	}
+	if strings.Contains(footer, "Refresh") {
+		t.Fatalf("worktree footer still shows refresh: %s", footer)
+	}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	model = updated.(dashboardModel)
+	if model.action != actionAddWorktree || !strings.Contains(ansi.Strip(model.renderFooter(120)), "branch:") {
+		t.Fatalf("add mode = %#v", model.action)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(dashboardModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	model = updated.(dashboardModel)
+	if model.action != actionRemoveWorktree || model.actionTarget.cwd != "/feature" {
+		t.Fatalf("remove mode = %#v target=%#v", model.action, model.actionTarget)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	model = updated.(dashboardModel)
+	if model.action != actionNone {
+		t.Fatal("remove cancellation did not close confirmation")
+	}
+	model.tab, model.index = 1, 0
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	model = updated.(dashboardModel)
+	if model.action != actionNone || model.err == nil {
+		t.Fatal("primary worktree removal was not rejected")
+	}
+	model.tab, model.err = 0, nil
+	footer = ansi.Strip(model.renderFooter(120))
+	if !strings.Contains(footer, "s Scope (all)") || !strings.Contains(footer, "t Theme") || strings.Contains(footer, "Refresh") {
+		t.Fatalf("agent footer = %s", footer)
 	}
 }
 
@@ -348,10 +581,10 @@ func TestDashboardRefreshIsIncremental(t *testing.T) {
 	updated, _ = got.Update(worktreeDataMsg{
 		stage:      worktreePRStage,
 		generation: got.worktreeGeneration,
-		worktrees:  []item{{target: "/other", prNumber: 42, prState: "OPEN"}},
+		worktrees:  []item{{target: "/other", prLoaded: true, prNumber: 42, prState: "OPEN", prCheck: checkFailure}},
 	})
 	got = updated.(dashboardModel)
-	if got.worktrees[0].added != 12 || got.worktrees[0].prNumber != 42 || len(got.agents) != 1 {
+	if got.worktrees[0].added != 12 || got.worktrees[0].prNumber != 42 || got.worktrees[0].prCheck != checkFailure || len(got.agents) != 1 {
 		t.Fatalf("worktree details did not merge: %#v", got.worktrees)
 	}
 
@@ -365,6 +598,128 @@ func TestDashboardRefreshIsIncremental(t *testing.T) {
 	}
 }
 
+func TestGitStatusCacheHydratesFirstFrame(t *testing.T) {
+	cacheRoot := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheRoot)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	path := "/repo"
+	cached := item{cwd: path, target: path, branch: "feature", gitLoaded: true, dirty: true, added: 7, removed: 2, ahead: 1}
+	if err := saveGitStatusCache(map[string]item{path: cached}); err != nil {
+		t.Fatal(err)
+	}
+	if err := savePRStatusCache(map[string]item{path: {cwd: path, prLoaded: true, prNumber: 23, prState: "OPEN", prDraft: true, prCheck: checkFailure}}); err != nil {
+		t.Fatal(err)
+	}
+	cachePath, err := gitStatusCachePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(cachePath); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("cache mode: info=%v err=%v", info, err)
+	}
+	prCachePath, err := prStatusCachePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(prCachePath); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("PR cache mode: info=%v err=%v", info, err)
+	}
+
+	model := newDashboardForLaunch(path, "", false)
+	agent := item{kind: "session", cwd: path}
+	if got := gitStatusText(model.gitItem(agent), model.now); !strings.Contains(got, "+7") || !strings.Contains(got, "↑1") {
+		t.Fatalf("cached agent Git status = %q", got)
+	}
+	if got := prText(model.gitItem(agent), model.now); got != "#23 "+prDraftIcon+" "+checkFailureIcon {
+		t.Fatalf("cached agent PR status = %q", got)
+	}
+	updated, _ := model.Update(worktreeDataMsg{
+		stage: worktreeListStage, generation: model.worktreeGeneration,
+		worktrees: []item{{kind: "worktree", target: path, cwd: path, branch: "feature"}},
+	})
+	worktree := updated.(dashboardModel).worktrees[0]
+	if !worktree.gitLoaded || worktree.added != 7 || worktree.removed != 2 {
+		t.Fatalf("cached worktree Git status = %#v", worktree)
+	}
+	if worktree.prNumber != 23 || worktree.prCheck != checkFailure {
+		t.Fatalf("cached worktree PR status = %#v", worktree)
+	}
+
+	if err := os.WriteFile(cachePath, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadGitStatusCache(); len(got) != 0 {
+		t.Fatalf("malformed cache loaded: %#v", got)
+	}
+	if err := os.WriteFile(prCachePath, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadPRStatusCache(); len(got) != 0 {
+		t.Fatalf("malformed PR cache loaded: %#v", got)
+	}
+}
+
+func TestAgentPRStatusOutsideLaunchRepo(t *testing.T) {
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init", "-q", "-b", "feature"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.com"}, {"commit", "--allow-empty", "-qm", "base"}} {
+		if output, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(`#!/bin/sh
+printf '%s\n' '[{"number":23,"state":"OPEN","isDraft":true,"headRefName":"feature","statusCheckRollup":[{"status":"COMPLETED","conclusion":"FAILURE"}]}]'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	pullRequestMemory.Lock()
+	pullRequestMemory.values = nil
+	pullRequestMemory.Unlock()
+
+	details := agentGitDetails([]item{{cwd: repo}})
+	if len(details) != 1 || details[0].prNumber != 23 || details[0].prCheck != checkFailure {
+		t.Fatalf("cross-repository agent PR details = %#v", details)
+	}
+}
+
+func TestAgentGitStatusStopsLoadingWithoutCurrentRepoWorktree(t *testing.T) {
+	nonGit := t.TempDir()
+	details := agentGitDetails([]item{{cwd: nonGit}, {cwd: nonGit}})
+	if len(details) != 1 || !details[0].gitLoaded {
+		t.Fatalf("non-Git agent details = %#v", details)
+	}
+
+	model := newDashboard("/current-repo")
+	agent := item{kind: "session", target: "%7", cwd: "/other-repo"}
+	updated, command := model.Update(dashboardDataMsg(dashboardData{agents: []item{agent}}))
+	model = updated.(dashboardModel)
+	if command == nil || !model.agentGitInFlight {
+		t.Fatal("agent Git refresh was not started")
+	}
+	if got := gitStatusText(model.gitItem(agent), model.now); got != spinnerFrame(model.now) {
+		t.Fatalf("initial agent Git status = %q", got)
+	}
+
+	updated, _ = model.Update(agentGitMsg{{cwd: agent.cwd, gitLoaded: true, prLoaded: true, prNumber: 23, prState: "OPEN", prDraft: true, prCheck: checkFailure}})
+	model = updated.(dashboardModel)
+	if got := gitStatusText(model.gitItem(agent), model.now); got != "-" {
+		t.Fatalf("loaded agent Git status = %q", got)
+	}
+	if got := prText(model.gitItem(agent), model.now); got != "#23 "+prDraftIcon+" "+checkFailureIcon {
+		t.Fatalf("cross-repository agent PR status = %q", got)
+	}
+
+	updated, _ = model.Update(agentGitMsg{{cwd: agent.cwd, gitLoaded: true, dirty: true, added: 3}})
+	model = updated.(dashboardModel)
+	if got := gitStatusText(model.gitItem(agent), model.now); !strings.Contains(got, "+3") {
+		t.Fatalf("dirty agent Git status = %q", got)
+	}
+	if got := prText(model.gitItem(agent), model.now); got != "#23 "+prDraftIcon+" "+checkFailureIcon {
+		t.Fatalf("cached PR lost after failed refresh = %q", got)
+	}
+}
+
 func TestDashboardLayout(t *testing.T) {
 	model := newDashboard("/repo")
 	model.width, model.height = 100, 30
@@ -372,13 +727,13 @@ func TestDashboardLayout(t *testing.T) {
 		{kind: "session", target: "current", cwd: "/repo", title: "Current project", updated: time.Now(), current: true},
 		{kind: "session", target: "selected", cwd: "/other", title: "Selected agent", updated: time.Now()},
 	}
-	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main", dirty: true, gitLoaded: true, added: 12, removed: 3, untracked: 2, prNumber: 42, prState: "OPEN"}}
+	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main", dirty: true, gitLoaded: true, added: 12, removed: 3, untracked: 2, prNumber: 42, prState: "OPEN", prCheck: checkFailure}}
 	model.index = 1
 	model.preview = previewData{target: "selected", title: "Preview: repo", lines: []string{"Recent session output"}}
 
 	view := model.View()
 	plain := ansi.Strip(view)
-	for _, expected := range []string{"  Agents │ Worktrees", "# Project", "Git", gitDiffIcon, "+12", "-3", "PR", "#42 " + prOpenIcon, "Status", doneIcon, "Time", "Title", "┌─ Preview: repo ", "↵ Open", "? Help"} {
+	for _, expected := range []string{"  Agents │ Worktrees", "# Project", "Git", gitDiffIcon, "+12", "-3", "PR", "#42 " + prOpenIcon + " " + checkFailureIcon, "Status", doneIcon, "Time", "Title", "┌─ Preview: repo ", "↵ Open", "? Help"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("dashboard missing %q:\n%s", expected, plain)
 		}
@@ -432,6 +787,24 @@ func TestSelectedRowsPreserveGitStyle(t *testing.T) {
 	}
 }
 
+func TestAgentJumpNumbersStopAtNine(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height = 140, 35
+	for index := range 11 {
+		model.agents = append(model.agents, item{kind: "session", target: fmt.Sprintf("%%%d", index), cwd: fmt.Sprintf("/repo/%d", index), gitLoaded: true})
+	}
+	columns := model.columns(model.width, model.rows())
+	if row := ansi.Strip(model.tableRow(model.agents[8], 8, model.width, columns)); !strings.HasPrefix(row, "  9 ") {
+		t.Fatalf("ninth jump key = %q", row[:min(len(row), 8)])
+	}
+	for _, index := range []int{9, 10} {
+		row := ansi.Strip(model.tableRow(model.agents[index], index, model.width, columns))
+		if !strings.HasPrefix(row, "    ") {
+			t.Fatalf("row %d repeated a jump number: %q", index+1, row[:min(len(row), 8)])
+		}
+	}
+}
+
 func TestDashboardGitAndPRIcons(t *testing.T) {
 	now := time.Unix(0, 0)
 	if got := gitStatusText(item{}, now); got != spinnerFrames[0] {
@@ -456,11 +829,23 @@ func TestDashboardGitAndPRIcons(t *testing.T) {
 		{item{prNumber: 2, prState: "OPEN"}, "#2 " + prOpenIcon},
 		{item{prNumber: 3, prState: "MERGED"}, "#3 " + prMergedIcon},
 		{item{prNumber: 4, prState: "CLOSED"}, "#4 " + prClosedIcon},
+		{item{prNumber: 5, prState: "OPEN", prCheck: checkSuccess}, "#5 " + prOpenIcon + " " + checkSuccessIcon},
+		{item{prNumber: 6, prState: "OPEN", prCheck: checkFailure}, "#6 " + prOpenIcon + " " + checkFailureIcon},
+		{item{prNumber: 7, prState: "OPEN", prCheck: checkPending}, "#7 " + prOpenIcon + " " + spinnerFrames[0]},
 	}
 	for _, test := range cases {
-		if got := prText(test.item); got != test.want {
+		if got := prText(test.item, now); got != test.want {
 			t.Errorf("prText(%#v) = %q, want %q", test.item, got, test.want)
 		}
+	}
+	if got := aggregateCheckState([]checkRollupItem{{Status: "IN_PROGRESS"}, {State: "SUCCESS"}}); got != checkPending {
+		t.Fatalf("pending check aggregate = %q", got)
+	}
+	if got := aggregateCheckState([]checkRollupItem{{Conclusion: "SKIPPED"}}); got != checkSuccess {
+		t.Fatalf("skipped check aggregate = %q", got)
+	}
+	if got := aggregateCheckState([]checkRollupItem{{Status: "IN_PROGRESS"}, {Conclusion: "CANCELLED"}}); got != checkFailure {
+		t.Fatalf("failed check aggregate = %q", got)
 	}
 }
 
@@ -475,6 +860,26 @@ func TestDashboardAgentStatusDisplay(t *testing.T) {
 	}
 	if got := statusText(working, started.Add(staleThreshold+time.Second)); got != workingIcon+" "+staleAgentIcon {
 		t.Fatalf("stale status = %q", got)
+	}
+}
+
+func TestDashboardElapsedTimeStyle(t *testing.T) {
+	if got, want := elapsedStyle(4*time.Minute).Render("x"), successStyle.Render("x"); got != want {
+		t.Fatalf("recent elapsed style = %q, want %q", got, want)
+	}
+	if got, want := elapsedStyle(30*time.Minute).Render("x"), warningStyle.Render("x"); got != want {
+		t.Fatalf("warm elapsed style = %q, want %q", got, want)
+	}
+	if got, want := elapsedStyle(time.Hour).Render("x"), accentStyle.Faint(true).Render("x"); got != want {
+		t.Fatalf("old elapsed style = %q, want %q", got, want)
+	}
+	now := time.Unix(1000, 0)
+	cell := elapsedCell(now.Add(-71*time.Second), 10, now, nil)
+	if inactive := successStyle.Faint(true).Render("00"); !strings.Contains(cell, inactive) {
+		t.Fatalf("zero clock units are not dimmed: %q", cell)
+	}
+	if got := elapsedClock(now.Add(-101*time.Hour), now); got != "101:00:00" {
+		t.Fatalf("long elapsed clock = %q", got)
 	}
 }
 

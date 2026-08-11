@@ -173,7 +173,6 @@ func listLiveAgents() ([]item, error) {
 			title:          title,
 			updated:        state.Updated,
 			current:        pane.ID == activePane,
-			sessionFile:    state.SessionFile,
 			status:         state.Status,
 			pane:           pane.ID,
 			muxSessionID:   pane.SessionID,

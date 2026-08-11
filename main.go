@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -22,20 +21,22 @@ import (
 )
 
 const (
-	version         = "0.14.0"
-	workingIcon     = "🤖"
-	doneIcon        = "✅"
-	staleAgentIcon  = "󰔛"
-	gitDiffIcon     = "󰏫"
-	gitConflictIcon = "󰀪"
-	gitRebaseIcon   = ""
-	prDraftIcon     = ""
-	prOpenIcon      = ""
-	prMergedIcon    = ""
-	prClosedIcon    = ""
-	metadataTimeout = 5 * time.Second
-	commandWait     = 250 * time.Millisecond
-	maxFileScan     = 8 << 20
+	version          = "0.21.1"
+	workingIcon      = "🤖"
+	doneIcon         = "✅"
+	staleAgentIcon   = "󰔛"
+	gitDiffIcon      = "󰏫"
+	gitConflictIcon  = "󰀪"
+	gitRebaseIcon    = ""
+	prDraftIcon      = ""
+	prOpenIcon       = ""
+	prMergedIcon     = ""
+	prClosedIcon     = ""
+	checkSuccessIcon = "󰄴"
+	checkFailureIcon = "󰅙"
+	metadataTimeout  = 5 * time.Second
+	commandWait      = 250 * time.Millisecond
+	maxFileScan      = 8 << 20
 )
 
 type item struct {
@@ -56,7 +57,6 @@ type item struct {
 	hasConflict      bool
 	isRebasing       bool
 	sessionTitle     string
-	sessionFile      string
 	status           string
 	pane             string
 	muxSessionID     string
@@ -66,19 +66,11 @@ type item struct {
 	prNumber         int
 	prState          string
 	prDraft          bool
+	prCheck          string
+	prLoaded         bool
 	added            int
 	removed          int
 	untracked        int
-}
-
-type sessionEntry struct {
-	Type    string          `json:"type"`
-	Message *sessionMessage `json:"message"`
-}
-
-type sessionMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
 }
 
 type worktree struct {
@@ -95,18 +87,6 @@ type fileLineCount struct {
 	size    int64
 	modTime time.Time
 	lines   int
-}
-
-var excerptCache = struct {
-	sync.Mutex
-	values map[string]sessionExcerpt
-}{values: map[string]sessionExcerpt{}}
-
-type sessionExcerpt struct {
-	size      int64
-	modTime   time.Time
-	user      string
-	assistant string
 }
 
 var defaultBranchCache = struct {
@@ -183,7 +163,12 @@ func main() {
 	result, err := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	exitOnError(err)
 	model, ok := result.(dashboardModel)
-	if !ok || !model.chosen {
+	if !ok {
+		return
+	}
+	_ = saveGitStatusCache(model.gitCache)
+	_ = savePRStatusCache(model.prCache)
+	if !model.chosen {
 		return
 	}
 	exitOnError(jump(model.selection))
@@ -230,6 +215,41 @@ func worktreeGitDetails(items []item) []item {
 		return items
 	}
 	baseBranch := worktrunkDefaultBranch(items[0].cwd)
+	loadGitDetailsParallel(items, func(item item) item { return loadGitDetails(item, baseBranch) })
+	return items
+}
+
+func agentGitDetails(agents []item) []item {
+	seen := make(map[string]bool, len(agents))
+	items := make([]item, 0, len(agents))
+	for _, agent := range agents {
+		if agent.cwd == "" || seen[agent.cwd] {
+			continue
+		}
+		seen[agent.cwd] = true
+		items = append(items, item{kind: "worktree", target: agent.cwd, cwd: agent.cwd})
+	}
+	loadGitDetailsParallel(items, func(item item) item {
+		item = loadGitDetails(item, worktrunkDefaultBranch(item.cwd))
+		if !item.gitLoaded {
+			item.gitLoaded = true
+			return item
+		}
+		if item.branch == "main" || item.branch == "master" {
+			item.prLoaded = true
+			return item
+		}
+		pullRequests, loaded := listPullRequests(item.cwd)
+		item.prLoaded = loaded
+		if pr, ok := pullRequests[item.branch]; ok {
+			item.prNumber, item.prState, item.prDraft, item.prCheck = pr.Number, pr.State, pr.Draft, pr.Check
+		}
+		return item
+	})
+	return items
+}
+
+func loadGitDetailsParallel(items []item, load func(item) item) {
 	jobs := make(chan int)
 	var workers sync.WaitGroup
 	for range min(4, len(items)) {
@@ -237,7 +257,7 @@ func worktreeGitDetails(items []item) []item {
 		go func() {
 			defer workers.Done()
 			for index := range jobs {
-				items[index] = loadGitDetails(items[index], baseBranch)
+				items[index] = load(items[index])
 			}
 		}()
 	}
@@ -246,7 +266,6 @@ func worktreeGitDetails(items []item) []item {
 	}
 	close(jobs)
 	workers.Wait()
-	return items
 }
 
 func loadGitDetails(item item, baseBranch string) item {
@@ -442,12 +461,17 @@ func worktreePRDetails(repo string, items []item) []item {
 	if len(items) == 0 {
 		return items
 	}
-	pullRequests := listPullRequests(repo)
+	pullRequests, loaded := listPullRequests(repo)
 	for index := range items {
+		items[index].prLoaded = loaded
+		if items[index].branch == "main" || items[index].branch == "master" {
+			continue
+		}
 		if pr, ok := pullRequests[items[index].branch]; ok {
 			items[index].prNumber = pr.Number
 			items[index].prState = pr.State
 			items[index].prDraft = pr.Draft
+			items[index].prCheck = pr.Check
 		}
 	}
 	return items
@@ -487,84 +511,6 @@ func attachAgentsToWorktrees(items, agents []item) {
 			}
 		}
 	}
-}
-
-func sessionExcerpts(path string) (string, string, error) {
-	info, err := os.Stat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", "", nil
-	}
-	if err != nil {
-		return "", "", err
-	}
-	excerptCache.Lock()
-	cached, ok := excerptCache.values[path]
-	excerptCache.Unlock()
-	if ok && cached.size == info.Size() && cached.modTime.Equal(info.ModTime()) {
-		return cached.user, cached.assistant, nil
-	}
-
-	file, err := os.Open(path)
-	if err != nil {
-		return "", "", err
-	}
-	defer file.Close()
-	var user, assistant string
-	if ok && info.Size() > cached.size {
-		if _, err := file.Seek(cached.size, io.SeekStart); err == nil {
-			user, assistant = cached.user, cached.assistant
-		}
-	}
-
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if !bytes.Contains(line, []byte(`"role":"user"`)) && !bytes.Contains(line, []byte(`"role":"assistant"`)) {
-			continue
-		}
-		var entry sessionEntry
-		if json.Unmarshal(line, &entry) != nil || entry.Type != "message" || entry.Message == nil {
-			continue
-		}
-		if text := textContent(entry.Message.Content); text != "" {
-			switch entry.Message.Role {
-			case "user":
-				user = text
-			case "assistant":
-				assistant = text
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return user, assistant, err
-	}
-	if current, err := file.Stat(); err == nil {
-		excerptCache.Lock()
-		excerptCache.values[path] = sessionExcerpt{size: current.Size(), modTime: current.ModTime(), user: user, assistant: assistant}
-		excerptCache.Unlock()
-	}
-	return user, assistant, nil
-}
-
-func textContent(raw json.RawMessage) string {
-	var text string
-	if json.Unmarshal(raw, &text) == nil {
-		return text
-	}
-	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if json.Unmarshal(raw, &parts) != nil {
-		return ""
-	}
-	for _, part := range parts {
-		if part.Type == "text" && part.Text != "" {
-			return part.Text
-		}
-	}
-	return ""
 }
 
 func listWorktrees(cwd string) ([]worktree, string, error) {
