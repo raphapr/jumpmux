@@ -1,27 +1,27 @@
 # jumpmux
 
-A small terminal dashboard for jumping between Git worktrees and live Pi agents in tmux.
+jumpmux is a terminal dashboard for moving between Git worktrees and live Pi agents in tmux.
 
 ```console
 jumpmux
 ```
 
-The dashboard uses a two-line tab header, adjustable table-preview split, bordered previews, contextual footer, and split diff/file view. It highlights the active tmux agent or worktree even when jumpmux is launched from a popup.
+## Tabs
 
-- **Agents** — open Pi panes with Project, Worktree, Git, PR, Status, Time, and Title columns
-- **Worktrees** — current-repository worktrees with Project, Worktree, Git, PR, Mux, Age, and Agent columns
+- **Agents:** Open Pi panes with Project, Worktree, Git, PR, Status, Time, and Title columns.
+- **Worktrees:** Worktrees from the current repository with Project, Worktree, Git, PR, Mux, Age, and Agent columns.
 
-Selecting an agent focuses its existing tmux pane. Selecting a worktree focuses its live-agent or jumpmux-managed tmux window; the first jump creates a new window in that worktree and later jumps reuse it.
+Selecting an agent focuses its tmux pane. Selecting a worktree focuses its agent pane or its jumpmux tmux window. The first jump creates a window in that worktree. Later jumps reuse it.
 
 ## Requirements
 
 - Go 1.24+ to install from source
-- Git (for worktree and diff data)
-- [Worktrunk](https://worktrunk.dev/) (optional, for default-branch detection)
-- [GitHub CLI](https://cli.github.com/) (optional, for PR data)
-- A Nerd Font for detailed icons (optional; set `JUMPMUX_PLAIN=1` for portable text symbols)
-- tmux (for live-agent discovery, worktree windows, and switching)
+- Git
+- tmux
 - [Pi](https://pi.dev)
+- [Worktrunk](https://worktrunk.dev/) (optional) for default-branch detection and worktree actions
+- [GitHub CLI](https://cli.github.com/) (optional) for PR data and browser actions
+- A Nerd Font for detailed icons, or `JUMPMUX_PLAIN=1` for text symbols
 
 ## Install
 
@@ -30,36 +30,85 @@ go install github.com/raphapr/jumpmux@latest
 jumpmux setup
 ```
 
-`jumpmux setup` installs `jumpmux-status.ts` under Pi's global extensions directory. Restart Pi or run `/reload` in existing sessions. The extension reports events for the current tmux pane and adds `🤖` while Pi is working or `✅` when it finishes to the tmux window label. The done icon clears when that pane receives focus.
+`jumpmux setup` installs `jumpmux-status.ts` in Pi's global extensions directory. Restart Pi or run `/reload` in each open Pi session.
+
+The extension reports the current pane's agent state. It adds `🤖` to the tmux window label while Pi works and `✅` when Pi finishes. Focusing the pane clears the done icon.
 
 ## Keys
 
-| Key                             | Action                                                                            |
-| ------------------------------- | --------------------------------------------------------------------------------- |
-| Mouse click / double-click      | Select / focus an agent or worktree                                               |
-| Mouse wheel                     | Scroll the table, focused preview/diff panel, or help                             |
-| `j`/`k`, arrows                 | Move selection; scroll the focused diff panel or help                             |
-| `1`–`9`                         | Open that numbered row                                                            |
-| `Tab`                           | Switch Agents and Worktrees                                                       |
-| `Enter`                         | Focus the selected agent or worktree                                              |
-| `/`                             | Filter the active tab (case-insensitive); supports normal text editing and paste  |
-| `Shift+Left` / `Shift+Right`    | Focus the left or right split preview/diff panel                                  |
-| `s`                             | Toggle agent scope: all or session                                                |
-| `t`                             | Cycle the dashboard color scheme                                                  |
-| `Enter` / `Esc` while filtering | Accept / clear and leave the filter                                               |
-| `d`                             | Show the selected context's Git WIP diff                                          |
-| `a`                             | Add a worktree from the Worktrees tab                                             |
-| `r`                             | Remove a worktree after confirmation                                              |
-| `o`                             | Open the selected PR in the browser                                               |
-| `Ctrl+u` / `Ctrl+d`             | Page preview, focused diff panel, or help                                         |
-| `h` / `l`, left/right           | Pan long preview or diff lines                                                    |
-| `+` / `-`                       | Grow / shrink preview by 10%                                                      |
-| `?`                             | Show all keyboard and mouse controls                                              |
-| `Esc`                           | Clear a filter, close a view, cancel an action, or quit from the normal dashboard |
-| `q`                             | Quit from the normal dashboard or Help; close the diff view                       |
-| `Ctrl+C`                        | Quit from any dashboard state                                                     |
+| Key                          | Action                                                                |
+| ---------------------------- | --------------------------------------------------------------------- |
+| Mouse click / double-click   | Select / focus an agent or worktree                                   |
+| Mouse wheel                  | Scroll the table, focused panel, or Help                              |
+| `j`/`k`, arrows              | Move the selection; scroll the focused diff panel or Help             |
+| `1`–`9`                      | Open that numbered row                                                |
+| `Tab`                        | Switch tabs                                                           |
+| `Enter`                      | Focus the selected agent or worktree                                  |
+| `/`                          | Filter the active tab                                                 |
+| `Shift+Left` / `Shift+Right` | Focus the left or right preview/diff panel                            |
+| `s`                          | Toggle agent scope between all and current tmux session               |
+| `t`                          | Cycle color schemes                                                   |
+| `Enter` while filtering      | Accept the filter                                                     |
+| `Esc` while filtering        | Clear and close the filter                                            |
+| `d`                          | Open the selected context's Git WIP diff                              |
+| `a`                          | Add a worktree from the Worktrees tab                                 |
+| `r`                          | Remove a worktree after confirmation                                  |
+| `o`                          | Open the selected PR in a browser                                     |
+| `Ctrl+u` / `Ctrl+d`          | Page the focused preview, diff panel, or Help                         |
+| `h` / `l`, left/right        | Pan long preview or diff lines                                        |
+| `+` / `-`                    | Change preview height by 10%                                          |
+| `?`                          | Open Help                                                             |
+| `Esc`                        | Close a view, cancel an action, clear a filter, or quit the dashboard |
+| `q`                          | Quit the dashboard or Help; close the diff view                       |
+| `Ctrl+C`                     | Quit from any state                                                   |
 
-Set `JUMPMUX_PLAIN=1` when Nerd Font glyphs are unavailable; Git, PR, check, and stale indicators then use portable text symbols. The dashboard defaults to an even 50/50 table and preview split. `+`/`-` adjusts the preview in 10% steps from 10% to 90%, and persists the selected size as `preview_size` in `$XDG_STATE_HOME/jumpmux/settings.json` (default `~/.local/state/jumpmux/settings.json`). The dashboard loads live agents and the base worktree list first. Git status, PR data, and tmux metadata then fill in independently, so neither tab waits for slower GitHub work. The selected agent preview captures the last 200 lines of its tmux pane every 500 ms, safely preserves SGR colors, uses tmux cursor geometry to omit Pi's prompt and footer regardless of theme or status-bar content, follows new output while at the bottom, and preserves manual scrolling. Refreshes are coalesced, so a slow repository cannot accumulate overlapping Git and tmux scans. Agent scope defaults to `all`; press `s` to toggle `all`/`session`, or launch with `--session` (`-s`). Press `t` to cycle the 12 built-in color schemes: `default`, `emberforge`, `glacier-signal`, `obsidian-pop`, `slate-garden`, `phosphor-arcade`, `lasergrid`, `mossfire`, `night-sorbet`, `graphite-code`, `festival-circuit`, and `teal-drift`. Schemes automatically use dark or light colors based on the terminal and persist in the user configuration directory. Data refreshes about every two seconds. Working agents show an animated Braille spinner; agents with no status update for over an hour show the stale marker `󰔛`. Elapsed time and animation redraw every 250 ms. The Time column uses success below five minutes, warning below one hour, and dimmed accent afterward; inactive clock units are dimmed. The diff view includes tracked changes and untracked file names, supports vertical scrolling and horizontal panning, caps captured diff output at 2 MiB, and works for clean or unborn repositories.
+## Dashboard behavior
+
+### Layout
+
+The dashboard starts with an even table and preview split. `+` and `-` change the preview from 10% to 90%. jumpmux stores the value as `preview_size` in `$XDG_STATE_HOME/jumpmux/settings.json`, or `~/.local/state/jumpmux/settings.json` when `XDG_STATE_HOME` is unset.
+
+The Worktrees preview splits into status and Git log panels on terminals at least 60 columns wide. The diff view splits into diff and file panels when space permits. `Shift+Left` and `Shift+Right` choose which panel receives scroll input.
+
+### Agents
+
+The Pi extension writes agent status records. jumpmux checks each record against `tmux list-panes` before displaying it. Set `JUMPMUX_STATE_DIR` to override the status directory. `jumpmux setup` honors `PI_CODING_AGENT_DIR`.
+
+The preview captures the last 200 lines from the selected pane every 500 ms. It keeps SGR colors and removes Pi's prompt and footer using tmux cursor geometry. New output keeps the preview at the bottom until you scroll away.
+
+Working agents show a Braille spinner. A status older than one hour shows `󰔛`. The Time column uses the success color below five minutes, warning below one hour, and a dim accent after one hour. The dashboard redraws time and animation every 250 ms.
+
+### Git
+
+Worktree rows use the current repository. Agent rows read Git state from each agent's working directory.
+
+Git cells show:
+
+- A loading spinner
+- The non-default base branch
+- Committed and uncommitted line counts
+- Rebase or conflict state
+- Upstream ahead and behind counts
+
+jumpmux reads the default branch from `wt list --format=json` schema 2 when `wt` is present. Git metadata provides the fallback.
+
+The dashboard loads `git_status_cache.json` from the user cache directory before the first render. It refreshes Git data in the background and saves new values on exit.
+
+### Pull requests
+
+PR cells use `#number state-icon check-icon`. Check states use `󰄴` for success, `󰅙` for failure, and a spinner for pending checks.
+
+jumpmux queries each agent repository with `gh pr list`. It matches fork PRs against the branch's upstream repository and prefers an open PR over old merged or closed PRs. The dashboard loads `pr_status_cache.json` before the first render and keeps cached data when GitHub is unavailable.
+
+### Themes and fonts
+
+Press `t` to cycle these color schemes:
+
+`default`, `emberforge`, `glacier-signal`, `obsidian-pop`, `slate-garden`, `phosphor-arcade`, `lasergrid`, `mossfire`, `night-sorbet`, `graphite-code`, `festival-circuit`, `teal-drift`
+
+jumpmux selects dark or light colors from the terminal profile and saves the selected scheme in the user configuration directory.
+
+Set `JUMPMUX_PLAIN=1` to replace Nerd Font Git, PR, check, and stale icons with text symbols.
 
 ## Usage
 
@@ -67,25 +116,35 @@ Set `JUMPMUX_PLAIN=1` when Nerd Font glyphs are unavailable; Git, PR, check, and
 jumpmux            # open the dashboard with the saved scope
 jumpmux --session  # start with agents from the current tmux session
 jumpmux --list     # print available contexts
-jumpmux setup      # install/update the Pi status extension
+jumpmux setup      # install or update the Pi extension
 jumpmux --version
 jumpmux --help
 ```
 
-For local development, run the whole package with `go run .`, not `go run main.go`.
+Run the full package during development:
 
-Worktrees come from the current Git repository. Agent rows load Git status from each agent's own working directory, including agents in other repositories. Jumpmux loads persisted Git status from `git_status_cache.json` in the user cache directory for immediate first-frame rendering, refreshes it in the background, and saves fresh values on exit. Both tabs show a loading spinner, non-default base branch, committed and uncommitted line counts, rebase/conflict icons, and upstream ahead/behind counts. When `wt` is available, jumpmux uses Worktrunk's default branch; otherwise it falls back to Git's default-branch metadata. PR cells use the `#number state-icon check-icon` format. Checks show `󰄴` for success, `󰅙` for failure, and an animated spinner while pending; `󰅙` is the Nerd Font Material Design close-circle icon used for failed GitHub checks. PR data is resolved independently for every live agent repository, regardless of the tmux session where jumpmux starts. Cached values load immediately from `pr_status_cache.json`, refresh through `gh pr list` once per minute, and remain visible if a refresh is temporarily unavailable. Live agents come from extension status records reconciled against `tmux list-panes`. Status records default to the user cache directory and can be overridden with `JUMPMUX_STATE_DIR`. The setup path honors `PI_CODING_AGENT_DIR`.
+```console
+go run .
+```
 
 ## Configuration
 
-Worktree mutations use `~/.config/jumpmux/config.toml`:
+Worktree mutations read `~/.config/jumpmux/config.toml`:
 
 ```toml
 worktree_backend = "auto"
 ```
 
-Supported values are `auto`, `wt`, and `git`. `auto` uses Worktrunk when `wt` is installed and otherwise uses native `git worktree`. Native Git creates new branches from the detected default branch under the sibling `<repo>__worktrees/` directory. Native removal keeps the branch; Worktrunk removal follows `wt remove` semantics. Both backends reload and validate this file before starting each mutation flow, require confirmation before removal, and refuse to remove the primary worktree or a worktree used by a tmux pane.
+`worktree_backend` accepts `auto`, `wt`, or `git`.
+
+- `auto` uses Worktrunk when `wt` exists on `PATH`; otherwise it uses `git worktree`.
+- `wt` uses `wt switch --create` and `wt remove`.
+- `git` creates branches from the detected default branch under `<repo>__worktrees/` and keeps the branch after removal.
+
+jumpmux validates the configuration before each mutation flow. Removal requires confirmation. jumpmux rejects the primary worktree and any worktree used by a tmux pane.
 
 ## Scope
 
-jumpmux reads live-agent, Git, and PR state; switches tmux panes; creates reusable tmux windows; adds and removes worktrees; and opens PRs in the browser. It has no patch staging, command palette, daemon, or non-tmux backend.
+jumpmux reads agent, Git, and PR state. It switches tmux panes, creates reusable tmux windows, adds or removes worktrees, and opens PRs in a browser.
+
+It does not stage patches, run a daemon, provide a command palette, or support a non-tmux backend.
