@@ -12,7 +12,7 @@ export default function (pi: ExtensionAPI) {
         ctx.sessionManager.getSessionFile() ?? "",
         ctx.cwd,
         pi.getSessionName() ?? "",
-      ]).then(() => undefined),
+      ], { timeout: 30000 }).then(() => undefined),
     ).catch(() => {});
     return pending;
   }

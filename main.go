@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	version          = "0.21.1"
+	version          = "0.22.0"
 	workingIcon      = "🤖"
 	doneIcon         = "✅"
 	staleAgentIcon   = "󰔛"
@@ -241,7 +241,7 @@ func agentGitDetails(agents []item) []item {
 		}
 		pullRequests, loaded := listPullRequests(item.cwd)
 		item.prLoaded = loaded
-		if pr, ok := pullRequests[item.branch]; ok {
+		if pr, ok := pullRequestForBranch(item.cwd, item.branch, pullRequests[item.branch]); ok {
 			item.prNumber, item.prState, item.prDraft, item.prCheck = pr.Number, pr.State, pr.Draft, pr.Check
 		}
 		return item
@@ -415,7 +415,17 @@ func untrackedStats(dir string) (lines, files int) {
 	return lines, files
 }
 
-func countFileLines(path string, info os.FileInfo) int {
+func countFileLines(path string, _ os.FileInfo) int {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return 0
+	}
+	file := os.NewFile(uintptr(fd), path)
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return 0
+	}
 	fileLineCache.Lock()
 	cached, ok := fileLineCache.values[path]
 	fileLineCache.Unlock()
@@ -423,11 +433,6 @@ func countFileLines(path string, info os.FileInfo) int {
 		return cached.lines
 	}
 
-	file, err := os.Open(path)
-	if err != nil {
-		return 0
-	}
-	defer file.Close()
 	// ponytail: scan at most 8 MiB per untracked file; raise maxFileScan if exact counts for generated files matter.
 	reader := io.LimitReader(file, maxFileScan)
 	buffer := make([]byte, 32*1024)
@@ -467,7 +472,7 @@ func worktreePRDetails(repo string, items []item) []item {
 		if items[index].branch == "main" || items[index].branch == "master" {
 			continue
 		}
-		if pr, ok := pullRequests[items[index].branch]; ok {
+		if pr, ok := pullRequestForBranch(items[index].cwd, items[index].branch, pullRequests[items[index].branch]); ok {
 			items[index].prNumber = pr.Number
 			items[index].prState = pr.State
 			items[index].prDraft = pr.Draft
@@ -561,7 +566,30 @@ func gitOutput(dir string, args ...string) (string, error) {
 	cmd := boundedCommand(ctx, "git", append([]string{"-C", dir}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
 	output, err := cmd.Output()
-	return string(output), err
+	if err != nil {
+		return string(output), gitCommandError(args, output, err)
+	}
+	return string(output), nil
+}
+
+func gitCommandError(args []string, output []byte, err error) error {
+	message := strings.TrimSpace(string(output))
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+		message = strings.TrimSpace(string(exit.Stderr))
+	}
+	command := "git"
+	if len(args) > 0 {
+		command += " " + strings.Join(args, " ")
+	}
+	if message == "" {
+		return fmt.Errorf("%s: %w", command, err)
+	}
+	return fmt.Errorf("%s: %s", command, truncate(safeText(message), 160))
+}
+
+func gitErrorLine(err error) string {
+	return "(Git unavailable: " + truncate(safeText(err.Error()), 160) + ")"
 }
 
 type cappedBuffer struct {
@@ -587,8 +615,12 @@ func gitOutputLimited(dir string, limit int, args ...string) (string, bool, erro
 	cmd := boundedCommand(ctx, "git", append([]string{"-C", dir}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
 	output := cappedBuffer{limit: limit}
-	cmd.Stdout = &output
+	var stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &stderr
 	err := cmd.Run()
+	if err != nil {
+		err = gitCommandError(args, stderr.Bytes(), err)
+	}
 	return output.String(), output.truncated, err
 }
 

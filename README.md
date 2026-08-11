@@ -19,7 +19,7 @@ Selecting an agent focuses its existing tmux pane. Selecting a worktree focuses 
 - Git (for worktree and diff data)
 - [Worktrunk](https://worktrunk.dev/) (optional, for default-branch detection)
 - [GitHub CLI](https://cli.github.com/) (optional, for PR data)
-- A Nerd Font for Dashboard-compatible Git and PR icons
+- A Nerd Font for Dashboard-compatible icons (optional; set `JUMPMUX_PLAIN=1` for portable text symbols)
 - tmux (for live-agent discovery, worktree windows, and switching)
 - [Pi](https://pi.dev)
 
@@ -34,30 +34,32 @@ jumpmux setup
 
 ## Keys
 
-| Key                             | Action                                   |
-| ------------------------------- | ---------------------------------------- |
-| Mouse click / double-click      | Select / focus an agent or worktree      |
-| Mouse wheel                     | Scroll the table, preview, or diff       |
-| `j`/`k`, arrows                 | Move selection or scroll the diff        |
-| `1`–`9`                         | Open that numbered row                   |
-| `Tab`                           | Switch Agents and Worktrees              |
-| `Enter`                         | Focus the selected agent or worktree     |
-| `/`                             | Filter the active tab (case-insensitive) |
-| `s`                             | Toggle agent scope: all or session       |
-| `t`                             | Cycle the dashboard color scheme         |
-| `Enter` / `Esc` while filtering | Accept / clear and leave the filter      |
-| `d`                             | Show the selected context's Git WIP diff |
-| `a`                             | Add a worktree from the Worktrees tab    |
-| `r`                             | Remove a worktree after confirmation     |
-| `o`                             | Open the selected PR in the browser      |
-| `Ctrl+u` / `Ctrl+d`             | Scroll preview or diff                   |
-| `h` / `l`, left/right           | Pan long preview or diff lines           |
-| `+` / `-`                       | Grow / shrink preview by 10%             |
-| `?`                             | Show all keyboard and mouse controls     |
-| `Esc`                           | Clear an active filter, otherwise quit   |
-| `q`, `Ctrl+C`                   | Quit outside filter and diff views       |
+| Key                             | Action                                                                            |
+| ------------------------------- | --------------------------------------------------------------------------------- |
+| Mouse click / double-click      | Select / focus an agent or worktree                                               |
+| Mouse wheel                     | Scroll the table, focused preview/diff panel, or help                             |
+| `j`/`k`, arrows                 | Move selection; scroll the focused diff panel or help                             |
+| `1`–`9`                         | Open that numbered row                                                            |
+| `Tab`                           | Switch Agents and Worktrees                                                       |
+| `Enter`                         | Focus the selected agent or worktree                                              |
+| `/`                             | Filter the active tab (case-insensitive); supports normal text editing and paste  |
+| `Shift+Left` / `Shift+Right`    | Focus the left or right split preview/diff panel                                  |
+| `s`                             | Toggle agent scope: all or session                                                |
+| `t`                             | Cycle the dashboard color scheme                                                  |
+| `Enter` / `Esc` while filtering | Accept / clear and leave the filter                                               |
+| `d`                             | Show the selected context's Git WIP diff                                          |
+| `a`                             | Add a worktree from the Worktrees tab                                             |
+| `r`                             | Remove a worktree after confirmation                                              |
+| `o`                             | Open the selected PR in the browser                                               |
+| `Ctrl+u` / `Ctrl+d`             | Page preview, focused diff panel, or help                                         |
+| `h` / `l`, left/right           | Pan long preview or diff lines                                                    |
+| `+` / `-`                       | Grow / shrink preview by 10%                                                      |
+| `?`                             | Show all keyboard and mouse controls                                              |
+| `Esc`                           | Clear a filter, close a view, cancel an action, or quit from the normal dashboard |
+| `q`                             | Quit from the normal dashboard or Help; close the diff view                       |
+| `Ctrl+C`                        | Quit from any dashboard state                                                     |
 
-The dashboard defaults to an even 50/50 table and preview split. `+`/`-` adjusts the preview in 10% steps from 10% to 90%, and persists the selected size as `preview_size` in `$XDG_STATE_HOME/jumpmux/settings.json` (default `~/.local/state/jumpmux/settings.json`). The dashboard loads live agents and the base worktree list first. Git status, PR data, and tmux metadata then fill in independently, so neither tab waits for slower GitHub work. The selected agent preview captures the last 200 lines of its tmux pane every 500 ms, safely preserves SGR colors, uses tmux cursor geometry to omit Pi's prompt and footer regardless of theme or status-bar content, follows new output while at the bottom, and preserves manual scrolling. Refreshes are coalesced, so a slow repository cannot accumulate overlapping Git and tmux scans. Agent scope defaults to `all`; press `s` to toggle `all`/`session`, or launch with `--session` (`-s`). Press `t` to cycle Dashboard's 12 color schemes: `default`, `emberforge`, `glacier-signal`, `obsidian-pop`, `slate-garden`, `phosphor-arcade`, `lasergrid`, `mossfire`, `night-sorbet`, `graphite-code`, `festival-circuit`, and `teal-drift`. Schemes automatically use dark or light colors based on the terminal and persist in the user configuration directory. Data refreshes about every two seconds. Working agents show Dashboard's animated Braille spinner; agents with no status update for over an hour show its stale marker `󰔛`. Elapsed time and animation redraw every 250 ms. The Time column follows Dashboard's colors: success under five minutes, warning under one hour, and dimmed accent afterward; inactive clock units are dimmed. The diff view includes tracked changes and untracked file names, supports vertical scrolling and horizontal panning, caps captured diff output at 2 MiB, and works for clean or unborn repositories.
+Set `JUMPMUX_PLAIN=1` when Nerd Font glyphs are unavailable; Git, PR, check, and stale indicators then use portable text symbols. The dashboard defaults to an even 50/50 table and preview split. `+`/`-` adjusts the preview in 10% steps from 10% to 90%, and persists the selected size as `preview_size` in `$XDG_STATE_HOME/jumpmux/settings.json` (default `~/.local/state/jumpmux/settings.json`). The dashboard loads live agents and the base worktree list first. Git status, PR data, and tmux metadata then fill in independently, so neither tab waits for slower GitHub work. The selected agent preview captures the last 200 lines of its tmux pane every 500 ms, safely preserves SGR colors, uses tmux cursor geometry to omit Pi's prompt and footer regardless of theme or status-bar content, follows new output while at the bottom, and preserves manual scrolling. Refreshes are coalesced, so a slow repository cannot accumulate overlapping Git and tmux scans. Agent scope defaults to `all`; press `s` to toggle `all`/`session`, or launch with `--session` (`-s`). Press `t` to cycle Dashboard's 12 color schemes: `default`, `emberforge`, `glacier-signal`, `obsidian-pop`, `slate-garden`, `phosphor-arcade`, `lasergrid`, `mossfire`, `night-sorbet`, `graphite-code`, `festival-circuit`, and `teal-drift`. Schemes automatically use dark or light colors based on the terminal and persist in the user configuration directory. Data refreshes about every two seconds. Working agents show Dashboard's animated Braille spinner; agents with no status update for over an hour show its stale marker `󰔛`. Elapsed time and animation redraw every 250 ms. The Time column follows Dashboard's colors: success under five minutes, warning under one hour, and dimmed accent afterward; inactive clock units are dimmed. The diff view includes tracked changes and untracked file names, supports vertical scrolling and horizontal panning, caps captured diff output at 2 MiB, and works for clean or unborn repositories.
 
 ## Usage
 
@@ -82,7 +84,7 @@ Worktree mutations use `~/.config/jumpmux/config.toml`:
 worktree_backend = "auto"
 ```
 
-Supported values are `auto`, `wt`, and `git`. `auto` uses Worktrunk when `wt` is installed and otherwise uses native `git worktree`. Native Git creates new branches from the detected default branch under the sibling `<repo>__worktrees/` directory. Native removal keeps the branch; Worktrunk removal follows `wt remove` semantics. Both backends require confirmation before removal and refuse to remove the primary or active worktree.
+Supported values are `auto`, `wt`, and `git`. `auto` uses Worktrunk when `wt` is installed and otherwise uses native `git worktree`. Native Git creates new branches from the detected default branch under the sibling `<repo>__worktrees/` directory. Native removal keeps the branch; Worktrunk removal follows `wt remove` semantics. Both backends reload and validate this file before starting each mutation flow, require confirmation before removal, and refuse to remove the primary worktree or a worktree used by a tmux pane.
 
 ## Scope
 

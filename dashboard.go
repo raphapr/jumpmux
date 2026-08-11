@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -42,37 +44,39 @@ var (
 )
 
 type dashboardModel struct {
-	cwd                                                 string
-	now                                                 time.Time
-	tab, index                                          int
-	width, height                                       int
-	agents, allAgents                                   []item
-	worktrees                                           []item
-	agentGit, gitCache, prCache                         map[string]item
-	scope                                               scopeMode
-	scheme                                              colorScheme
-	launchSession                                       string
-	worktreeGeneration                                  uint64
-	previewRequest, diffRequest                         uint64
-	filter, diff, help                                  bool
-	query                                               string
-	queries                                             [2]string
-	preview                                             previewData
-	previewOffset, diffOff, xOffset, previewSize        int
-	loading                                             bool
-	agentsLoaded, worktreesLoaded                       bool
-	agentsInFlight, agentGitInFlight, worktreesInFlight bool
-	agentGitRefreshed, previewRefreshed                 time.Time
-	worktreePending                                     int
-	err, agentErr, worktreeErr                          error
-	chosen                                              bool
-	selection                                           item
-	lastClickTarget                                     string
-	lastClickAt                                         time.Time
-	worktreeBackend                                     worktreeBackend
-	action                                              dashboardAction
-	actionInput                                         string
-	actionTarget                                        item
+	cwd                                                       string
+	now                                                       time.Time
+	tab, index                                                int
+	width, height                                             int
+	agents, allAgents                                         []item
+	worktrees                                                 []item
+	agentGit, gitCache, prCache                               map[string]item
+	scope                                                     scopeMode
+	scheme                                                    colorScheme
+	launchSession                                             string
+	worktreeGeneration                                        uint64
+	previewRequest, diffRequest                               uint64
+	filter, diff, help                                        bool
+	query                                                     string
+	queries                                                   [2]string
+	filterInputs                                              [2]textinput.Model
+	actionTextInput                                           textinput.Model
+	preview                                                   previewData
+	previewOffset, diffOff, rightOffset, xOffset, previewSize int
+	panelFocus, helpOffset                                    int
+	loading                                                   bool
+	agentsLoaded, worktreesLoaded                             bool
+	agentsInFlight, agentGitInFlight, worktreesInFlight       bool
+	agentGitRefreshed, previewRefreshed                       time.Time
+	worktreePending                                           int
+	err, agentErr, worktreeErr                                error
+	chosen                                                    bool
+	selection                                                 item
+	lastClickTarget                                           string
+	lastClickAt                                               time.Time
+	action                                                    dashboardAction
+	actionTarget                                              item
+	actionBackend                                             worktreeBackend
 }
 
 type dashboardData struct {
@@ -85,6 +89,11 @@ type dashboardDataMsg dashboardData
 type agentGitMsg []item
 
 type dashboardAction uint8
+
+const (
+	panelLeft = iota
+	panelRight
+)
 
 const (
 	actionNone dashboardAction = iota
@@ -147,7 +156,30 @@ type clockMsg time.Time
 
 func newDashboard(cwd string) dashboardModel {
 	applyColorScheme(schemeDefault)
-	return dashboardModel{cwd: cwd, now: time.Now(), width: 80, height: 24, previewSize: defaultPreviewSize, scheme: schemeDefault, worktreeBackend: backendAuto, worktreeGeneration: 1, agentGit: map[string]item{}, gitCache: map[string]item{}, prCache: map[string]item{}, agentsInFlight: true, worktreesInFlight: true}
+	return dashboardModel{cwd: cwd, now: time.Now(), width: 80, height: 24, previewSize: defaultPreviewSize, scheme: schemeDefault, worktreeGeneration: 1, agentGit: map[string]item{}, gitCache: map[string]item{}, prCache: map[string]item{}, filterInputs: [2]textinput.Model{newTextInput("/"), newTextInput("/")}, actionTextInput: newTextInput(""), agentsInFlight: true, worktreesInFlight: true}
+}
+
+func newTextInput(prompt string) textinput.Model {
+	input := textinput.New()
+	input.Prompt = prompt
+	input.Width = 40
+	return input
+}
+
+func styleTextInput(input *textinput.Model) {
+	input.PromptStyle = mutedStyle
+	input.TextStyle = textStyle
+	input.PlaceholderStyle = mutedStyle
+	input.CompletionStyle = mutedStyle
+	input.Cursor.Style = keycapStyle
+}
+
+func (m *dashboardModel) resizeInputs() {
+	width := max(1, m.width-18)
+	for index := range m.filterInputs {
+		m.filterInputs[index].Width = width
+	}
+	m.actionTextInput.Width = width
 }
 
 func newDashboardForLaunch(cwd, launchSession string, forceSession bool) dashboardModel {
@@ -158,12 +190,18 @@ func newDashboardForLaunch(cwd, launchSession string, forceSession bool) dashboa
 	for path, cached := range model.prCache {
 		detail := model.agentGit[path]
 		detail.kind, detail.target, detail.cwd = "worktree", path, path
-		copyPRStatus(&detail, cached)
+		if cached.branch == "" && detail.branch != "" {
+			cached.branch = detail.branch
+			model.prCache[path] = cached
+		}
+		if detail.branch != "" && detail.branch == cached.branch {
+			copyPRStatus(&detail, cached)
+		}
 		model.agentGit[path] = detail
 	}
 	model.scope = loadScopeMode()
 	model.previewSize = loadPreviewSize()
-	model.worktreeBackend, model.err = loadWorktreeBackend()
+	_, model.err = loadWorktreeBackend()
 	model.scheme = loadColorScheme()
 	applyColorScheme(model.scheme)
 	model.launchSession = launchSession
@@ -251,8 +289,8 @@ func loadPreview(item item, scheme colorScheme, request uint64) tea.Cmd {
 			return previewMsg(preview)
 		}
 
-		status, _ := gitOutput(item.cwd, "status", "--short")
-		log, _ := gitOutput(item.cwd, "log", "--pretty=format:%h%x09%ar%x09%s", "-20")
+		status, statusErr := gitOutput(item.cwd, "status", "--short")
+		log, logErr := gitOutput(item.cwd, "log", "--pretty=format:%h%x09%ar%x09%s", "-20")
 		themeMu.RLock()
 		defer themeMu.RUnlock()
 		if appliedColorScheme != scheme {
@@ -267,7 +305,9 @@ func loadPreview(item item, scheme colorScheme, request uint64) tea.Cmd {
 			mutedStyle.Render("Mux     ") + muxView(item),
 			"",
 		}
-		if strings.TrimSpace(status) == "" {
+		if statusErr != nil {
+			preview.lines = append(preview.lines, gitErrorLine(statusErr))
+		} else if strings.TrimSpace(status) == "" {
 			preview.lines = append(preview.lines, mutedStyle.Render("clean"))
 		} else {
 			for _, line := range strings.Split(strings.TrimSpace(status), "\n") {
@@ -275,7 +315,9 @@ func loadPreview(item item, scheme colorScheme, request uint64) tea.Cmd {
 			}
 		}
 		preview.rightTitle = "Git Log"
-		if strings.TrimSpace(log) == "" {
+		if logErr != nil {
+			preview.rightLines = []string{gitErrorLine(logErr)}
+		} else if strings.TrimSpace(log) == "" {
 			preview.rightLines = []string{"(no commits)"}
 		} else {
 			preview.rightLines = strings.Split(strings.TrimSpace(log), "\n")
@@ -287,13 +329,13 @@ func loadPreview(item item, scheme colorScheme, request uint64) tea.Cmd {
 func loadDiff(item item, request uint64) tea.Cmd {
 	return func() tea.Msg {
 		if _, err := gitOutput(item.cwd, "rev-parse", "--is-inside-work-tree"); err != nil {
-			return diffMsg{request: request, target: item.target, title: "WIP", lines: []string{"No Git repository at this path."}}
+			return diffMsg{request: request, target: item.target, title: "WIP", lines: []string{gitErrorLine(err)}}
 		}
-		unstaged, unstagedTruncated, _ := gitOutputLimited(item.cwd, maxDiffOutput, "diff", "--no-ext-diff", "--no-color")
-		staged, stagedTruncated, _ := gitOutputLimited(item.cwd, maxDiffOutput, "diff", "--no-ext-diff", "--no-color", "--cached")
-		untracked, _ := gitOutput(item.cwd, "ls-files", "--others", "--exclude-standard")
-		status, _ := gitOutput(item.cwd, "status", "--porcelain")
-		branch, _ := gitOutput(item.cwd, "branch", "--show-current")
+		unstaged, unstagedTruncated, unstagedErr := gitOutputLimited(item.cwd, maxDiffOutput, "diff", "--no-ext-diff", "--no-color")
+		staged, stagedTruncated, stagedErr := gitOutputLimited(item.cwd, maxDiffOutput, "diff", "--no-ext-diff", "--no-color", "--cached")
+		untracked, untrackedErr := gitOutput(item.cwd, "ls-files", "--others", "--exclude-standard")
+		status, statusErr := gitOutput(item.cwd, "status", "--porcelain")
+		branch, branchErr := gitOutput(item.cwd, "branch", "--show-current")
 		added, removed := diffStats(item.cwd)
 		var lines []string
 		if strings.TrimSpace(unstaged) != "" {
@@ -308,7 +350,14 @@ func loadDiff(item item, request uint64) tea.Cmd {
 		if unstagedTruncated || stagedTruncated {
 			lines = append(lines, "", "… diff truncated")
 		}
-		if strings.TrimSpace(untracked) != "" {
+		for _, err := range []error{unstagedErr, stagedErr} {
+			if err != nil {
+				lines = append(lines, gitErrorLine(err))
+			}
+		}
+		if untrackedErr != nil {
+			lines = append(lines, gitErrorLine(untrackedErr))
+		} else if strings.TrimSpace(untracked) != "" {
 			if len(lines) > 0 {
 				lines = append(lines, "")
 			}
@@ -321,13 +370,17 @@ func loadDiff(item item, request uint64) tea.Cmd {
 			lines = []string{"Working tree is clean."}
 		}
 		var files []string
-		for _, line := range strings.Split(strings.TrimSpace(status), "\n") {
-			if len(line) >= 4 {
-				files = append(files, safeLine(line[:2]+" "+line[3:]))
+		if statusErr != nil {
+			files = append(files, gitErrorLine(statusErr))
+		} else {
+			for _, line := range strings.Split(strings.TrimSpace(status), "\n") {
+				if len(line) >= 4 {
+					files = append(files, safeLine(line[:2]+" "+line[3:]))
+				}
 			}
 		}
 		title := "WIP: " + strings.TrimSpace(branch)
-		if strings.TrimSpace(branch) == "" {
+		if branchErr != nil || strings.TrimSpace(branch) == "" {
 			title = "WIP"
 		}
 		if added > 0 {
@@ -347,7 +400,7 @@ func (m *dashboardModel) requestPreview(item item) tea.Cmd {
 	}
 	request, scheme := m.previewRequest, m.scheme
 	if m.preview.target != item.target {
-		m.previewOffset, m.xOffset, m.loading = 0, 0, true
+		m.previewOffset, m.rightOffset, m.xOffset, m.panelFocus, m.loading = 0, 0, 0, panelLeft, true
 	}
 	return tea.Tick(75*time.Millisecond, func(time.Time) tea.Msg {
 		return previewRequestMsg{request: request, item: item, scheme: scheme}
@@ -358,6 +411,10 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.resizeInputs()
+		if !m.hasRightPanel() {
+			m.panelFocus = panelLeft
+		}
 		return m, nil
 	case tickMsg:
 		commands := []tea.Cmd{nextTick()}
@@ -431,7 +488,10 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				continue
 			}
 			if !detail.prLoaded {
-				copyPRStatus(&detail, m.agentGit[detail.cwd])
+				cached := m.agentGit[detail.cwd]
+				if cached.branch == detail.branch {
+					copyPRStatus(&detail, cached)
+				}
 			}
 			m.agentGit[detail.cwd] = detail
 			m.gitCache[detail.cwd] = detail
@@ -535,15 +595,15 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.diff && msg.request == m.previewRequest && msg.scheme == m.scheme {
 			if selected, ok := m.selected(); ok && selected.target == msg.target {
 				reset := m.preview.target != msg.target
-				wasAtBottom := m.previewOffset == m.clampOffset(len(m.preview.lines), m.preview.lines)
+				wasAtBottom := m.previewOffset == m.clampPreviewOffset(len(m.preview.lines), m.preview.lines)
 				m.preview = previewData(msg)
 				if reset {
 					m.previewOffset, m.xOffset = 0, 0
 				}
 				if msg.followBottom && (reset || wasAtBottom) {
-					m.previewOffset = m.clampOffset(len(msg.lines), msg.lines)
+					m.previewOffset = m.clampPreviewOffset(len(msg.lines), msg.lines)
 				} else {
-					m.previewOffset = m.clampOffset(m.previewOffset, msg.lines)
+					m.previewOffset = m.clampPreviewOffset(m.previewOffset, msg.lines)
 				}
 				m.loading = false
 			}
@@ -553,12 +613,12 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.diff && msg.request == m.diffRequest {
 			if selected, ok := m.selected(); ok && selected.target == msg.target {
 				m.preview = previewData{target: msg.target, title: msg.title, lines: msg.lines, rightTitle: fmt.Sprintf("Files (%d)", len(msg.files)), rightLines: msg.files}
-				m.diffOff, m.xOffset, m.loading = 0, 0, false
+				m.diffOff, m.rightOffset, m.xOffset, m.panelFocus, m.loading = 0, 0, 0, panelLeft, false
 			}
 		}
 		return m, nil
 	case worktreeActionMsg:
-		m.action, m.actionInput, m.actionTarget, m.err = actionNone, "", item{}, msg.err
+		m.action, m.actionTarget, m.actionBackend, m.err = actionNone, item{}, "", msg.err
 		if msg.err == nil && (msg.action == actionAddWorktree || msg.action == actionRemoveWorktree) {
 			m.worktreesInFlight = true
 			m.worktreeGeneration++
@@ -570,11 +630,44 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
+	if m.filter {
+		previous := m.filterInputs[m.tab].Value()
+		var command tea.Cmd
+		m.filterInputs[m.tab], command = m.filterInputs[m.tab].Update(msg)
+		m.query, m.queries[m.tab] = m.filterInputs[m.tab].Value(), m.filterInputs[m.tab].Value()
+		if m.query == previous {
+			return m, command
+		}
+		m.index = 0
+		if selected, ok := m.selected(); ok {
+			return m, tea.Batch(command, m.requestPreview(selected))
+		}
+		m.preview, m.loading = previewData{}, false
+		return m, command
+	}
+	if m.action == actionAddWorktree {
+		var command tea.Cmd
+		m.actionTextInput, command = m.actionTextInput.Update(msg)
+		return m, command
+	}
 	return m, nil
 }
 
 func (m dashboardModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	if m.width < 40 || m.height < 10 || m.filter || m.help || msg.X < 0 || msg.X >= m.width {
+	if m.width < 40 || m.height < 10 || msg.X < 0 || msg.X >= m.width {
+		return m, nil
+	}
+	if m.help {
+		if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
+			delta := 3
+			if msg.Button == tea.MouseButtonWheelUp {
+				delta = -delta
+			}
+			m.helpOffset = m.clampHelpOffset(m.helpOffset + delta)
+		}
+		return m, nil
+	}
+	if m.filter || m.action != actionNone {
 		return m, nil
 	}
 	if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
@@ -583,9 +676,11 @@ func (m dashboardModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			delta = -delta
 		}
 		if m.diff {
-			m.diffOff = m.clampOffset(m.diffOff+delta, m.preview.lines)
+			m.focusPanelAt(msg.X)
+			m.scrollFocusedPanel(delta)
 		} else if msg.Y >= 2+m.tableHeight() {
-			m.previewOffset = m.clampOffset(m.previewOffset+delta, m.preview.lines)
+			m.focusPanelAt(msg.X)
+			m.scrollFocusedPanel(delta)
 		} else {
 			m.move(delta)
 			if selected, ok := m.selected(); ok {
@@ -598,11 +693,12 @@ func (m dashboardModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if msg.Y == 0 {
-		tab := 0
-		if msg.X >= 10 {
-			tab = 1
+		for tab, hitbox := range m.tabHitboxes() {
+			if msg.X >= hitbox[0] && msg.X < hitbox[1] {
+				return m.switchTab(tab)
+			}
 		}
-		return m.switchTab(tab)
+		return m, nil
 	}
 	row := msg.Y - 3
 	if row < 0 || row >= max(0, m.tableHeight()-1) {
@@ -625,15 +721,29 @@ func (m dashboardModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
+	if key == "ctrl+c" {
+		return m, tea.Quit
+	}
 	if m.width < 40 || m.height < 10 {
-		if key == "q" || key == "esc" || key == "ctrl+c" {
+		if key == "q" || key == "esc" {
 			return m, tea.Quit
 		}
 		return m, nil
 	}
 	if m.help {
-		if key == "?" || key == "esc" || key == "q" {
-			m.help = false
+		switch key {
+		case "q":
+			return m, tea.Quit
+		case "?", "esc":
+			m.help, m.helpOffset = false, 0
+		case "k", "up":
+			m.helpOffset = m.clampHelpOffset(m.helpOffset - 1)
+		case "j", "down":
+			m.helpOffset = m.clampHelpOffset(m.helpOffset + 1)
+		case "ctrl+u":
+			m.helpOffset = m.clampHelpOffset(m.helpOffset - m.helpHeight()/2)
+		case "ctrl+d":
+			m.helpOffset = m.clampHelpOffset(m.helpOffset + m.helpHeight()/2)
 		}
 		return m, nil
 	}
@@ -641,22 +751,23 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleActionKey(msg)
 	}
 	if m.filter {
-		switch key {
-		case "enter":
+		if key == "enter" {
 			m.filter = false
-		case "esc":
+			m.filterInputs[m.tab].Blur()
+		} else if key == "esc" {
 			m.filter, m.query, m.index = false, "", 0
-		case "backspace", "ctrl+h":
-			runes := []rune(m.query)
-			if len(runes) > 0 {
-				m.query = string(runes[:len(runes)-1])
+			m.filterInputs[m.tab].SetValue("")
+			m.filterInputs[m.tab].Blur()
+		} else {
+			var command tea.Cmd
+			m.filterInputs[m.tab], command = m.filterInputs[m.tab].Update(msg)
+			m.query, m.index = m.filterInputs[m.tab].Value(), 0
+			m.queries[m.tab] = m.query
+			if selected, ok := m.selected(); ok {
+				return m, tea.Batch(command, m.requestPreview(selected))
 			}
-			m.index = 0
-		default:
-			if len(msg.Runes) > 0 {
-				m.query += string(msg.Runes)
-				m.index = 0
-			}
+			m.preview, m.loading = previewData{}, false
+			return m, command
 		}
 		m.queries[m.tab] = m.query
 		if selected, ok := m.selected(); ok {
@@ -673,22 +784,30 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.resizePreview(delta)
 		return m, nil
 	}
+	if key == "shift+left" || key == "shift+right" {
+		if m.hasRightPanel() {
+			m.panelFocus = panelLeft
+			if key == "shift+right" {
+				m.panelFocus = panelRight
+			}
+		}
+		return m, nil
+	}
 	if m.diff {
 		switch key {
-		case "esc", "q", "ctrl+c":
-			m.diff = false
-			m.preview = previewData{}
+		case "esc", "q":
+			m.diff, m.preview, m.panelFocus = false, previewData{}, panelLeft
 			if selected, ok := m.selected(); ok {
 				return m, m.requestPreview(selected)
 			}
 		case "k", "up":
-			m.diffOff = m.clampOffset(m.diffOff-1, m.preview.lines)
+			m.scrollFocusedPanel(-1)
 		case "j", "down":
-			m.diffOff = m.clampOffset(m.diffOff+1, m.preview.lines)
+			m.scrollFocusedPanel(1)
 		case "ctrl+u":
-			m.diffOff = m.clampOffset(m.diffOff-m.previewHeight()/2, m.preview.lines)
+			m.scrollFocusedPanel(-m.diffVisibleHeight() / 2)
 		case "ctrl+d":
-			m.diffOff = m.clampOffset(m.diffOff+m.previewHeight()/2, m.preview.lines)
+			m.scrollFocusedPanel(m.diffVisibleHeight() / 2)
 		case "h", "left":
 			m.xOffset = max(0, m.xOffset-4)
 		case "l", "right":
@@ -708,11 +827,12 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch key {
-	case "q", "ctrl+c":
+	case "q":
 		return m, tea.Quit
 	case "esc":
 		if m.query != "" {
 			m.query, m.queries[m.tab], m.index = "", "", 0
+			m.filterInputs[m.tab].SetValue("")
 			if selected, ok := m.selected(); ok {
 				return m, m.requestPreview(selected)
 			}
@@ -720,7 +840,7 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	case "?":
-		m.help = true
+		m.help, m.helpOffset = true, 0
 		return m, nil
 	case "tab":
 		return m.switchTab(1 - m.tab)
@@ -746,9 +866,14 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.preview, m.loading = previewData{}, false
 	case "/":
 		m.filter = true
+		m.filterInputs[m.tab].SetValue(m.query)
+		return m, m.filterInputs[m.tab].Focus()
 	case "a":
 		if m.tab == 1 {
-			m.action, m.actionInput, m.err = actionAddWorktree, "", nil
+			m.action, m.err = actionAddWorktree, nil
+			m.actionTextInput.SetValue("")
+			m.lastClickTarget, m.lastClickAt = "", time.Time{}
+			return m, m.actionTextInput.Focus()
 		}
 	case "r":
 		if m.tab == 1 {
@@ -764,7 +889,18 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.err = errors.New("cannot remove the primary worktree")
 				return m, nil
 			}
-			m.action, m.actionTarget, m.err = actionRemoveWorktree, selected, nil
+			backend, err := loadWorktreeBackend()
+			if err != nil {
+				m.err = err
+				return m, nil
+			}
+			backend, err = resolvedWorktreeBackend(backend)
+			if err != nil {
+				m.err = err
+				return m, nil
+			}
+			m.action, m.actionTarget, m.actionBackend, m.err = actionRemoveWorktree, selected, backend, nil
+			m.lastClickTarget, m.lastClickAt = "", time.Time{}
 		}
 	case "o":
 		if selected, ok := m.selected(); ok {
@@ -776,7 +912,7 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "d":
 		if selected, ok := m.selected(); ok {
-			m.diff, m.loading = true, true
+			m.diff, m.loading, m.panelFocus = true, true, panelLeft
 			m.diffRequest++
 			return m, loadDiff(selected, m.diffRequest)
 		}
@@ -790,9 +926,9 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "k", "up":
 		m.move(-1)
 	case "ctrl+u":
-		m.previewOffset = m.clampOffset(m.previewOffset-m.previewHeight()/2, m.preview.lines)
+		m.scrollFocusedPanel(-m.previewVisibleHeight() / 2)
 	case "ctrl+d":
-		m.previewOffset = m.clampOffset(m.previewOffset+m.previewHeight()/2, m.preview.lines)
+		m.scrollFocusedPanel(m.previewVisibleHeight() / 2)
 	case "h", "left":
 		m.xOffset = max(0, m.xOffset-4)
 	case "l", "right":
@@ -814,35 +950,33 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case actionAddWorktree:
 		switch key {
 		case "esc":
-			m.action, m.actionInput = actionNone, ""
+			m.action = actionNone
+			m.actionTextInput.SetValue("")
+			m.actionTextInput.Blur()
 		case "enter":
-			branch := strings.TrimSpace(m.actionInput)
+			branch := strings.TrimSpace(m.actionTextInput.Value())
 			if branch == "" {
 				return m, nil
 			}
 			m.action, m.err = actionRunning, nil
+			m.actionTextInput.Blur()
 			return m, func() tea.Msg {
-				return worktreeActionMsg{action: actionAddWorktree, err: addWorktree(m.cwd, branch, m.worktreeBackend)}
-			}
-		case "backspace", "ctrl+h":
-			runes := []rune(m.actionInput)
-			if len(runes) > 0 {
-				m.actionInput = string(runes[:len(runes)-1])
+				return worktreeActionMsg{action: actionAddWorktree, err: addWorktree(m.cwd, branch, backendAuto)}
 			}
 		default:
-			if len(msg.Runes) > 0 {
-				m.actionInput += string(msg.Runes)
-			}
+			var command tea.Cmd
+			m.actionTextInput, command = m.actionTextInput.Update(msg)
+			return m, command
 		}
 	case actionRemoveWorktree:
 		switch key {
-		case "y":
+		case "y", "Y":
 			m.action, m.err = actionRunning, nil
 			return m, func() tea.Msg {
-				return worktreeActionMsg{action: actionRemoveWorktree, err: removeWorktree(m.cwd, m.actionTarget.cwd, m.worktreeBackend)}
+				return worktreeActionMsg{action: actionRemoveWorktree, err: removeWorktree(m.cwd, m.actionTarget.cwd, m.actionBackend)}
 			}
-		case "n", "esc":
-			m.action, m.actionTarget = actionNone, item{}
+		case "n", "N", "esc":
+			m.action, m.actionTarget, m.actionBackend = actionNone, item{}, ""
 		}
 	}
 	return m, nil
@@ -853,8 +987,9 @@ func (m dashboardModel) switchTab(tab int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.queries[m.tab] = m.query
-	m.tab, m.index, m.previewOffset, m.xOffset = tab, 0, 0, 0
+	m.tab, m.index, m.previewOffset, m.rightOffset, m.xOffset, m.panelFocus = tab, 0, 0, 0, 0, panelLeft
 	m.query = m.queries[m.tab]
+	m.filterInputs[m.tab].SetValue(m.query)
 	m.preview = previewData{}
 	if selected, ok := m.selected(); ok {
 		return m, m.requestPreview(selected)
@@ -863,8 +998,85 @@ func (m dashboardModel) switchTab(tab int) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m dashboardModel) clampOffset(offset int, lines []string) int {
-	return max(0, min(offset, max(0, len(lines)-max(1, m.previewHeight()-2))))
+func clampLineOffset(offset int, lines []string, visible int) int {
+	return max(0, min(offset, max(0, len(lines)-max(1, visible))))
+}
+
+func (m dashboardModel) previewVisibleHeight() int { return max(1, m.previewHeight()-2) }
+func (m dashboardModel) diffVisibleHeight() int    { return max(1, m.height-3) }
+func (m dashboardModel) clampPreviewOffset(offset int, lines []string) int {
+	return clampLineOffset(offset, lines, m.previewVisibleHeight())
+}
+func (m dashboardModel) clampDiffOffset(offset int, lines []string) int {
+	return clampLineOffset(offset, lines, m.diffVisibleHeight())
+}
+
+func (m dashboardModel) hasRightPanel() bool {
+	if m.diff {
+		rightWidth := max(24, m.width/4)
+		return rightWidth < m.width-20
+	}
+	return m.tab == 1 && m.preview.rightTitle != "" && m.width >= 60
+}
+
+func (m *dashboardModel) focusPanelAt(x int) {
+	m.panelFocus = panelLeft
+	if m.hasRightPanel() {
+		leftWidth := m.width
+		if m.diff {
+			leftWidth -= max(24, m.width/4)
+		} else {
+			leftWidth = min(40, m.width/2)
+		}
+		if x >= leftWidth {
+			m.panelFocus = panelRight
+		}
+	}
+}
+
+func (m *dashboardModel) scrollFocusedPanel(delta int) {
+	if m.panelFocus == panelRight && m.hasRightPanel() {
+		if m.diff {
+			m.rightOffset = m.clampDiffOffset(m.rightOffset+delta, m.preview.rightLines)
+		} else {
+			m.rightOffset = m.clampPreviewOffset(m.rightOffset+delta, m.preview.rightLines)
+		}
+		return
+	}
+	if m.diff {
+		m.diffOff = m.clampDiffOffset(m.diffOff+delta, m.preview.lines)
+		return
+	}
+	m.previewOffset = m.clampPreviewOffset(m.previewOffset+delta, m.preview.lines)
+}
+
+func (m dashboardModel) helpHeight() int { return max(1, m.height-3) }
+
+func (m dashboardModel) clampHelpOffset(offset int) int {
+	return max(0, min(offset, max(0, len(m.helpLines())-m.helpHeight())))
+}
+
+func (m dashboardModel) helpLines() []string {
+	return []string{
+		"↑/k, ↓/j     Move selection",
+		"Enter, 1–9   Open selected row",
+		"Click         Select row",
+		"Double-click  Open row",
+		"Mouse wheel   Scroll table or preview",
+		"Tab           Switch tabs",
+		"/             Filter active tab",
+		"Enter / Esc   Accept / clear filter",
+		"d             Open Git diff",
+		"Shift+←/→     Focus split panel",
+		"a             Add worktree (Worktrees)",
+		"r             Remove worktree (Worktrees)",
+		"o             Open pull request",
+		"Ctrl+u/d      Page preview, diff, or help",
+		"h/l           Pan long lines",
+		"+/-           Resize preview by 10%",
+		"s             Toggle agent scope",
+		"t             Cycle color scheme",
+	}
 }
 
 func (m dashboardModel) clampX(offset int) int {
@@ -894,7 +1106,7 @@ func (m *dashboardModel) move(delta int) {
 		return
 	}
 	m.index = max(0, min(len(rows)-1, m.index+delta))
-	m.previewOffset, m.xOffset = 0, 0
+	m.previewOffset, m.rightOffset, m.xOffset, m.panelFocus = 0, 0, 0, panelLeft
 }
 
 func (m dashboardModel) rows() []item {
@@ -986,7 +1198,7 @@ func mergeWorktreeData(current, incoming []item, stage worktreeStage) []item {
 	}
 	for index := range current {
 		detail, ok := details[current[index].target]
-		if !ok || (detail.branch != "" && detail.branch != current[index].branch) {
+		if !ok || (stage == worktreePRStage && detail.branch != current[index].branch) || (stage != worktreePRStage && detail.branch != "" && detail.branch != current[index].branch) {
 			continue
 		}
 		switch stage {
@@ -1027,15 +1239,21 @@ func copyPRStatus(dst *item, src item) {
 
 func (m dashboardModel) contentHeight() int { return max(0, m.height-3) }
 func (m dashboardModel) tableHeight() int {
-	return max(2, m.contentHeight()*(100-m.previewSize)/100)
+	content := m.contentHeight()
+	return max(2, min(content-3, content*(100-m.previewSize)/100))
 }
-func (m dashboardModel) previewHeight() int { return max(3, m.contentHeight()-m.tableHeight()) }
+func (m dashboardModel) previewHeight() int { return m.contentHeight() - m.tableHeight() }
 
 func (m *dashboardModel) resizePreview(delta int) {
 	m.previewSize = max(minPreviewSize, min(maxPreviewSize, m.previewSize+delta))
 	m.err = savePreviewSize(m.previewSize)
-	m.previewOffset = m.clampOffset(m.previewOffset, m.preview.lines)
-	m.diffOff = m.clampOffset(m.diffOff, m.preview.lines)
+	m.previewOffset = m.clampPreviewOffset(m.previewOffset, m.preview.lines)
+	m.diffOff = m.clampDiffOffset(m.diffOff, m.preview.lines)
+	if m.diff {
+		m.rightOffset = m.clampDiffOffset(m.rightOffset, m.preview.rightLines)
+	} else {
+		m.rightOffset = m.clampPreviewOffset(m.rightOffset, m.preview.rightLines)
+	}
 }
 
 func (m dashboardModel) visibleRowStart() int {
@@ -1074,8 +1292,29 @@ func (m dashboardModel) View() string {
 }
 
 func (m dashboardModel) renderHeader(width int) string {
-	line := "  " + tabView("Agents", m.tab == 0) + borderStyle.Render(" │ ") + tabView("Worktrees", m.tab == 1)
+	labels := m.tabLabels()
+	line := "  " + tabView(labels[0], m.tab == 0) + borderStyle.Render(" │ ") + tabView(labels[1], m.tab == 1)
 	return padANSI(line, width) + "\n" + borderStyle.Render(strings.Repeat("─", width))
+}
+
+func (m dashboardModel) tabLabels() [2]string {
+	agents := fmt.Sprintf("Agents %d", len(m.agents))
+	if m.tab == 0 {
+		agents = fmt.Sprintf("[Agents %d · %s]", len(m.agents), m.scope.label())
+	}
+	worktrees := fmt.Sprintf("Worktrees %d", len(m.worktrees))
+	if m.tab == 1 {
+		worktrees = fmt.Sprintf("[Worktrees %d]", len(m.worktrees))
+	}
+	return [2]string{agents, worktrees}
+}
+
+func (m dashboardModel) tabHitboxes() [2][2]int {
+	labels := m.tabLabels()
+	start := 2
+	firstEnd := start + ansi.StringWidth(labels[0])
+	secondStart := firstEnd + ansi.StringWidth(" │ ")
+	return [2][2]int{{start, firstEnd}, {secondStart, secondStart + ansi.StringWidth(labels[1])}}
 }
 
 func tabView(name string, active bool) string {
@@ -1262,6 +1501,9 @@ func (m dashboardModel) matchingWorktree(session item) (item, bool) {
 
 func (m dashboardModel) renderPreview(width int) string {
 	height := m.previewHeight()
+	if m.action == actionRemoveWorktree {
+		return renderPanel("Remove worktree", m.removePreviewLines(), width, height, 0, 0, false, true)
+	}
 	selected, hasSelection := m.selected()
 	if !hasSelection {
 		loaded := m.agentsLoaded
@@ -1272,26 +1514,51 @@ func (m dashboardModel) renderPreview(width int) string {
 		if !loaded {
 			message = "Loading…"
 		}
-		return renderPanel("Preview", []string{message}, width, height, 0, 0, false)
+		return renderPanel("Preview", []string{message}, width, height, 0, 0, false, true)
 	}
 	if m.loading || m.preview.target == "" || m.preview.target != selected.target {
-		return renderPanel("Preview: "+m.displayWorktree(selected), []string{"Loading…"}, width, height, 0, 0, false)
+		return renderPanel("Preview: "+m.displayWorktree(selected), []string{"Loading…"}, width, height, 0, 0, false, true)
 	}
 	if m.tab == 0 || m.preview.rightTitle == "" || width < 60 {
-		return renderPanel(m.preview.title, m.preview.lines, width, height, m.previewOffset, m.xOffset, false)
+		return renderPanel(m.preview.title, m.preview.lines, width, height, m.previewOffset, m.xOffset, false, true)
 	}
 	leftWidth := min(40, width/2)
-	left := renderPanel(m.preview.title, m.preview.lines, leftWidth, height, m.previewOffset, m.xOffset, false)
-	right := renderPanel(m.preview.rightTitle, styleGitLog(m.preview.rightLines), width-leftWidth, height, m.previewOffset, m.xOffset, false)
+	left := renderPanel(m.preview.title, m.preview.lines, leftWidth, height, m.previewOffset, m.xOffset, false, m.panelFocus == panelLeft)
+	right := renderPanel(m.preview.rightTitle, styleGitLog(m.preview.rightLines), width-leftWidth, height, m.rightOffset, m.xOffset, false, m.panelFocus == panelRight)
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+}
+
+func (m dashboardModel) removePreviewLines() []string {
+	behavior := "Native Git removes the worktree and keeps its branch."
+	if m.actionBackend == backendWT {
+		behavior = "Worktrunk removal follows wt remove semantics."
+	}
+	return []string{
+		"Branch: " + safeText(m.actionTarget.branch),
+		"Path:   " + safeText(compactHome(m.actionTarget.cwd)),
+		"",
+		behavior,
+		"",
+		"y Remove    n or Esc Cancel",
+	}
 }
 
 func (m dashboardModel) renderFooter(width int) string {
 	switch m.action {
 	case actionAddWorktree:
-		return padANSI("  "+keycapStyle.Render("a Add")+textStyle.Render(" branch: ")+keycapStyle.Render(safeText(m.actionInput))+keycapStyle.Render("_")+"  "+mutedStyle.Render("Enter")+textStyle.Render(" create  ")+mutedStyle.Render("Esc")+textStyle.Render(" cancel"), width)
+		input := m.actionTextInput
+		styleTextInput(&input)
+		prefix := "  " + textStyle.Render("branch: ")
+		create := footerCommand("Enter", "Create")
+		if width < 60 {
+			create = footerCommand("↵", "Create")
+		}
+		suffix := "  " + create + " " + footerCommand("Esc", "Cancel")
+		input.Width = max(1, width-ansi.StringWidth(prefix)-ansi.StringWidth(suffix)-1)
+		input.SetCursor(input.Position())
+		return padANSI(prefix+input.View()+suffix, width)
 	case actionRemoveWorktree:
-		return padANSI("  "+warningStyle.Render("Remove "+safeText(m.displayWorktree(m.actionTarget))+"?")+"  "+mutedStyle.Render("y")+textStyle.Render(" confirm  ")+mutedStyle.Render("n/Esc")+textStyle.Render(" cancel"), width)
+		return padANSI("  "+warningStyle.Render("Remove "+safeText(m.displayWorktree(m.actionTarget))+"?")+"  "+footerCommand("y", "Remove")+" "+footerCommand("n/Esc", "Cancel"), width)
 	case actionRunning:
 		return padANSI("  "+infoStyle.Render("Working…"), width)
 	}
@@ -1304,10 +1571,14 @@ func (m dashboardModel) renderFooter(width int) string {
 		viewErr = m.err
 	}
 	if viewErr != nil {
-		return padANSI(dangerStyle.Render("  Error: "+safeText(viewErr.Error())), width)
+		return m.renderFooterError(width, viewErr)
 	}
 	if m.filter {
-		return padANSI("  "+keycapStyle.Render("/"+safeText(m.query))+keycapStyle.Render("_")+"  "+mutedStyle.Render("Enter")+textStyle.Render(" accept  ")+mutedStyle.Render("Esc")+textStyle.Render(" clear"), width)
+		input := m.filterInputs[m.tab]
+		styleTextInput(&input)
+		input.Width = max(1, width-30)
+		input.SetCursor(input.Position())
+		return padANSI("  "+input.View()+"  "+footerCommand("Enter", "Accept")+" "+footerCommand("Esc", "Clear"), width)
 	}
 	filterLabel := "Filter"
 	if m.query != "" {
@@ -1317,29 +1588,48 @@ func (m dashboardModel) renderFooter(width int) string {
 	if m.tab == 1 {
 		tab = "Agents"
 	}
-	if width < 60 {
-		parts := []string{mutedStyle.Render("↵"), mutedStyle.Render("/"), mutedStyle.Render("Tab"), mutedStyle.Render("?"), mutedStyle.Render("q")}
-		if m.tab == 1 {
-			parts = []string{mutedStyle.Render("a"), mutedStyle.Render("r"), mutedStyle.Render("o"), mutedStyle.Render("↵"), mutedStyle.Render("Tab"), mutedStyle.Render("?"), mutedStyle.Render("q")}
-		}
-		return padANSI("  "+strings.Join(parts, borderStyle.Render(" │ ")), width)
+	candidates := []string{}
+	if m.tab == 1 {
+		candidates = append(candidates, footerCommand("a", "Add"), footerCommand("r", "Remove"))
 	}
-
-	var parts []string
+	candidates = append(candidates, footerCommand("↵", "Open"), footerCommand("d", "Diff"))
+	if selected, ok := m.selected(); ok && m.gitItem(selected).prNumber != 0 {
+		candidates = append(candidates, footerCommand("o", "PR"))
+	}
 	if m.tab == 0 {
-		parts = []string{footerCommand("↵", "Open"), footerCommand("o", "PR"), footerCommand("/", filterLabel), footerCommand("Tab", tab), footerToggle("s", "Scope ("+m.scope.label()+")", m.scope == scopeSession)}
-		if width >= 100 {
-			parts = append([]string{footerCommand("d", "Diff")}, parts...)
-			parts = append(parts, footerCommand("t", "Theme"))
-		}
-	} else {
-		parts = []string{footerCommand("a", "Add"), footerCommand("r", "Remove"), footerCommand("o", "PR"), footerCommand("↵", "Open"), footerCommand("/", filterLabel), footerCommand("Tab", tab)}
-		if width >= 100 {
-			parts = append(parts, footerCommand("t", "Theme"))
-		}
+		candidates = append(candidates, footerToggle("s", "Scope ("+m.scope.label()+")", m.scope == scopeSession))
 	}
-	parts = append(parts, footerCommand("?", "Help"), footerCommand("q", "Quit"))
-	return padANSI("  "+strings.Join(parts, borderStyle.Render(" │ ")), width)
+	candidates = append(candidates, footerCommand("/", filterLabel), footerCommand("Tab", tab), footerCommand("t", "Theme"))
+	return m.prioritizedFooter(width, candidates)
+}
+
+func (m dashboardModel) prioritizedFooter(width int, candidates []string) string {
+	base := []string{footerCommand("?", "Help"), footerCommand("q", "Quit")}
+	parts := []string{}
+	separator := borderStyle.Render(" │ ")
+	for _, candidate := range candidates {
+		withCandidate := append(append([]string{}, parts...), candidate)
+		if ansi.StringWidth("  "+strings.Join(append(withCandidate, base...), separator)) > width {
+			continue
+		}
+		parts = withCandidate
+	}
+	return padANSI("  "+strings.Join(append(parts, base...), separator), width)
+}
+
+func (m dashboardModel) renderFooterError(width int, err error) string {
+	helpQuit := []string{footerCommand("?", "Help"), footerCommand("q", "Quit")}
+	separator := borderStyle.Render(" │ ")
+	available := max(1, width-2-ansi.StringWidth(strings.Join(helpQuit, separator))-ansi.StringWidth(separator))
+	message := dangerStyle.Render("Error: " + ansi.Truncate(safeText(err.Error()), max(0, available-7), "…"))
+	return padANSI("  "+strings.Join(append([]string{message}, helpQuit...), separator), width)
+}
+
+func dashboardIcon(nerd, plain string) string {
+	if os.Getenv("JUMPMUX_PLAIN") != "" {
+		return plain
+	}
+	return nerd
 }
 
 func footerCommand(key, label string) string {
@@ -1354,28 +1644,12 @@ func footerToggle(key, label string, active bool) string {
 }
 
 func (m dashboardModel) renderHelp(width int) string {
-	lines := []string{
-		"↑/k, ↓/j     Move selection",
-		"Enter, 1–9   Open selected row",
-		"Click         Select row",
-		"Double-click  Open row",
-		"Mouse wheel   Scroll table or preview",
-		"Tab           Switch tabs",
-		"/             Filter active tab",
-		"Esc           Clear filter",
-		"d             Open Git diff",
-		"a             Add worktree (Worktrees)",
-		"r             Remove worktree (Worktrees)",
-		"o             Open pull request",
-		"Ctrl+u/d      Page preview or diff",
-		"h/l           Pan long lines",
-		"+/-           Resize preview by 10%",
-		"s             Toggle agent scope",
-		"t             Cycle color scheme",
-		"q             Quit",
-	}
-	body := renderPanel("Help", lines, width, m.height-1, 0, 0, false)
-	return body + "\n" + padANSI("  "+footerCommand("? / q", "Close help"), width)
+	lines := m.helpLines()
+	start := m.helpOffset + 1
+	end := min(len(lines), m.helpOffset+m.helpHeight())
+	title := fmt.Sprintf("Help (%d-%d/%d)", start, end, len(lines))
+	body := renderPanel(title, lines, width, m.height-1, m.helpOffset, 0, false, true)
+	return body + "\n" + padANSI("  "+footerCommand("? / Esc", "Close")+" "+footerCommand("q", "Quit"), width)
 }
 
 func (m dashboardModel) renderDiff(width int) string {
@@ -1391,19 +1665,22 @@ func (m dashboardModel) renderDiff(width int) string {
 		rightWidth = 0
 	}
 	leftWidth := width - rightWidth
-	body := renderPanel(title, lines, leftWidth, height, m.diffOff, m.xOffset, true)
+	body := renderPanel(title, lines, leftWidth, height, m.diffOff, m.xOffset, true, m.panelFocus == panelLeft)
 	if rightWidth > 0 {
-		body = lipgloss.JoinHorizontal(lipgloss.Top, body, renderPanel(fmt.Sprintf("Files (%d)", len(files)), files, rightWidth, height, m.diffOff, m.xOffset, false))
+		body = lipgloss.JoinHorizontal(lipgloss.Top, body, renderPanel(fmt.Sprintf("Files (%d)", len(files)), files, rightWidth, height, m.rightOffset, m.xOffset, false, m.panelFocus == panelRight))
 	}
-	footer := "  " + keycapStyle.Render("[j/k]") + textStyle.Render(" scroll  ") + keycapStyle.Render("[h/l]") + textStyle.Render(" pan  ") + keycapStyle.Render("[q]") + textStyle.Render(" close")
+	footer := "  " + keycapStyle.Render("[j/k]") + textStyle.Render(" scroll focused  ") + keycapStyle.Render("[Shift+←/→]") + textStyle.Render(" focus  ") + keycapStyle.Render("[q]") + textStyle.Render(" close")
 	return body + "\n" + padANSI(footer, width)
 }
 
-func renderPanel(title string, lines []string, width, height, offset, xOffset int, diff bool) string {
+func renderPanel(title string, lines []string, width, height, offset, xOffset int, diff, focused bool) string {
 	width, height = max(4, width), max(3, height)
 	innerWidth, innerHeight := width-2, height-2
 	offset = min(max(0, offset), max(0, len(lines)-innerHeight))
 
+	if focused {
+		title = "▶ " + title
+	}
 	title = " " + safeText(title) + " "
 	title = ansi.Truncate(title, max(0, innerWidth-1), "")
 	topLeft := borderStyle.Render("┌─") + headerStyle.Render(title)
@@ -1602,23 +1879,23 @@ func prStatusSpans(item item, now time.Time) []prStatusSpan {
 	if item.prNumber == 0 {
 		return []prStatusSpan{{text: "-", style: mutedStyle}}
 	}
-	icon, style := prOpenIcon, successStyle
+	icon, style := dashboardIcon(prOpenIcon, "O"), successStyle
 	if item.prDraft {
-		icon, style = prDraftIcon, mutedStyle
+		icon, style = dashboardIcon(prDraftIcon, "D"), mutedStyle
 	} else {
 		switch item.prState {
 		case "MERGED":
-			icon, style = prMergedIcon, accentStyle
+			icon, style = dashboardIcon(prMergedIcon, "M"), accentStyle
 		case "CLOSED":
-			icon, style = prClosedIcon, dangerStyle
+			icon, style = dashboardIcon(prClosedIcon, "X"), dangerStyle
 		}
 	}
 	spans := []prStatusSpan{{text: fmt.Sprintf("#%d", item.prNumber), style: style}, {text: icon, style: style}}
 	switch item.prCheck {
 	case checkSuccess:
-		spans = append(spans, prStatusSpan{text: checkSuccessIcon, style: successStyle})
+		spans = append(spans, prStatusSpan{text: dashboardIcon(checkSuccessIcon, "+"), style: successStyle})
 	case checkFailure:
-		spans = append(spans, prStatusSpan{text: checkFailureIcon, style: dangerStyle})
+		spans = append(spans, prStatusSpan{text: dashboardIcon(checkFailureIcon, "x"), style: dangerStyle})
 	case checkPending:
 		spans = append(spans, prStatusSpan{text: spinnerFrame(now), style: accentStyle})
 	}
@@ -1657,7 +1934,7 @@ func gitStatusSpans(item item, now time.Time) []gitStatusSpan {
 		spans = append(spans, gitStatusSpan{text: text, style: style})
 	}
 	if item.isRebasing {
-		add(gitRebaseIcon, warningStyle)
+		add(dashboardIcon(gitRebaseIcon, "R"), warningStyle)
 	}
 	if item.baseBranch != "" && item.baseBranch != "main" && item.baseBranch != "master" {
 		add("→"+item.baseBranch, mutedStyle)
@@ -1666,7 +1943,7 @@ func gitStatusSpans(item item, now time.Time) []gitStatusSpan {
 	hasUncommitted := item.dirty || item.added > 0 || item.removed > 0
 	allUncommitted := item.added == item.committedAdded && item.removed == item.committedRemoved
 	addUncommitted := func() {
-		add(gitDiffIcon, accentStyle)
+		add(dashboardIcon(gitDiffIcon, "*"), accentStyle)
 		if item.added > 0 {
 			add(fmt.Sprintf("+%d", item.added), successStyle)
 		}
@@ -1688,7 +1965,7 @@ func gitStatusSpans(item item, now time.Time) []gitStatusSpan {
 		}
 	}
 	if item.hasConflict {
-		add(gitConflictIcon, dangerStyle)
+		add(dashboardIcon(gitConflictIcon, "!"), dangerStyle)
 	}
 	if item.ahead > 0 {
 		add(fmt.Sprintf("↑%d", item.ahead), infoStyle)
@@ -1784,7 +2061,7 @@ func statusText(item item, now time.Time) string {
 		icon = workingIcon
 	}
 	if isStale(item, now) {
-		return icon + " " + staleAgentIcon
+		return icon + " " + dashboardIcon(staleAgentIcon, "old")
 	}
 	if item.status == "working" {
 		return icon + " " + spinnerFrame(now)

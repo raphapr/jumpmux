@@ -3,7 +3,9 @@ package main
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +23,7 @@ var piExtension []byte
 
 const (
 	jumpmuxStatusFormat = "#{?@jumpmux_status, #{@jumpmux_status},}"
+	jumpmuxFocusHook    = "pane-focus-in[987654]"
 	tmuxTimeout         = 2 * time.Second
 )
 
@@ -89,18 +92,21 @@ func setAgentStatus(args []string) error {
 	if err != nil {
 		return err
 	}
+	legacyPath, err := legacyAgentStatePath(pane)
+	if err != nil {
+		return err
+	}
 	return withTmuxWindowLock(pane, func() error {
 		if status == "closed" {
 			statusErr := clearTmuxStatusLocked(pane)
-			removeErr := os.Remove(path)
-			if errors.Is(removeErr, os.ErrNotExist) {
-				removeErr = nil
-			}
-			return errors.Join(statusErr, removeErr)
+			removeErr := removeAgentState(path)
+			return errors.Join(statusErr, removeErr, removeAgentState(legacyPath))
 		}
 
 		state := agentState{Status: "done"}
 		if data, err := os.ReadFile(path); err == nil {
+			_ = json.Unmarshal(data, &state)
+		} else if data, err := os.ReadFile(legacyPath); err == nil {
 			_ = json.Unmarshal(data, &state)
 		}
 		if status != "update" {
@@ -131,7 +137,11 @@ func setAgentStatus(args []string) error {
 		if err != nil {
 			return err
 		}
-		return errors.Join(statusErr, atomicWrite(path, append(data, '\n'), 0o600))
+		writeErr := atomicWrite(path, append(data, '\n'), 0o600)
+		if writeErr == nil {
+			writeErr = removeAgentState(legacyPath)
+		}
+		return errors.Join(statusErr, writeErr)
 	})
 }
 
@@ -149,7 +159,14 @@ func listLiveAgents() ([]item, error) {
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			continue
+			legacyPath, legacyErr := legacyAgentStatePath(pane.ID)
+			if legacyErr != nil {
+				continue
+			}
+			data, err = os.ReadFile(legacyPath)
+			if err != nil {
+				continue
+			}
 		}
 		var state agentState
 		if json.Unmarshal(data, &state) != nil || state.Pane != pane.ID || state.PanePID == "" || state.PanePID != pane.PID || state.PaneCommand != pane.CurrentCommand {
@@ -208,16 +225,23 @@ func invalidateTmuxPaneCache() {
 }
 
 func listTmuxPanes() ([]tmuxPane, error) {
-	const format = "#{pane_id}\t#{pane_pid}\t#{pane_current_path}\t#{pane_title}\t#{session_id}\t#{session_name}\t#{window_id}\t#{window_name}\t#{pane_current_command}\t#{@jumpmux_worktree}"
+	const fieldSeparator = "\x1f"
+	const recordSeparator = "\x1e"
+	const format = "#{pane_id}" + fieldSeparator + "#{pane_pid}" + fieldSeparator + "#{pane_current_path}" + fieldSeparator + "#{pane_title}" + fieldSeparator + "#{session_id}" + fieldSeparator + "#{session_name}" + fieldSeparator + "#{window_id}" + fieldSeparator + "#{window_name}" + fieldSeparator + "#{pane_current_command}" + fieldSeparator + "#{@jumpmux_worktree}" + recordSeparator
 	output, err := tmuxOutput("list-panes", "-a", "-F", format)
 	if err != nil {
 		return nil, err
 	}
 	var panes []tmuxPane
-	for _, line := range strings.Split(strings.TrimRight(output, "\r\n"), "\n") {
-		parts := strings.Split(line, "\t")
-		if len(parts) != 10 {
+	for _, record := range strings.Split(output, recordSeparator) {
+		record = strings.TrimPrefix(record, "\n")
+		record = strings.TrimSuffix(record, "\n")
+		if record == "" {
 			continue
+		}
+		parts := strings.Split(record, fieldSeparator)
+		if len(parts) != 10 {
+			return nil, errors.New("tmux returned a malformed pane record")
 		}
 		panes = append(panes, tmuxPane{
 			ID: parts[0], PID: parts[1], Path: parts[2], Title: parts[3],
@@ -341,7 +365,11 @@ func withTmuxWindowLock(pane string, action func() error) error {
 	if err != nil {
 		return err
 	}
-	lock := filepath.Join(stateDir, "locks", "window-"+id+".lock")
+	server, err := tmuxServerIdentity()
+	if err != nil {
+		return err
+	}
+	lock := filepath.Join(stateDir, "locks", "window-"+server+"-"+id+".lock")
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		return err
 	}
@@ -379,19 +407,7 @@ func setTmuxStatusLocked(pane, status string) error {
 	if _, err := tmuxOutput("set-option", "-p", "-t", pane, "@jumpmux_pane_status", icon); err != nil {
 		return err
 	}
-	if err := syncTmuxWindowStatus(pane); err != nil {
-		return err
-	}
-	if status == "done" {
-		binary, err := os.Executable()
-		if err != nil {
-			return err
-		}
-		hook := fmt.Sprintf("run-shell %q", binary+" pane-focused #{pane_id}")
-		_, err = tmuxOutput("set-hook", "-w", "-t", pane, "pane-focus-in", hook)
-		return err
-	}
-	return nil
+	return syncTmuxWindowStatus(pane)
 }
 
 func clearTmuxStatusLocked(pane string) error {
@@ -418,10 +434,26 @@ func syncTmuxWindowStatus(pane string) error {
 	}
 	icon := windowStatusIcon(output)
 	if icon == "" {
-		_, err = tmuxOutput("set-option", "-uw", "-t", pane, "@jumpmux_status")
-	} else {
-		_, err = tmuxOutput("set-option", "-w", "-t", pane, "@jumpmux_status", icon)
+		if _, err = tmuxOutput("set-option", "-uw", "-t", pane, "@jumpmux_status"); err != nil {
+			return err
+		}
+	} else if _, err = tmuxOutput("set-option", "-w", "-t", pane, "@jumpmux_status", icon); err != nil {
+		return err
 	}
+	return syncTmuxFocusHook(pane, output)
+}
+
+func syncTmuxFocusHook(pane, statuses string) error {
+	if strings.Contains(statuses, doneIcon) {
+		binary, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		hook := fmt.Sprintf("run-shell %q", binary+" pane-focused #{pane_id}")
+		_, err = tmuxOutput("set-hook", "-w", "-t", pane, jumpmuxFocusHook, hook)
+		return err
+	}
+	_, err := tmuxOutput("set-hook", "-uw", "-t", pane, jumpmuxFocusHook)
 	return err
 }
 
@@ -494,15 +526,61 @@ func agentStateDir() (string, error) {
 }
 
 func agentStatePath(pane string) (string, error) {
-	id := strings.TrimPrefix(pane, "%")
-	if id == "" || strings.Trim(id, "0123456789") != "" {
-		return "", fmt.Errorf("invalid tmux pane ID %q", pane)
+	id, err := tmuxPaneID(pane)
+	if err != nil {
+		return "", err
+	}
+	dir, err := agentStateDir()
+	if err != nil {
+		return "", err
+	}
+	server, err := tmuxServerIdentity()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, server, id+".json"), nil
+}
+
+func legacyAgentStatePath(pane string) (string, error) {
+	id, err := tmuxPaneID(pane)
+	if err != nil {
+		return "", err
 	}
 	dir, err := agentStateDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, id+".json"), nil
+}
+
+func tmuxPaneID(pane string) (string, error) {
+	id := strings.TrimPrefix(pane, "%")
+	if id == "" || strings.Trim(id, "0123456789") != "" {
+		return "", fmt.Errorf("invalid tmux pane ID %q", pane)
+	}
+	return id, nil
+}
+
+func tmuxServerIdentity() (string, error) {
+	socket, _, _ := strings.Cut(os.Getenv("TMUX"), ",")
+	if socket == "" {
+		if output, err := tmuxOutput("display-message", "-p", "#{socket_path}"); err == nil {
+			socket = strings.TrimSpace(output)
+		}
+	}
+	if socket == "" {
+		return "legacy", nil
+	}
+	sum := sha256.Sum256([]byte(socket))
+	return hex.EncodeToString(sum[:8]), nil
+}
+
+func removeAgentState(path string) error {
+	err := os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 func atomicWrite(path string, data []byte, mode os.FileMode) error {

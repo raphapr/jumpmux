@@ -81,10 +81,6 @@ func resolvedWorktreeBackend(backend worktreeBackend) (worktreeBackend, error) {
 }
 
 func addWorktree(repo, branch string, backend worktreeBackend) error {
-	backend, err := resolvedWorktreeBackend(backend)
-	if err != nil {
-		return err
-	}
 	root, err := primaryWorktree(repo)
 	if err != nil {
 		return err
@@ -93,6 +89,10 @@ func addWorktree(repo, branch string, backend worktreeBackend) error {
 	defer cancel()
 	if output, err := runActionCommand(ctx, root, "git", "check-ref-format", "--branch", branch); err != nil {
 		return actionError("invalid branch name", output, err)
+	}
+	backend, err = actionWorktreeBackend(backend)
+	if err != nil {
+		return err
 	}
 	if backend == backendWT {
 		output, err := runActionCommand(ctx, root, "wt", "-C", root, "switch", "--create", branch, "--no-cd", "--format=json")
@@ -115,16 +115,19 @@ func addWorktree(repo, branch string, backend worktreeBackend) error {
 }
 
 func removeWorktree(repo, path string, backend worktreeBackend) error {
-	backend, err := resolvedWorktreeBackend(backend)
-	if err != nil {
-		return err
-	}
 	root, err := primaryWorktree(repo)
 	if err != nil {
 		return err
 	}
 	if samePath(root, path) {
 		return errors.New("cannot remove the primary worktree")
+	}
+	if err := validateWorktreeRemoval(path); err != nil {
+		return err
+	}
+	backend, err = actionWorktreeBackend(backend)
+	if err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), worktreeActionTimeout)
 	defer cancel()
@@ -138,6 +141,33 @@ func removeWorktree(repo, path string, backend worktreeBackend) error {
 	output, err := runActionCommand(ctx, root, "git", "worktree", "remove", path)
 	if err != nil {
 		return actionError("remove worktree", output, err)
+	}
+	return nil
+}
+
+func actionWorktreeBackend(backend worktreeBackend) (worktreeBackend, error) {
+	if backend == backendAuto {
+		configured, err := loadWorktreeBackend()
+		if err != nil {
+			return "", err
+		}
+		backend = configured
+	}
+	return resolvedWorktreeBackend(backend)
+}
+
+func validateWorktreeRemoval(path string) error {
+	panes, err := listTmuxPanes()
+	if err != nil {
+		if strings.Contains(err.Error(), "no server running") || strings.Contains(err.Error(), "executable file not found") {
+			return nil
+		}
+		return err
+	}
+	for _, pane := range panes {
+		if pathWithin(pane.Path, path) || (pane.Worktree != "" && samePath(pane.Worktree, path)) {
+			return fmt.Errorf("cannot remove worktree open in tmux pane %s", pane.ID)
+		}
 	}
 	return nil
 }
