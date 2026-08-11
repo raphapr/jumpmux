@@ -29,7 +29,11 @@ func TestColorSchemes(t *testing.T) {
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
 	got := updated.(dashboardModel)
-	if got.scheme != schemeGlacierSignal || loadColorScheme() != schemeGlacierSignal {
+	config, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.scheme != schemeGlacierSignal || !config.hasTheme || config.theme != schemeGlacierSignal {
 		t.Fatalf("cycled scheme = %s", got.scheme.slug())
 	}
 }

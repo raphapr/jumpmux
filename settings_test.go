@@ -12,8 +12,12 @@ func TestDashboardScope(t *testing.T) {
 	if err := saveScopeMode(scopeSession); err != nil {
 		t.Fatal(err)
 	}
-	if got := loadScopeMode(); got != scopeSession {
-		t.Fatalf("saved scope = %q", got.label())
+	config, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.hasDefaultScope || config.defaultScope != scopeSession {
+		t.Fatalf("saved scope = %#v", config)
 	}
 
 	model := newDashboardForLaunch("/repo", "dev", false)
@@ -28,7 +32,11 @@ func TestDashboardScope(t *testing.T) {
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 	got := updated.(dashboardModel)
-	if got.scope != scopeAll || len(got.agents) != 2 || loadScopeMode() != scopeAll {
+	config, err = loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.scope != scopeAll || len(got.agents) != 2 || !config.hasDefaultScope || config.defaultScope != scopeAll {
 		t.Fatalf("all scope = %s, agents = %#v", got.scope.label(), got.agents)
 	}
 }

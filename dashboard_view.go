@@ -370,7 +370,7 @@ func (m dashboardModel) renderFooterError(width int, err error) string {
 }
 
 func dashboardIcon(nerd, plain string) string {
-	if os.Getenv("JUMPMUX_PLAIN") != "" {
+	if !nerdFontEnabled || os.Getenv("JUMPMUX_PLAIN") != "" {
 		return plain
 	}
 	return nerd

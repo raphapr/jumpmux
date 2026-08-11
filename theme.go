@@ -315,7 +315,7 @@ func applyColorScheme(scheme colorScheme) {
 	diffHeadStyle = lipgloss.NewStyle().Foreground(infoColor).Bold(true)
 }
 
-func loadColorScheme() colorScheme {
+func loadLegacyColorScheme() colorScheme {
 	path, err := colorSchemePath()
 	if err != nil {
 		return schemeDefault
@@ -328,11 +328,7 @@ func loadColorScheme() colorScheme {
 }
 
 func saveColorScheme(scheme colorScheme) error {
-	path, err := colorSchemePath()
-	if err != nil {
-		return err
-	}
-	return atomicWrite(path, []byte(scheme.slug()+"\n"), 0o600)
+	return saveConfigValue("theme", scheme.slug())
 }
 
 func colorSchemePath() (string, error) {

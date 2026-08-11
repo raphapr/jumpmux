@@ -104,7 +104,7 @@ Press `t` to cycle these color schemes:
 
 jumpmux selects dark or light colors from the terminal profile and saves the selected scheme in the user configuration directory.
 
-Set `JUMPMUX_PLAIN=1` to replace Nerd Font Git, PR, check, and stale icons with text symbols.
+Set `nerdfont = false` in the configuration to replace Nerd Font Git, PR, check, and stale icons with text symbols. `JUMPMUX_PLAIN=1` overrides the setting for one launch.
 
 ## Usage
 
@@ -129,19 +129,23 @@ The Go command stays at the module root, which keeps `go install github.com/raph
 
 ## Configuration
 
-Worktree mutations read `~/.config/jumpmux/config.toml`:
+jumpmux reads `~/.config/jumpmux/config.toml`:
 
 ```toml
 worktree_backend = "auto"
+theme = "default"
+default_scope = "all"
+nerdfont = true
 ```
 
-`worktree_backend` accepts `auto`, `wt`, or `git`.
+- `worktree_backend` accepts `auto`, `wt`, or `git`.
+- `theme` accepts any scheme listed above.
+- `default_scope` accepts `all` or `session`. `--session` overrides it for that launch.
+- `nerdfont` accepts `true` or `false` and defaults to `true`.
 
-- `auto` uses Worktrunk when `wt` exists on `PATH`; otherwise it uses `git worktree`.
-- `wt` uses `wt switch --create` and `wt remove`.
-- `git` creates branches from the detected default branch under `<repo>__worktrees/` and keeps the branch after removal.
+`auto` uses Worktrunk when `wt` exists on `PATH`; otherwise it uses `git worktree`. `wt` uses `wt switch --create` and `wt remove`. `git` creates branches from the detected default branch under `<repo>__worktrees/` and keeps the branch after removal.
 
-jumpmux validates the configuration before each mutation flow. Removal requires confirmation. jumpmux rejects the primary worktree and any worktree used by a tmux pane.
+The `t` and `s` keys update `theme` and `default_scope`. jumpmux validates the configuration before each mutation flow. Removal requires confirmation. jumpmux rejects the primary worktree and any worktree used by a tmux pane.
 
 ## Scope
 

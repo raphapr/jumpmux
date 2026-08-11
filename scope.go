@@ -27,24 +27,27 @@ func (scope scopeMode) label() string {
 	return "all"
 }
 
-func loadScopeMode() scopeMode {
-	path, err := scopeStatePath()
-	if err != nil {
-		return scopeAll
-	}
-	data, err := os.ReadFile(path)
-	if err == nil && strings.TrimSpace(string(data)) == "session" {
+func scopeModeFromLabel(value string) scopeMode {
+	if value == scopeSession.label() {
 		return scopeSession
 	}
 	return scopeAll
 }
 
-func saveScopeMode(scope scopeMode) error {
+func loadLegacyScopeMode() scopeMode {
 	path, err := scopeStatePath()
 	if err != nil {
-		return err
+		return scopeAll
 	}
-	return atomicWrite(path, []byte(scope.label()+"\n"), 0o600)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return scopeAll
+	}
+	return scopeModeFromLabel(strings.TrimSpace(string(data)))
+}
+
+func saveScopeMode(scope scopeMode) error {
+	return saveConfigValue("default_scope", scope.label())
 }
 
 func scopeStatePath() (string, error) {

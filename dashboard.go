@@ -27,6 +27,8 @@ const (
 
 var spinnerFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
+var nerdFontEnabled = true
+
 var (
 	currentRowColor, currentWorktreeColor, selectedColor lipgloss.AdaptiveColor
 	textColor, dimmedColor, borderColor, headerColor     lipgloss.AdaptiveColor
@@ -163,6 +165,7 @@ type clockMsg time.Time
 type previewTickMsg uint64
 
 func newDashboard(cwd string) dashboardModel {
+	nerdFontEnabled = true
 	applyColorScheme(schemeDefault)
 	return dashboardModel{cwd: cwd, now: time.Now(), width: 80, height: 24, previewSize: defaultPreviewSize, scheme: schemeDefault, worktreeGeneration: 1, agentGit: map[string]item{}, gitCache: map[string]item{}, prCache: map[string]item{}, filterInputs: [2]textinput.Model{newTextInput("/"), newTextInput("/")}, actionTextInput: newTextInput(""), agentsInFlight: true, worktreesInFlight: true}
 }
@@ -207,10 +210,22 @@ func newDashboardForLaunch(cwd, launchSession string, forceSession bool) dashboa
 		}
 		model.agentGit[path] = detail
 	}
-	model.scope = loadScopeMode()
+	config, configErr := loadConfig()
+	if configErr != nil {
+		model.err = configErr
+	}
+	if configErr == nil && config.hasDefaultScope {
+		model.scope = config.defaultScope
+	} else {
+		model.scope = loadLegacyScopeMode()
+	}
+	if configErr == nil && config.hasTheme {
+		model.scheme = config.theme
+	} else {
+		model.scheme = loadLegacyColorScheme()
+	}
+	nerdFontEnabled = configErr != nil || !config.hasNerdFont || config.nerdFont
 	model.previewSize = loadPreviewSize()
-	_, model.err = loadWorktreeBackend()
-	model.scheme = loadColorScheme()
 	applyColorScheme(model.scheme)
 	model.launchSession = launchSession
 	if forceSession {

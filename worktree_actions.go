@@ -21,50 +21,6 @@ const (
 	backendGit  worktreeBackend = "git"
 )
 
-func loadWorktreeBackend() (worktreeBackend, error) {
-	path, err := configPath()
-	if err != nil {
-		return backendAuto, err
-	}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return backendAuto, nil
-	}
-	if err != nil {
-		return backendAuto, err
-	}
-	backend := backendAuto
-	topLevel := true
-	for lineNumber, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
-		if strings.HasPrefix(line, "[") {
-			topLevel = false
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !topLevel || !ok || strings.TrimSpace(key) != "worktree_backend" {
-			continue
-		}
-		value = strings.TrimSpace(value)
-		if len(value) < 2 || (value[0] != '"' && value[0] != '\'') || value[len(value)-1] != value[0] {
-			return backendAuto, fmt.Errorf("%s:%d: worktree_backend must be a quoted TOML string", path, lineNumber+1)
-		}
-		backend = worktreeBackend(value[1 : len(value)-1])
-	}
-	if backend != backendAuto && backend != backendWT && backend != backendGit {
-		return backendAuto, fmt.Errorf("invalid worktree_backend %q", backend)
-	}
-	return backend, nil
-}
-
-func configPath() (string, error) {
-	config, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(config, "jumpmux", "config.toml"), nil
-}
-
 func resolvedWorktreeBackend(backend worktreeBackend) (worktreeBackend, error) {
 	if backend != backendAuto {
 		if backend == backendWT {
