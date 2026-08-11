@@ -127,6 +127,10 @@ Run the full package during development:
 go run .
 ```
 
+## Development
+
+The Go command stays at the module root, which keeps `go install github.com/raphapr/jumpmux@latest` working. Source and test files use feature names. The Pi extension lives in `extension/`.
+
 ## Configuration
 
 Worktree mutations read `~/.config/jumpmux/config.toml`:
