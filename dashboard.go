@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -21,6 +22,7 @@ const (
 	clockInterval        = 250 * time.Millisecond
 	staleThreshold       = time.Hour
 	maxDiffOutput        = 1 << 20
+	worktreeMetadataRows = 6
 )
 
 var spinnerFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -62,7 +64,7 @@ type dashboardModel struct {
 	loading                                                   bool
 	agentsLoaded, worktreesLoaded                             bool
 	agentsInFlight, agentGitInFlight, worktreesInFlight       bool
-	agentGitRefreshed, previewRefreshed                       time.Time
+	agentGitRefreshed                                         time.Time
 	worktreePending                                           int
 	err, agentErr, worktreeErr                                error
 	chosen                                                    bool
@@ -132,10 +134,20 @@ type previewData struct {
 
 type previewMsg previewData
 
-type previewRequestMsg struct {
+type worktreeStatusMsg struct {
 	request uint64
-	item    item
 	scheme  colorScheme
+	target  string
+	status  string
+	err     error
+}
+
+type worktreeLogMsg struct {
+	request uint64
+	scheme  colorScheme
+	target  string
+	log     string
+	err     error
 }
 
 type diffMsg struct {
@@ -148,6 +160,7 @@ type diffMsg struct {
 
 type tickMsg time.Time
 type clockMsg time.Time
+type previewTickMsg uint64
 
 func newDashboard(cwd string) dashboardModel {
 	applyColorScheme(schemeDefault)
@@ -218,6 +231,10 @@ func nextClock() tea.Cmd {
 	return tea.Tick(clockInterval, func(t time.Time) tea.Msg { return clockMsg(t) })
 }
 
+func nextPreviewTick(request uint64) tea.Cmd {
+	return tea.Tick(previewRefreshPeriod, func(time.Time) tea.Msg { return previewTickMsg(request) })
+}
+
 func refreshAgents() tea.Cmd {
 	return func() tea.Msg {
 		agents, err := listLiveAgents()
@@ -237,9 +254,23 @@ func refreshWorktreeList(cwd string, generation uint64) tea.Cmd {
 }
 
 func refreshWorktreeGit(items []item, generation uint64) tea.Cmd {
-	return func() tea.Msg {
-		return worktreeDataMsg{stage: worktreeGitStage, generation: generation, worktrees: worktreeGitDetails(items)}
+	if len(items) == 0 {
+		return nil
 	}
+	limit := make(chan struct{}, min(4, len(items)))
+	var baseOnce sync.Once
+	var baseBranch string
+	commands := make([]tea.Cmd, 0, len(items))
+	for _, worktree := range items {
+		worktree := worktree
+		commands = append(commands, func() tea.Msg {
+			limit <- struct{}{}
+			defer func() { <-limit }()
+			baseOnce.Do(func() { baseBranch = worktrunkDefaultBranch(items[0].cwd) })
+			return worktreeDataMsg{stage: worktreeGitStage, generation: generation, worktrees: []item{loadGitDetails(worktree, baseBranch)}}
+		})
+	}
+	return tea.Batch(commands...)
 }
 
 func refreshWorktreePR(cwd string, items []item, generation uint64) tea.Cmd {
@@ -256,68 +287,62 @@ func refreshWorktreeMux(items []item, generation uint64) tea.Cmd {
 	}
 }
 
-func loadPreview(item item, scheme colorScheme, request uint64) tea.Cmd {
+func loadAgentPreview(item item, scheme colorScheme, request uint64) tea.Cmd {
 	return func() tea.Msg {
-		preview := previewData{request: request, scheme: scheme, target: item.target, updated: item.updated}
-		if item.kind == "session" {
-			output, err := tmuxOutput(
-				"display-message", "-p", "-t", item.pane, "#{cursor_y}\t#{pane_height}",
-				";", "capture-pane", "-p", "-e", "-S", "-200", "-t", item.pane,
-			)
-			preview.title = "Preview: " + worktreeName(item.cwd)
-			preview.followBottom = true
-			if err != nil {
-				preview.lines = []string{"(pane not available)"}
-				return previewMsg(preview)
-			}
-			lines := paneHistoryLines(output)
-			if len(lines) == 0 {
-				preview.lines = []string{"(empty output)"}
-				return previewMsg(preview)
-			}
-			for _, line := range lines {
-				preview.lines = append(preview.lines, sanitizePaneLine(strings.TrimSuffix(line, "\r")))
-			}
-			if len(preview.lines) == 0 {
-				preview.lines = []string{"(empty output)"}
-			}
+		preview := previewData{request: request, scheme: scheme, target: item.target, updated: item.updated, title: "Preview: " + worktreeName(item.cwd), followBottom: true}
+		output, err := tmuxOutput(
+			"display-message", "-p", "-t", item.pane, "#{cursor_y}\t#{pane_height}",
+			";", "capture-pane", "-p", "-e", "-S", "-200", "-t", item.pane,
+		)
+		if err != nil {
+			preview.lines = []string{"(pane not available)"}
 			return previewMsg(preview)
 		}
+		lines := paneHistoryLines(output)
+		if len(lines) == 0 {
+			preview.lines = []string{"(empty output)"}
+			return previewMsg(preview)
+		}
+		for _, line := range lines {
+			preview.lines = append(preview.lines, sanitizePaneLine(strings.TrimSuffix(line, "\r")))
+		}
+		if len(preview.lines) == 0 {
+			preview.lines = []string{"(empty output)"}
+		}
+		return previewMsg(preview)
+	}
+}
 
-		status, statusErr := gitOutput(item.cwd, "status", "--short")
-		log, logErr := gitOutput(item.cwd, "log", "--pretty=format:%h%x09%ar%x09%s", "-20")
-		themeMu.RLock()
-		defer themeMu.RUnlock()
-		if appliedColorScheme != scheme {
-			return previewMsg(preview)
-		}
-		preview.title = worktreeName(item.cwd)
-		preview.lines = []string{
+func worktreePreview(item item, scheme colorScheme, request uint64) previewData {
+	return previewData{
+		request: request,
+		scheme:  scheme,
+		target:  item.target,
+		updated: item.updated,
+		title:   worktreeName(item.cwd),
+		lines: []string{
 			mutedStyle.Render("Branch  ") + textStyle.Render(safeText(item.branch)),
 			mutedStyle.Render("Path    ") + textStyle.Render(safeText(compactHome(item.cwd))),
 			mutedStyle.Render("Diff    ") + gitStatusView(item),
 			mutedStyle.Render("Agent   ") + agentSummary(item, time.Now()),
 			mutedStyle.Render("Mux     ") + muxView(item),
 			"",
-		}
-		if statusErr != nil {
-			preview.lines = append(preview.lines, gitErrorLine(statusErr))
-		} else if strings.TrimSpace(status) == "" {
-			preview.lines = append(preview.lines, mutedStyle.Render("clean"))
-		} else {
-			for _, line := range strings.Split(strings.TrimSpace(status), "\n") {
-				preview.lines = append(preview.lines, safeLine(line))
-			}
-		}
-		preview.rightTitle = "Git Log"
-		if logErr != nil {
-			preview.rightLines = []string{gitErrorLine(logErr)}
-		} else if strings.TrimSpace(log) == "" {
-			preview.rightLines = []string{"(no commits)"}
-		} else {
-			preview.rightLines = strings.Split(strings.TrimSpace(log), "\n")
-		}
-		return previewMsg(preview)
+		},
+		rightTitle: "Git Log",
+	}
+}
+
+func loadWorktreeStatus(item item, scheme colorScheme, request uint64) tea.Cmd {
+	return func() tea.Msg {
+		status, err := gitOutput(item.cwd, "status", "--short")
+		return worktreeStatusMsg{request: request, scheme: scheme, target: item.target, status: status, err: err}
+	}
+}
+
+func loadWorktreeLog(item item, scheme colorScheme, request uint64) tea.Cmd {
+	return func() tea.Msg {
+		log, err := gitOutput(item.cwd, "log", "--pretty=format:%h%x09%ar%x09%s", "-20")
+		return worktreeLogMsg{request: request, scheme: scheme, target: item.target, log: log, err: err}
 	}
 }
 
@@ -390,16 +415,25 @@ func loadDiff(item item, request uint64) tea.Cmd {
 
 func (m *dashboardModel) requestPreview(item item) tea.Cmd {
 	m.previewRequest++
-	if item.kind == "session" {
-		m.previewRefreshed = time.Now()
-	}
 	request, scheme := m.previewRequest, m.scheme
-	if m.preview.target != item.target {
-		m.previewOffset, m.rightOffset, m.xOffset, m.panelFocus, m.loading = 0, 0, 0, panelLeft, true
+	changed := m.preview.target != item.target
+	if changed {
+		m.previewOffset, m.rightOffset, m.xOffset, m.panelFocus = 0, 0, 0, panelLeft
 	}
-	return tea.Tick(75*time.Millisecond, func(time.Time) tea.Msg {
-		return previewRequestMsg{request: request, item: item, scheme: scheme}
-	})
+	if item.kind == "session" {
+		m.loading = changed
+		return loadAgentPreview(item, scheme, request)
+	}
+
+	preview := worktreePreview(item, scheme, request)
+	if !changed {
+		if len(m.preview.lines) > len(preview.lines) {
+			preview.lines = append(preview.lines, m.preview.lines[len(preview.lines):]...)
+		}
+		preview.rightLines = m.preview.rightLines
+	}
+	m.preview, m.loading = preview, false
+	return tea.Batch(loadWorktreeStatus(item, scheme, request), loadWorktreeLog(item, scheme, request))
 }
 
 func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -425,11 +459,15 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(commands...)
 	case clockMsg:
 		m.now = time.Time(msg)
-		commands := []tea.Cmd{nextClock()}
-		if selected, ok := m.selected(); ok && selected.kind == "session" && !m.diff && m.now.Sub(m.previewRefreshed) >= previewRefreshPeriod {
-			commands = append(commands, m.requestPreview(selected))
+		return m, nextClock()
+	case previewTickMsg:
+		if uint64(msg) != m.previewRequest || m.diff {
+			return m, nil
 		}
-		return m, tea.Batch(commands...)
+		if selected, ok := m.selected(); ok && selected.kind == "session" {
+			return m, m.requestPreview(selected)
+		}
+		return m, nil
 	case dashboardDataMsg:
 		m.agentsInFlight, m.agentsLoaded, m.agentErr = false, true, msg.err
 		if msg.err != nil {
@@ -527,12 +565,16 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.worktrees = mergeWorktreeData(m.worktrees, cached, worktreePRStage)
 			m.restoreSelection(target)
 			attachAgentsToWorktrees(m.worktrees, m.allAgents)
-			m.worktreePending = 3
-			return m, tea.Batch(
+			m.worktreePending = len(msg.worktrees) + 2
+			commands := []tea.Cmd{
 				refreshWorktreeGit(msg.worktrees, msg.generation),
 				refreshWorktreePR(m.cwd, msg.worktrees, msg.generation),
 				refreshWorktreeMux(msg.worktrees, msg.generation),
-			)
+			}
+			if selected, ok := m.selected(); ok && selected.kind == "worktree" && !m.diff {
+				commands = append(commands, m.requestPreview(selected))
+			}
+			return m, tea.Batch(commands...)
 		}
 
 		before, hadBefore := m.selected()
@@ -574,21 +616,15 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		after, hasAfter := m.selected()
 		changed := !hadBefore || before != after
-		refreshPreview := msg.stage == worktreeGitStage || (msg.stage == worktreeMuxStage && changed)
+		selectedGitUpdated := hasAfter && msg.stage == worktreeGitStage && slices.ContainsFunc(msg.worktrees, func(item item) bool { return item.target == after.target })
+		refreshPreview := selectedGitUpdated || (msg.stage == worktreeMuxStage && changed)
 		if msg.err == nil && !m.diff && hasAfter && after.kind == "worktree" && refreshPreview {
 			return m, m.requestPreview(after)
 		}
 		return m, nil
-	case previewRequestMsg:
-		if !m.diff && msg.request == m.previewRequest && msg.scheme == m.scheme {
-			if selected, ok := m.selected(); ok && selected.target == msg.item.target {
-				return m, loadPreview(msg.item, msg.scheme, msg.request)
-			}
-		}
-		return m, nil
 	case previewMsg:
 		if !m.diff && msg.request == m.previewRequest && msg.scheme == m.scheme {
-			if selected, ok := m.selected(); ok && selected.target == msg.target {
+			if selected, ok := m.selected(); ok && selected.kind == "session" && selected.target == msg.target {
 				reset := m.preview.target != msg.target
 				wasAtBottom := m.previewOffset == m.clampPreviewOffset(len(m.preview.lines), m.preview.lines)
 				m.preview = previewData(msg)
@@ -601,6 +637,38 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.previewOffset = m.clampPreviewOffset(m.previewOffset, msg.lines)
 				}
 				m.loading = false
+				return m, nextPreviewTick(msg.request)
+			}
+		}
+		return m, nil
+	case worktreeStatusMsg:
+		if !m.diff && msg.request == m.previewRequest && msg.scheme == m.scheme && m.preview.target == msg.target {
+			if selected, ok := m.selected(); ok && selected.kind == "worktree" && selected.target == msg.target {
+				m.preview.lines = m.preview.lines[:min(worktreeMetadataRows, len(m.preview.lines))]
+				if msg.err != nil {
+					m.preview.lines = append(m.preview.lines, gitErrorLine(msg.err))
+				} else if strings.TrimSpace(msg.status) == "" {
+					m.preview.lines = append(m.preview.lines, mutedStyle.Render("clean"))
+				} else {
+					for _, line := range strings.Split(strings.TrimSpace(msg.status), "\n") {
+						m.preview.lines = append(m.preview.lines, safeLine(line))
+					}
+				}
+			}
+		}
+		return m, nil
+	case worktreeLogMsg:
+		if !m.diff && msg.request == m.previewRequest && msg.scheme == m.scheme && m.preview.target == msg.target {
+			if selected, ok := m.selected(); ok && selected.kind == "worktree" && selected.target == msg.target {
+				switch {
+				case msg.err != nil:
+					m.preview.rightLines = []string{gitErrorLine(msg.err)}
+				case strings.TrimSpace(msg.log) == "":
+					m.preview.rightLines = []string{"(no commits)"}
+				default:
+					m.preview.rightLines = strings.Split(strings.TrimSpace(msg.log), "\n")
+				}
+				m.rightOffset = m.clampPreviewOffset(m.rightOffset, m.preview.rightLines)
 			}
 		}
 		return m, nil

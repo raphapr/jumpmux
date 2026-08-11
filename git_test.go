@@ -132,9 +132,10 @@ func TestGitFailuresAreNotRenderedAsClean(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	item := item{kind: "worktree", target: "/repo", cwd: "/repo"}
-	preview := loadPreview(item, schemeDefault, 1)().(previewMsg)
-	if strings.Contains(strings.Join(preview.lines, "\n"), "clean") || strings.Contains(strings.Join(preview.rightLines, "\n"), "no commits") || strings.Contains(strings.Join(preview.lines, "\n"), "\x1b") {
-		t.Fatalf("preview hid Git failure: %#v", preview)
+	status := loadWorktreeStatus(item, schemeDefault, 1)().(worktreeStatusMsg)
+	log := loadWorktreeLog(item, schemeDefault, 1)().(worktreeLogMsg)
+	if status.err == nil || log.err == nil || strings.Contains(status.err.Error(), "\x1b") || strings.Contains(log.err.Error(), "\x1b") {
+		t.Fatalf("preview Git failures were not sanitized: status=%v log=%v", status.err, log.err)
 	}
 	diff := loadDiff(item, 1)().(diffMsg)
 	if len(diff.lines) != 1 || strings.Contains(diff.lines[0], "\x1b") || !strings.Contains(diff.lines[0], "Git unavailable") {

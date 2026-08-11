@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -24,11 +23,6 @@ const (
 	schemeGraphiteCode
 	schemeFestivalCircuit
 	schemeTealDrift
-)
-
-var (
-	themeMu            sync.RWMutex
-	appliedColorScheme colorScheme
 )
 
 var colorSchemes = [...]colorScheme{
@@ -285,14 +279,10 @@ var themePalettes = [...]themePalette{
 }
 
 func applyColorScheme(scheme colorScheme) {
-	themeMu.Lock()
-	defer themeMu.Unlock()
-
 	if int(scheme) >= len(themePalettes) {
 		scheme = schemeDefault
 	}
 	palette := themePalettes[scheme]
-	appliedColorScheme = scheme
 	currentRowColor = palette.currentRow
 	currentWorktreeColor = palette.currentWorktree
 	selectedColor = palette.selected

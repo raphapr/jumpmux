@@ -62,6 +62,49 @@ func TestDashboardRefreshIsIncremental(t *testing.T) {
 	}
 }
 
+func TestWorktreeGitRefreshStreamsRows(t *testing.T) {
+	command := refreshWorktreeGit([]item{{target: "/repo", cwd: "/repo"}, {target: "/feature", cwd: "/feature"}}, 1)
+	message := command()
+	batch, ok := message.(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("worktree Git refresh = %#v, want one command per row", message)
+	}
+}
+
+func TestWorktreePreviewRendersMetadataBeforeGitCommands(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height, model.tab = 100, 30, 1
+	updated, command := model.Update(worktreeDataMsg{
+		stage:      worktreeListStage,
+		generation: model.worktreeGeneration,
+		worktrees:  []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main"}, {kind: "worktree", target: "/feature", cwd: "/feature", branch: "feature"}},
+	})
+	model = updated.(dashboardModel)
+	if command == nil || model.preview.target != "/repo" || model.preview.title != "repo" || model.preview.rightTitle != "Git Log" || len(model.preview.lines) != worktreeMetadataRows {
+		t.Fatalf("worktree metadata was not rendered immediately: %#v", model.preview)
+	}
+	if model.worktreePending != 4 {
+		t.Fatalf("worktree refresh pending count = %d, want 4", model.worktreePending)
+	}
+
+	updated, command = model.Update(worktreeDataMsg{
+		stage:      worktreeGitStage,
+		generation: model.worktreeGeneration,
+		worktrees:  []item{{target: "/feature", cwd: "/feature", branch: "feature", gitLoaded: true}},
+	})
+	if command != nil {
+		t.Fatal("unselected worktree Git update refreshed the preview")
+	}
+	model = updated.(dashboardModel)
+	updated, _ = model.Update(worktreeStatusMsg{request: model.previewRequest, scheme: model.scheme, target: "/repo", status: " M changed.go"})
+	model = updated.(dashboardModel)
+	updated, _ = model.Update(worktreeLogMsg{request: model.previewRequest, scheme: model.scheme, target: "/repo", log: "abc123\t1 minute ago\tmessage"})
+	preview := updated.(dashboardModel).preview
+	if !strings.Contains(strings.Join(preview.lines, "\n"), "M changed.go") || len(preview.rightLines) != 1 || preview.rightLines[0] != "abc123\t1 minute ago\tmessage" {
+		t.Fatalf("worktree preview did not apply independent Git results: %#v", preview)
+	}
+}
+
 func TestDashboardLayout(t *testing.T) {
 	model := newDashboard("/repo")
 	model.width, model.height = 100, 30

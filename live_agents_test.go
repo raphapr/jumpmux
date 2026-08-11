@@ -38,7 +38,7 @@ func TestAgentPreviewCapturesPaneHistory(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	applyColorScheme(schemeDefault)
-	message := loadPreview(item{kind: "session", target: "%7", pane: "%7", cwd: "/repo"}, schemeDefault, 1)().(previewMsg)
+	message := loadAgentPreview(item{kind: "session", target: "%7", pane: "%7", cwd: "/repo"}, schemeDefault, 1)().(previewMsg)
 	if !message.followBottom || message.title != "Preview: repo" || len(message.lines) != 2 || message.lines[0] != "first line" || ansi.Strip(message.lines[1]) != "second line" {
 		t.Fatalf("pane preview = %#v", message)
 	}
@@ -52,7 +52,10 @@ func TestAgentPreviewFollowsBottomUntilScrolled(t *testing.T) {
 	model.agents = []item{{kind: "session", target: "%7", pane: "%7", cwd: "/repo"}}
 	model.previewRequest = 1
 	lines := make([]string, 30)
-	updated, _ := model.Update(previewMsg(previewData{request: 1, scheme: schemeDefault, target: "%7", lines: lines, followBottom: true}))
+	updated, command := model.Update(previewMsg(previewData{request: 1, scheme: schemeDefault, target: "%7", lines: lines, followBottom: true}))
+	if _, ok := command().(previewTickMsg); !ok {
+		t.Fatal("agent preview did not schedule its dedicated refresh tick")
+	}
 	model = updated.(dashboardModel)
 	bottom := model.clampPreviewOffset(len(lines), lines)
 	if model.previewOffset != bottom {
@@ -64,6 +67,14 @@ func TestAgentPreviewFollowsBottomUntilScrolled(t *testing.T) {
 	updated, _ = model.Update(previewMsg(previewData{request: 2, scheme: schemeDefault, target: "%7", lines: append(lines, "new"), followBottom: true}))
 	if got := updated.(dashboardModel).previewOffset; got != 2 {
 		t.Fatalf("scrolled pane preview jumped to %d", got)
+	}
+
+	updated, command = model.Update(previewTickMsg(2))
+	if command == nil {
+		t.Fatal("current preview tick did not refresh the agent")
+	}
+	if _, command = updated.(dashboardModel).Update(previewTickMsg(1)); command != nil {
+		t.Fatal("stale preview tick refreshed the agent")
 	}
 }
 
