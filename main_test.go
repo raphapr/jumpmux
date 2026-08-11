@@ -334,7 +334,7 @@ func TestColorSchemes(t *testing.T) {
 		t.Fatalf("scheme cycle = %#v", colorSchemes)
 	}
 	if themePalettes[schemeDefault].accent.Dark != "#CBA6F7" || themePalettes[schemeEmberforge].header.Light != "#AA641E" {
-		t.Fatal("Dashboard palette values changed")
+		t.Fatal("dashboard palette values changed")
 	}
 	saveColorScheme(schemeEmberforge)
 	model := newDashboardForLaunch("/repo", "dev", false)
@@ -982,7 +982,7 @@ func TestDashboardLayout(t *testing.T) {
 		for _, style := range []string{currentStyle.Render("probe"), currentWorktreeStyle.Render("probe")} {
 			prefix := strings.SplitN(style, "probe", 2)[0]
 			if prefix != "" && !strings.Contains(line, prefix) {
-				t.Fatalf("current project row missing Dashboard highlight: %q", line)
+				t.Fatalf("current project row missing highlight: %q", line)
 			}
 		}
 	}
@@ -1038,7 +1038,7 @@ func TestAgentJumpNumbersStopAtNine(t *testing.T) {
 	}
 }
 
-func TestDashboardGitAndPRIcons(t *testing.T) {
+func TestGitAndPRIcons(t *testing.T) {
 	now := time.Unix(0, 0)
 	if got := gitStatusText(item{}, now); got != spinnerFrames[0] {
 		t.Fatalf("loading Git status = %q", got)
@@ -1093,7 +1093,7 @@ func TestPlainIconFallback(t *testing.T) {
 	}
 }
 
-func TestDashboardAgentStatusDisplay(t *testing.T) {
+func TestAgentStatusDisplay(t *testing.T) {
 	started := time.Unix(0, 0)
 	working := item{status: "working", updated: started}
 	if got := statusText(working, started); got != workingIcon+" "+spinnerFrames[0] {
@@ -1107,7 +1107,7 @@ func TestDashboardAgentStatusDisplay(t *testing.T) {
 	}
 }
 
-func TestDashboardElapsedTimeStyle(t *testing.T) {
+func TestElapsedTimeStyle(t *testing.T) {
 	if got, want := elapsedStyle(4*time.Minute).Render("x"), successStyle.Render("x"); got != want {
 		t.Fatalf("recent elapsed style = %q, want %q", got, want)
 	}
