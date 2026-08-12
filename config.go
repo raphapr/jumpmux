@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 type jumpmuxConfig struct {
@@ -13,13 +16,29 @@ type jumpmuxConfig struct {
 	theme           colorScheme
 	defaultScope    scopeMode
 	nerdFont        bool
+	preview         [tabCount]bool
 	hasTheme        bool
 	hasDefaultScope bool
 	hasNerdFont     bool
 }
 
+type configFile struct {
+	WorktreeBackend *string        `toml:"worktree_backend"`
+	Theme           *string        `toml:"theme"`
+	DefaultScope    *string        `toml:"default_scope"`
+	NerdFont        *bool          `toml:"nerdfont"`
+	Preview         *previewConfig `toml:"preview"`
+	Sessions        any            `toml:"sessions"`
+}
+
+type previewConfig struct {
+	Agents    *bool `toml:"agents"`
+	Worktrees *bool `toml:"worktrees"`
+	Sessions  *bool `toml:"sessions"`
+}
+
 func loadConfig() (jumpmuxConfig, error) {
-	config := jumpmuxConfig{worktreeBackend: backendAuto}
+	config := jumpmuxConfig{worktreeBackend: backendAuto, preview: [tabCount]bool{true, true, true}}
 	path, err := configPath()
 	if err != nil {
 		return config, err
@@ -32,64 +51,56 @@ func loadConfig() (jumpmuxConfig, error) {
 		return config, err
 	}
 
-	topLevel := true
-	for lineNumber, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
-		if strings.HasPrefix(line, "[") {
-			topLevel = false
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !topLevel || !ok {
-			continue
-		}
-		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
-		if key != "worktree_backend" && key != "theme" && key != "default_scope" && key != "nerdfont" {
-			continue
-		}
-		if key == "nerdfont" {
-			switch value {
-			case "true":
-				config.nerdFont = true
-			case "false":
-				config.nerdFont = false
-			default:
-				return config, fmt.Errorf("%s:%d: nerdfont must be true or false", path, lineNumber+1)
+	var file configFile
+	decoder := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields()
+	if err := decoder.Decode(&file); err != nil {
+		var unknown *toml.StrictMissingError
+		if !errors.As(err, &unknown) {
+			for _, key := range []string{"worktree_backend", "theme", "default_scope"} {
+				if strings.Contains(string(data), key+" =") {
+					return config, fmt.Errorf("%s: %s must be a quoted TOML string", path, key)
+				}
 			}
-			config.hasNerdFont = true
-			continue
+			return config, fmt.Errorf("%s: %w", path, err)
 		}
-		value, ok = tomlString(value)
-		if !ok {
-			return config, fmt.Errorf("%s:%d: %s must be a quoted TOML string", path, lineNumber+1, key)
+		for _, detail := range unknown.Errors {
+			key := detail.Key()
+			if len(key) > 0 && key[0] == "preview" {
+				return config, fmt.Errorf("%s: preview uses unsupported %q", path, key[len(key)-1])
+			}
 		}
-		switch key {
-		case "worktree_backend":
-			config.worktreeBackend = worktreeBackend(value)
-			if config.worktreeBackend != backendAuto && config.worktreeBackend != backendWT && config.worktreeBackend != backendGit {
-				return config, fmt.Errorf("invalid worktree_backend %q", value)
+	}
+
+	if file.WorktreeBackend != nil {
+		config.worktreeBackend = worktreeBackend(*file.WorktreeBackend)
+		if config.worktreeBackend != backendAuto && config.worktreeBackend != backendWT && config.worktreeBackend != backendGit {
+			return config, fmt.Errorf("invalid worktree_backend %q", *file.WorktreeBackend)
+		}
+	}
+	if file.Theme != nil {
+		config.theme = colorSchemeFromSlug(*file.Theme)
+		if config.theme.slug() != strings.ToLower(*file.Theme) {
+			return config, fmt.Errorf("invalid theme %q", *file.Theme)
+		}
+		config.hasTheme = true
+	}
+	if file.DefaultScope != nil {
+		if *file.DefaultScope != scopeAll.label() && *file.DefaultScope != scopeSession.label() {
+			return config, fmt.Errorf("invalid default_scope %q", *file.DefaultScope)
+		}
+		config.defaultScope, config.hasDefaultScope = scopeModeFromLabel(*file.DefaultScope), true
+	}
+	if file.NerdFont != nil {
+		config.nerdFont, config.hasNerdFont = *file.NerdFont, true
+	}
+	if file.Preview != nil {
+		for tab, enabled := range []*bool{file.Preview.Agents, file.Preview.Worktrees, file.Preview.Sessions} {
+			if enabled != nil {
+				config.preview[tab] = *enabled
 			}
-		case "theme":
-			config.theme = colorSchemeFromSlug(value)
-			if config.theme.slug() != strings.ToLower(value) {
-				return config, fmt.Errorf("invalid theme %q", value)
-			}
-			config.hasTheme = true
-		case "default_scope":
-			if value != scopeAll.label() && value != scopeSession.label() {
-				return config, fmt.Errorf("invalid default_scope %q", value)
-			}
-			config.defaultScope, config.hasDefaultScope = scopeModeFromLabel(value), true
 		}
 	}
 	return config, nil
-}
-
-func tomlString(value string) (string, bool) {
-	if len(value) < 2 || (value[0] != '"' && value[0] != '\'') || value[len(value)-1] != value[0] {
-		return "", false
-	}
-	return value[1 : len(value)-1], true
 }
 
 func configPath() (string, error) {

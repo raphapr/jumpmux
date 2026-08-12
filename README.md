@@ -1,19 +1,21 @@
 # jumpmux
 
-jumpmux is a terminal dashboard for moving between Git worktrees and live agents in tmux. It is inspired by [Workmux](https://github.com/raine/workmux), but takes a more opinionated approach.
+jumpmux is a terminal dashboard for moving between Git worktrees, live agents, and tmux sessions. It is inspired by [Workmux](https://github.com/raine/workmux), but takes a more opinionated approach.
 
 ## Tabs
 
 - **Agents:** Open Pi panes with Project, Worktree, Git, PR, Status, Time, and Title columns.
 - **Worktrees:** Worktrees from the current repository with Project, Worktree, Git, PR, Mux, Age, and Agent columns.
+- **Sessions:** Configured locations, discovered repositories, and live tmux sessions with Session, Path, and Windows columns.
 
-Selecting an agent focuses its tmux pane. Selecting a worktree focuses its agent pane or its jumpmux tmux window. The first jump creates a window in that worktree. Later jumps reuse it.
+Selecting an agent focuses its tmux pane. Selecting a worktree focuses its agent pane or its jumpmux tmux window. The first jump creates a window in that worktree. Later jumps reuse it. Selecting a live session switches the current tmux client. Selecting an inactive configured session creates it detached at its configured path, then switches to it.
 
 ## Requirements
 
 - Go 1.24+ to install from source
 - Git
 - tmux
+- Session locations are optional. Configure them in `~/.config/jumpmux/config.toml`.
 - [Pi](https://pi.dev)
 - [Nerd Font](https://www.nerdfonts.com/) (optional)
 - [Worktrunk](https://worktrunk.dev/) (optional)
@@ -34,25 +36,28 @@ The extension reports the current pane's agent state.
 
 | Key                          | Action                                                                |
 | ---------------------------- | --------------------------------------------------------------------- |
-| Mouse click / double-click   | Select / focus an agent or worktree                                   |
+| Mouse click / double-click   | Select / focus an agent, worktree, or tmux session                    |
 | Mouse wheel                  | Scroll the table, focused panel, or Help                              |
-| `j`/`k`, arrows              | Move the selection, browse themes, or scroll the focused diff panel   |
-| `1`–`9`                      | Open that numbered row                                                |
+| `j`/`k`, arrows              | Move in Agents/Worktrees, browse themes, or scroll a diff panel       |
+| `Ctrl+j` / `Ctrl+k`          | Move the selection in Sessions                                        |
+| `1`–`9`                      | Open that numbered row in Agents or Worktrees                         |
 | `Tab`                        | Switch tabs                                                           |
-| `Enter`                      | Focus the selected agent or worktree                                  |
-| `/`                          | Filter the active tab                                                 |
+| `Enter`                      | Focus the selected agent/worktree or switch/create a tmux session     |
+| `/`                          | Filter Agents or Worktrees                                            |
+| Type                         | Filter Sessions immediately                                           |
 | `Shift+Left` / `Shift+Right` | Focus the left or right preview/diff panel                            |
 | `s`                          | Toggle agent scope between all and current tmux session               |
 | `t`                          | Open the theme picker                                                 |
 | `Enter` in the theme picker  | Apply the selected theme                                              |
 | `Esc` in the theme picker    | Restore the previous theme and close                                  |
 | Type in the theme picker     | Filter theme names                                                    |
-| `Enter` while filtering      | Accept the filter                                                     |
+| `Enter` while filtering      | Accept an Agents/Worktrees filter or open a Session                   |
 | `Esc` while filtering        | Clear and close the filter                                            |
-| `d`                          | Open the selected context's Git WIP diff                              |
+| `d`                          | Open the selected Git diff from Agents or Worktrees                   |
 | `a`                          | Add a worktree from the Worktrees tab                                 |
 | `r`                          | Remove a worktree after confirmation                                  |
-| `o`                          | Open the selected PR in a browser                                     |
+| `Ctrl+d`                     | Remove a live tmux session after confirmation                         |
+| `o`                          | Open the selected PR from Agents or Worktrees                         |
 | `Ctrl+u` / `Ctrl+d`          | Page the focused preview, diff panel, or Help                         |
 | `h` / `l`, left/right        | Pan long preview or diff lines                                        |
 | `+` / `-`                    | Change preview height by 10%                                          |
@@ -76,6 +81,24 @@ The Pi extension writes agent status records. jumpmux checks each record against
 The preview captures the last 200 lines from the selected pane every 500 ms. It keeps SGR colors and removes Pi's prompt and footer using tmux cursor geometry. New output keeps the preview at the bottom until you scroll away.
 
 Working agents show a Braille spinner. A status older than one hour shows `󰔛`. The Time column uses the success color below five minutes, warning below one hour, and a dim accent after one hour. The dashboard redraws time and animation every 250 ms.
+
+### Sessions
+
+Session locations live in `$XDG_CONFIG_HOME/jumpmux/config.toml`, falling back to `~/.config/jumpmux/config.toml`. Entries have a unique name and an existing path. Paths expand environment variables and a leading `~`.
+
+```toml
+[sessions]
+exclude = ["^scratchpad$"]
+discover = ["~/.bin/jumpmux-sessions"]
+
+[[sessions.entries]]
+name = "api"
+path = "~/src/api"
+```
+
+`sessions.exclude` uses regular expressions; use `^name$` for an exact match. `sessions.discover` runs an executable with the remaining array values as arguments. It must print one absolute, existing directory per line. The executable path expands a leading `~`; jumpmux does not invoke a shell. Other keys under `sessions` and session behavior settings are rejected.
+
+The Sessions table uses `` for live tmux sessions, `` for configured entries, and `` for discovered repositories. Plain mode uses `L`, `C`, and `R`. Live-session previews capture the active pane's current screen immediately, including alternate-screen applications such as `btop`, and refresh every 500 ms. Inactive configured entries show a creation hint. The table merges configured, discovered, and live entries by exact name. Without a filter, it sorts live sessions first, configured entries second, and discovered directories last, alphabetically within each group. Active fuzzy searches sort by relevance. Configured paths win for merged entries; live-only entries use the active pane path. `Ctrl+d` kills a live tmux session after confirmation; configured entries remain in the file.
 
 ### Git
 
@@ -112,9 +135,10 @@ Set `nerdfont = false` in the configuration to replace Nerd Font Git, PR, check,
 ## Usage
 
 ```console
-jumpmux            # open the dashboard with the saved scope
-jumpmux --session  # start with agents from the current tmux session
-jumpmux --list     # print available contexts
+jumpmux                 # open the dashboard with the saved scope
+jumpmux --session       # start with agents from the current tmux session
+jumpmux -t sessions     # open the Sessions tab (`--tab` also works)
+jumpmux --list          # print available contexts
 jumpmux setup      # install or update the Pi extension
 jumpmux --version
 jumpmux --help
@@ -139,12 +163,26 @@ worktree_backend = "auto"
 theme = "default"
 default_scope = "all"
 nerdfont = true
+
+[preview]
+agents = true
+worktrees = true
+sessions = true
+
+[sessions]
+exclude = []
+discover = ["ghq", "list", "-p"]
+
+[[sessions.entries]]
+name = "api"
+path = "~/src/api"
 ```
 
 - `worktree_backend` accepts `auto`, `wt`, or `git`.
 - `theme` accepts any scheme listed above.
 - `default_scope` accepts `all` or `session`. `--session` overrides it for that launch.
 - `nerdfont` accepts `true` or `false` and defaults to `true`.
+- `[preview]` controls the preview panel independently for `agents`, `worktrees`, and `sessions`. Each defaults to `true`.
 
 `auto` uses Worktrunk when `wt` exists on `PATH`; otherwise it uses `git worktree`. `wt` uses `wt switch --create` and `wt remove`. `git` creates branches from the detected default branch under `<repo>__worktrees/` and keeps the branch after removal.
 
@@ -152,6 +190,6 @@ The `t` and `s` keys update `theme` and `default_scope`. jumpmux validates the c
 
 ## Scope
 
-jumpmux reads agent, Git, and PR state. It switches tmux panes, creates reusable tmux windows, adds or removes worktrees, and opens PRs in a browser.
+jumpmux reads agent, Git, PR, configured session locations, and tmux session state. It switches tmux panes and sessions, creates reusable tmux windows and configured tmux sessions, adds or removes worktrees, and opens PRs in a browser.
 
 It does not stage patches, run a daemon, provide a command palette, or support a non-tmux backend.

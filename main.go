@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	version          = "0.22.0"
+	version          = "0.23.0"
 	workingIcon      = "🤖"
 	doneIcon         = "✅"
 	staleAgentIcon   = "󰔛"
@@ -68,6 +68,8 @@ type item struct {
 	prDraft          bool
 	prCheck          string
 	prLoaded         bool
+	sessionSource    string
+	tmuxWindows      int
 	added            int
 	removed          int
 	untracked        int
@@ -116,15 +118,37 @@ func boundedCommand(ctx context.Context, name string, args ...string) *exec.Cmd 
 	return command
 }
 
+func dashboardTab(name string) (int, error) {
+	switch name {
+	case "agents":
+		return tabAgents, nil
+	case "worktrees":
+		return tabWorktrees, nil
+	case "sessions":
+		return tabSessions, nil
+	default:
+		return 0, fmt.Errorf("invalid tab %q: want agents, worktrees, or sessions", name)
+	}
+}
+
 func main() {
-	forceSessionScope := false
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
+	forceSessionScope, initialTab := false, tabAgents
+	for index := 1; index < len(os.Args); index++ {
+		switch os.Args[index] {
 		case "-h", "--help":
-			fmt.Print("jumpmux — dashboard for Git worktrees and live Pi agents\n\nUsage: jumpmux [--session|--list|--version|setup]\n")
+			fmt.Print("jumpmux — dashboard for Git worktrees, live Pi agents, and tmux sessions\n\nUsage: jumpmux [--session] [-t|--tab <agents|worktrees|sessions>] [--list|--version|setup]\n")
 			return
 		case "-s", "--session":
 			forceSessionScope = true
+		case "-t", "--tab":
+			flag := os.Args[index]
+			index++
+			if index >= len(os.Args) {
+				exitOnError(fmt.Errorf("%s requires agents, worktrees, or sessions", flag))
+			}
+			var err error
+			initialTab, err = dashboardTab(os.Args[index])
+			exitOnError(err)
 		case "setup":
 			path, err := setupPIExtension()
 			exitOnError(err)
@@ -132,13 +156,13 @@ func main() {
 			fmt.Println("Restart Pi or run /reload in existing sessions.")
 			return
 		case "agent-status":
-			exitOnError(setAgentStatus(os.Args[2:]))
+			exitOnError(setAgentStatus(os.Args[index+1:]))
 			return
 		case "pane-focused":
-			if len(os.Args) != 3 {
+			if index+1 >= len(os.Args) {
 				exitOnError(errors.New("pane-focused requires a tmux pane ID"))
 			}
-			exitOnError(clearFocusedPaneStatus(os.Args[2]))
+			exitOnError(clearFocusedPaneStatus(os.Args[index+1]))
 			return
 		case "-v", "--version":
 			fmt.Println("jumpmux " + version)
@@ -153,13 +177,14 @@ func main() {
 			}
 			return
 		default:
-			exitOnError(fmt.Errorf("unknown argument %q", os.Args[1]))
+			exitOnError(fmt.Errorf("unknown argument %q", os.Args[index]))
 		}
 	}
 
 	cwd, err := os.Getwd()
 	exitOnError(err)
 	model := newDashboardForLaunch(cwd, activeTmuxSession(), forceSessionScope)
+	model.tab = initialTab
 	result, err := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	exitOnError(err)
 	model, ok := result.(dashboardModel)
@@ -660,6 +685,8 @@ func jump(item item) error {
 			return jumpTmuxPane(item)
 		}
 		return openTmuxWorktree(item)
+	case "tmux-session":
+		return jumpTmuxSession(item)
 	default:
 		return fmt.Errorf("unknown item type %q", item.kind)
 	}

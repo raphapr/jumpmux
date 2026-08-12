@@ -13,6 +13,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/sahilm/fuzzy"
+)
+
+const (
+	tabAgents = iota
+	tabWorktrees
+	tabSessions
+	tabCount
 )
 
 const (
@@ -46,42 +54,43 @@ var (
 )
 
 type dashboardModel struct {
-	cwd                                                       string
-	now                                                       time.Time
-	tab, index                                                int
-	width, height                                             int
-	agents, allAgents                                         []item
-	worktrees                                                 []item
-	agentGit, gitCache, prCache                               map[string]item
-	scope                                                     scopeMode
-	scheme                                                    colorScheme
-	launchSession                                             string
-	worktreeGeneration                                        uint64
-	previewRequest, diffRequest                               uint64
-	filter, diff, help, themePicker                           bool
-	query                                                     string
-	queries                                                   [2]string
-	filterInputs                                              [2]textinput.Model
-	themePickerInput                                          textinput.Model
-	themePickerIndex, themePickerOffset                       int
-	themePickerPrevious                                       colorScheme
-	actionTextInput                                           textinput.Model
-	preview                                                   previewData
-	previewOffset, diffOff, rightOffset, xOffset, previewSize int
-	panelFocus, helpOffset                                    int
-	loading                                                   bool
-	agentsLoaded, worktreesLoaded                             bool
-	agentsInFlight, agentGitInFlight, worktreesInFlight       bool
-	agentGitRefreshed                                         time.Time
-	worktreePending                                           int
-	err, agentErr, worktreeErr                                error
-	chosen                                                    bool
-	selection                                                 item
-	lastClickTarget                                           string
-	lastClickAt                                               time.Time
-	action                                                    dashboardAction
-	actionTarget                                              item
-	actionBackend                                             worktreeBackend
+	cwd                                                                   string
+	now                                                                   time.Time
+	tab, index                                                            int
+	width, height                                                         int
+	agents, allAgents                                                     []item
+	worktrees, sessions                                                   []item
+	agentGit, gitCache, prCache                                           map[string]item
+	scope                                                                 scopeMode
+	scheme                                                                colorScheme
+	launchSession                                                         string
+	worktreeGeneration, sessionGeneration                                 uint64
+	previewRequest, diffRequest                                           uint64
+	filter, diff, help, themePicker                                       bool
+	query                                                                 string
+	queries, tabTargets                                                   [tabCount]string
+	filterInputs                                                          [tabCount]textinput.Model
+	themePickerInput                                                      textinput.Model
+	themePickerIndex, themePickerOffset                                   int
+	themePickerPrevious                                                   colorScheme
+	actionTextInput                                                       textinput.Model
+	preview                                                               previewData
+	previewOffset, diffOff, rightOffset, xOffset, previewSize             int
+	previewEnabled                                                        [tabCount]bool
+	panelFocus, helpOffset                                                int
+	loading                                                               bool
+	agentsLoaded, worktreesLoaded, sessionsLoaded                         bool
+	agentsInFlight, agentGitInFlight, worktreesInFlight, sessionsInFlight bool
+	agentGitRefreshed                                                     time.Time
+	worktreePending                                                       int
+	err, agentErr, worktreeErr, sessionsErr                               error
+	chosen                                                                bool
+	selection                                                             item
+	lastClickTarget                                                       string
+	lastClickAt                                                           time.Time
+	action                                                                dashboardAction
+	actionTarget                                                          item
+	actionBackend                                                         worktreeBackend
 }
 
 type dashboardData struct {
@@ -92,6 +101,12 @@ type dashboardData struct {
 type dashboardDataMsg dashboardData
 
 type agentGitMsg []item
+
+type sessionDataMsg struct {
+	generation uint64
+	sessions   []item
+	err        error
+}
 
 type dashboardAction uint8
 
@@ -104,6 +119,7 @@ const (
 	actionNone dashboardAction = iota
 	actionAddWorktree
 	actionRemoveWorktree
+	actionRemoveSession
 	actionRunning
 )
 
@@ -132,6 +148,7 @@ type previewData struct {
 	request      uint64
 	scheme       colorScheme
 	target       string
+	kind         string
 	updated      time.Time
 	title        string
 	lines        []string
@@ -173,7 +190,7 @@ type previewTickMsg uint64
 func newDashboard(cwd string) dashboardModel {
 	nerdFontEnabled = true
 	applyColorScheme(schemeDefault)
-	return dashboardModel{cwd: cwd, now: time.Now(), width: 80, height: 24, previewSize: defaultPreviewSize, scheme: schemeDefault, worktreeGeneration: 1, agentGit: map[string]item{}, gitCache: map[string]item{}, prCache: map[string]item{}, filterInputs: [2]textinput.Model{newTextInput("/"), newTextInput("/")}, themePickerInput: newTextInput("filter: "), actionTextInput: newTextInput(""), agentsInFlight: true, worktreesInFlight: true}
+	return dashboardModel{cwd: cwd, now: time.Now(), width: 80, height: 24, previewSize: defaultPreviewSize, previewEnabled: [tabCount]bool{true, true, true}, scheme: schemeDefault, worktreeGeneration: 1, agentGit: map[string]item{}, gitCache: map[string]item{}, prCache: map[string]item{}, filterInputs: [tabCount]textinput.Model{newTextInput("/"), newTextInput("/"), newTextInput("/")}, themePickerInput: newTextInput("filter: "), actionTextInput: newTextInput(""), agentsInFlight: true, worktreesInFlight: true, sessionsInFlight: true}
 }
 
 func newTextInput(prompt string) textinput.Model {
@@ -291,6 +308,9 @@ func newDashboardForLaunch(cwd, launchSession string, forceSession bool) dashboa
 		model.scheme = loadLegacyColorScheme()
 	}
 	nerdFontEnabled = configErr != nil || !config.hasNerdFont || config.nerdFont
+	if configErr == nil {
+		model.previewEnabled = config.preview
+	}
 	model.previewSize = loadPreviewSize()
 	applyColorScheme(model.scheme)
 	model.launchSession = launchSession
@@ -301,7 +321,7 @@ func newDashboardForLaunch(cwd, launchSession string, forceSession bool) dashboa
 }
 
 func (m dashboardModel) Init() tea.Cmd {
-	return tea.Batch(refreshAgents(), refreshWorktreeList(m.cwd, m.worktreeGeneration), nextTick(), nextClock())
+	return tea.Batch(refreshAgents(), refreshWorktreeList(m.cwd, m.worktreeGeneration), refreshSessions(m.sessionGeneration), nextTick(), nextClock())
 }
 
 func nextTick() tea.Cmd {
@@ -325,6 +345,13 @@ func refreshAgents() tea.Cmd {
 
 func refreshAgentGit(agents []item) tea.Cmd {
 	return func() tea.Msg { return agentGitMsg(agentGitDetails(agents)) }
+}
+
+func refreshSessions(generation uint64) tea.Cmd {
+	return func() tea.Msg {
+		sessions, err := listSessions()
+		return sessionDataMsg{generation: generation, sessions: sessions, err: err}
+	}
 }
 
 func refreshWorktreeList(cwd string, generation uint64) tea.Cmd {
@@ -370,7 +397,7 @@ func refreshWorktreeMux(items []item, generation uint64) tea.Cmd {
 
 func loadAgentPreview(item item, scheme colorScheme, request uint64) tea.Cmd {
 	return func() tea.Msg {
-		preview := previewData{request: request, scheme: scheme, target: item.target, updated: item.updated, title: "Preview: " + worktreeName(item.cwd), followBottom: true}
+		preview := previewData{request: request, scheme: scheme, target: item.target, kind: item.kind, updated: item.updated, title: "Preview: " + worktreeName(item.cwd), followBottom: true}
 		output, err := tmuxOutput(
 			"display-message", "-p", "-t", item.pane, "#{cursor_y}\t#{pane_height}",
 			";", "capture-pane", "-p", "-e", "-S", "-200", "-t", item.pane,
@@ -399,6 +426,7 @@ func worktreePreview(item item, scheme colorScheme, request uint64) previewData 
 		request: request,
 		scheme:  scheme,
 		target:  item.target,
+		kind:    item.kind,
 		updated: item.updated,
 		title:   worktreeName(item.cwd),
 		lines: []string{
@@ -410,6 +438,39 @@ func worktreePreview(item item, scheme colorScheme, request uint64) previewData 
 			"",
 		},
 		rightTitle: "Git Log",
+	}
+}
+
+func sessionPreview(item item, scheme colorScheme, request uint64) previewData {
+	lines := []string{mutedStyle.Render("Inactive (Enter creates it)")}
+	if item.muxSessionID != "" {
+		lines = []string{mutedStyle.Render("Loading pane…")}
+	}
+	return previewData{
+		request: request, scheme: scheme, target: item.target, kind: item.kind,
+		title: "Active pane: " + item.title, lines: lines,
+	}
+}
+
+func loadSessionPreview(item item, scheme colorScheme, request uint64) tea.Cmd {
+	return func() tea.Msg {
+		preview := sessionPreview(item, scheme, request)
+		if item.muxSessionID == "" || item.pane == "" {
+			return previewMsg(preview)
+		}
+		preview.lines, preview.followBottom = nil, true
+		output, err := tmuxOutput("capture-pane", "-p", "-e", "-t", item.pane)
+		if err != nil {
+			preview.lines = []string{"(pane not available)"}
+			return previewMsg(preview)
+		}
+		for _, line := range strings.Split(strings.TrimSuffix(output, "\n"), "\n") {
+			preview.lines = append(preview.lines, sanitizePaneLine(strings.TrimSuffix(line, "\r")))
+		}
+		if len(preview.lines) == 0 {
+			preview.lines = []string{"(empty output)"}
+		}
+		return previewMsg(preview)
 	}
 }
 
@@ -495,6 +556,10 @@ func loadDiff(item item, request uint64) tea.Cmd {
 }
 
 func (m *dashboardModel) requestPreview(item item) tea.Cmd {
+	if !m.previewEnabled[m.tab] {
+		m.preview, m.loading = previewData{}, false
+		return nil
+	}
 	m.previewRequest++
 	request, scheme := m.previewRequest, m.scheme
 	changed := m.preview.target != item.target
@@ -504,6 +569,13 @@ func (m *dashboardModel) requestPreview(item item) tea.Cmd {
 	if item.kind == "session" {
 		m.loading = changed
 		return loadAgentPreview(item, scheme, request)
+	}
+	if item.kind == "tmux-session" {
+		if changed || m.preview.target == "" {
+			m.preview = sessionPreview(item, scheme, request)
+		}
+		m.loading = false
+		return loadSessionPreview(item, scheme, request)
 	}
 
 	preview := worktreePreview(item, scheme, request)
@@ -520,8 +592,12 @@ func (m *dashboardModel) requestPreview(item item) tea.Cmd {
 func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		wasPreviewAtBottom := m.previewOffset == m.previewBottomOffset(m.preview.lines)
 		m.width, m.height = msg.Width, msg.Height
 		m.resizeInputs()
+		if wasPreviewAtBottom {
+			m.previewOffset = m.previewBottomOffset(m.preview.lines)
+		}
 		if !m.hasRightPanel() {
 			m.panelFocus = panelLeft
 		}
@@ -537,6 +613,11 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.worktreeGeneration++
 			commands = append(commands, refreshWorktreeList(m.cwd, m.worktreeGeneration))
 		}
+		if !m.sessionsInFlight {
+			m.sessionsInFlight = true
+			m.sessionGeneration++
+			commands = append(commands, refreshSessions(m.sessionGeneration))
+		}
 		return m, tea.Batch(commands...)
 	case clockMsg:
 		m.now = time.Time(msg)
@@ -545,8 +626,29 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if uint64(msg) != m.previewRequest || m.diff {
 			return m, nil
 		}
-		if selected, ok := m.selected(); ok && selected.kind == "session" {
+		if selected, ok := m.selected(); ok && (selected.kind == "session" || (selected.kind == "tmux-session" && selected.muxSessionID != "")) {
 			return m, m.requestPreview(selected)
+		}
+		return m, nil
+	case sessionDataMsg:
+		if msg.generation != m.sessionGeneration {
+			return m, nil
+		}
+		m.sessionsInFlight, m.sessionsLoaded, m.sessionsErr = false, true, msg.err
+		if msg.err != nil {
+			return m, nil
+		}
+		before, hadBefore := m.selected()
+		target := m.selectedTarget()
+		m.sessions = msg.sessions
+		m.restoreSelection(target)
+		after, hasAfter := m.selected()
+		if hasAfter && after.kind == "tmux-session" && !m.diff {
+			if !hadBefore || before != after || m.preview.target != after.target || m.preview.kind != after.kind {
+				return m, m.requestPreview(after)
+			}
+		} else if !m.diff && !hasAfter {
+			m.preview, m.loading = previewData{}, false
 		}
 		return m, nil
 	case dashboardDataMsg:
@@ -705,25 +807,28 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case previewMsg:
 		if !m.diff && msg.request == m.previewRequest && msg.scheme == m.scheme {
-			if selected, ok := m.selected(); ok && selected.kind == "session" && selected.target == msg.target {
+			if selected, ok := m.selected(); ok && (msg.kind == "" || selected.kind == msg.kind) && selected.target == msg.target {
 				reset := m.preview.target != msg.target
-				wasAtBottom := m.previewOffset == m.clampPreviewOffset(len(m.preview.lines), m.preview.lines)
+				wasAtBottom := m.previewOffset == m.previewBottomOffset(m.preview.lines)
 				m.preview = previewData(msg)
 				if reset {
-					m.previewOffset, m.xOffset = 0, 0
+					m.previewOffset, m.rightOffset, m.xOffset = 0, 0, 0
 				}
 				if msg.followBottom && (reset || wasAtBottom) {
-					m.previewOffset = m.clampPreviewOffset(len(msg.lines), msg.lines)
+					m.previewOffset = m.previewBottomOffset(msg.lines)
 				} else {
 					m.previewOffset = m.clampPreviewOffset(m.previewOffset, msg.lines)
 				}
 				m.loading = false
-				return m, nextPreviewTick(msg.request)
+				if selected.kind == "session" || (selected.kind == "tmux-session" && selected.muxSessionID != "") {
+					return m, nextPreviewTick(msg.request)
+				}
+				return m, nil
 			}
 		}
 		return m, nil
 	case worktreeStatusMsg:
-		if !m.diff && msg.request == m.previewRequest && msg.scheme == m.scheme && m.preview.target == msg.target {
+		if !m.diff && msg.request == m.previewRequest && msg.scheme == m.scheme && m.preview.target == msg.target && m.preview.kind == "worktree" {
 			if selected, ok := m.selected(); ok && selected.kind == "worktree" && selected.target == msg.target {
 				m.preview.lines = m.preview.lines[:min(worktreeMetadataRows, len(m.preview.lines))]
 				if msg.err != nil {
@@ -739,7 +844,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case worktreeLogMsg:
-		if !m.diff && msg.request == m.previewRequest && msg.scheme == m.scheme && m.preview.target == msg.target {
+		if !m.diff && msg.request == m.previewRequest && msg.scheme == m.scheme && m.preview.target == msg.target && m.preview.kind == "worktree" {
 			if selected, ok := m.selected(); ok && selected.kind == "worktree" && selected.target == msg.target {
 				switch {
 				case msg.err != nil:
@@ -756,7 +861,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case diffMsg:
 		if m.diff && msg.request == m.diffRequest {
 			if selected, ok := m.selected(); ok && selected.target == msg.target {
-				m.preview = previewData{target: msg.target, title: msg.title, lines: msg.lines, rightTitle: fmt.Sprintf("Files (%d)", len(msg.files)), rightLines: msg.files}
+				m.preview = previewData{target: msg.target, kind: selected.kind, title: msg.title, lines: msg.lines, rightTitle: fmt.Sprintf("Files (%d)", len(msg.files)), rightLines: msg.files}
 				m.diffOff, m.rightOffset, m.xOffset, m.panelFocus, m.loading = 0, 0, 0, panelLeft, false
 			}
 		}
@@ -767,6 +872,11 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.worktreesInFlight = true
 			m.worktreeGeneration++
 			return m, refreshWorktreeList(m.cwd, m.worktreeGeneration)
+		}
+		if msg.err == nil && msg.action == actionRemoveSession {
+			m.sessionsInFlight = true
+			m.sessionGeneration++
+			return m, refreshSessions(m.sessionGeneration)
 		}
 		return m, nil
 	case tea.MouseMsg:
@@ -906,11 +1016,61 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.action != actionNone {
 		return m.handleActionKey(msg)
 	}
+	if m.tab == tabSessions && (key == "ctrl+j" || key == "ctrl+k") {
+		delta := 1
+		if key == "ctrl+k" {
+			delta = -1
+		}
+		m.move(delta)
+		if selected, ok := m.selected(); ok {
+			return m, m.requestPreview(selected)
+		}
+		return m, nil
+	}
+	if m.tab == tabSessions && key == "ctrl+d" {
+		selected, ok := m.selected()
+		if !ok || selected.muxSessionID == "" {
+			m.err = errors.New("the selected session is not running")
+			return m, nil
+		}
+		m.action, m.actionTarget = actionRemoveSession, selected
+		m.lastClickTarget, m.lastClickAt = "", time.Time{}
+		return m, nil
+	}
 	if m.filter {
 		switch key {
+		case "tab":
+			if m.tab == tabSessions {
+				return m.switchTab((m.tab + 1) % tabCount)
+			}
+			var command tea.Cmd
+			m.filterInputs[m.tab], command = m.filterInputs[m.tab].Update(msg)
+			return m, command
 		case "enter":
+			if m.tab == tabSessions {
+				if selected, ok := m.selected(); ok {
+					m.selection, m.chosen = selected, true
+					return m, tea.Quit
+				}
+				return m, nil
+			}
 			m.filter = false
 			m.filterInputs[m.tab].Blur()
+		case "up", "down":
+			if m.tab == tabSessions {
+				delta := 1
+				if key == "up" {
+					delta = -1
+				}
+				m.move(delta)
+				if selected, ok := m.selected(); ok {
+					return m, m.requestPreview(selected)
+				}
+				return m, nil
+			}
+			var command tea.Cmd
+			m.filterInputs[m.tab], command = m.filterInputs[m.tab].Update(msg)
+			return m, command
 		case "esc":
 			m.filter, m.query, m.index = false, "", 0
 			m.filterInputs[m.tab].SetValue("")
@@ -934,6 +1094,9 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if key == "+" || key == "=" || key == "-" || key == "_" {
+		if !m.previewEnabled[m.tab] {
+			return m, nil
+		}
 		delta := previewSizeStep
 		if key == "-" || key == "_" {
 			delta = -delta
@@ -974,7 +1137,22 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	m.err = nil
-	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
+	if m.tab == tabSessions && msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+		m.filter = true
+		m.filterInputs[m.tab].SetValue(m.query)
+		m.filterInputs[m.tab].CursorEnd()
+		m.filterInputs[m.tab].Focus()
+		var command tea.Cmd
+		m.filterInputs[m.tab], command = m.filterInputs[m.tab].Update(msg)
+		m.query, m.index = m.filterInputs[m.tab].Value(), 0
+		m.queries[m.tab] = m.query
+		if selected, ok := m.selected(); ok {
+			return m, tea.Batch(command, m.requestPreview(selected))
+		}
+		m.preview, m.loading = previewData{}, false
+		return m, command
+	}
+	if m.tab != tabSessions && len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
 		index := int(key[0] - '1')
 		rows := m.rows()
 		if index < len(rows) {
@@ -1000,11 +1178,11 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.help, m.helpOffset = true, 0
 		return m, nil
 	case "tab":
-		return m.switchTab(1 - m.tab)
+		return m.switchTab((m.tab + 1) % tabCount)
 	case "t":
 		return m, m.openThemePicker()
 	case "s":
-		if m.tab != 0 {
+		if m.tab != tabAgents {
 			return m, nil
 		}
 		target := m.selectedTarget()
@@ -1021,16 +1199,20 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.filterInputs[m.tab].SetValue(m.query)
 		return m, m.filterInputs[m.tab].Focus()
 	case "a":
-		if m.tab == 1 {
+		if m.tab == tabWorktrees {
 			m.action, m.err = actionAddWorktree, nil
 			m.actionTextInput.SetValue("")
 			m.lastClickTarget, m.lastClickAt = "", time.Time{}
 			return m, m.actionTextInput.Focus()
 		}
 	case "r":
-		if m.tab == 1 {
-			selected, ok := m.selected()
-			if !ok || selected.kind != "worktree" {
+		selected, ok := m.selected()
+		if !ok {
+			return m, nil
+		}
+		switch m.tab {
+		case tabWorktrees:
+			if selected.kind != "worktree" {
 				return m, nil
 			}
 			if selected.current {
@@ -1052,21 +1234,25 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.action, m.actionTarget, m.actionBackend, m.err = actionRemoveWorktree, selected, backend, nil
-			m.lastClickTarget, m.lastClickAt = "", time.Time{}
 		}
+		m.lastClickTarget, m.lastClickAt = "", time.Time{}
 	case "o":
-		if selected, ok := m.selected(); ok {
-			pr := m.gitItem(selected)
-			m.err = nil
-			return m, func() tea.Msg {
-				return worktreeActionMsg{err: openPullRequest(selected.cwd, pr.prNumber)}
+		if m.tab != tabSessions {
+			if selected, ok := m.selected(); ok {
+				pr := m.gitItem(selected)
+				m.err = nil
+				return m, func() tea.Msg {
+					return worktreeActionMsg{err: openPullRequest(selected.cwd, pr.prNumber)}
+				}
 			}
 		}
 	case "d":
-		if selected, ok := m.selected(); ok {
-			m.diff, m.loading, m.panelFocus = true, true, panelLeft
-			m.diffRequest++
-			return m, loadDiff(selected, m.diffRequest)
+		if m.tab != tabSessions {
+			if selected, ok := m.selected(); ok {
+				m.diff, m.loading, m.panelFocus = true, true, panelLeft
+				m.diffRequest++
+				return m, loadDiff(selected, m.diffRequest)
+			}
 		}
 	case "enter":
 		if selected, ok := m.selected(); ok {
@@ -1145,12 +1331,16 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.actionTextInput, command = m.actionTextInput.Update(msg)
 			return m, command
 		}
-	case actionRemoveWorktree:
+	case actionRemoveWorktree, actionRemoveSession:
 		switch key {
 		case "y", "Y":
+			action, target, backend := m.action, m.actionTarget, m.actionBackend
 			m.action, m.err = actionRunning, nil
 			return m, func() tea.Msg {
-				return worktreeActionMsg{action: actionRemoveWorktree, err: removeWorktree(m.cwd, m.actionTarget.cwd, m.actionBackend)}
+				if action == actionRemoveSession {
+					return worktreeActionMsg{action: action, err: removeTmuxSession(target)}
+				}
+				return worktreeActionMsg{action: action, err: removeWorktree(m.cwd, target.cwd, backend)}
 			}
 		case "n", "N", "esc":
 			m.action, m.actionTarget, m.actionBackend = actionNone, item{}, ""
@@ -1160,13 +1350,14 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m dashboardModel) switchTab(tab int) (tea.Model, tea.Cmd) {
-	if tab == m.tab {
+	if tab == m.tab || tab < 0 || tab >= tabCount {
 		return m, nil
 	}
-	m.queries[m.tab] = m.query
+	m.queries[m.tab], m.tabTargets[m.tab] = m.query, m.selectedTarget()
 	m.tab, m.index, m.previewOffset, m.rightOffset, m.xOffset, m.panelFocus = tab, 0, 0, 0, 0, panelLeft
 	m.query = m.queries[m.tab]
 	m.filterInputs[m.tab].SetValue(m.query)
+	m.restoreSelection(m.tabTargets[m.tab])
 	m.preview = previewData{}
 	if selected, ok := m.selected(); ok {
 		return m, m.requestPreview(selected)
@@ -1184,6 +1375,9 @@ func (m dashboardModel) diffVisibleHeight() int    { return max(1, m.height-3) }
 func (m dashboardModel) clampPreviewOffset(offset int, lines []string) int {
 	return clampLineOffset(offset, lines, m.previewVisibleHeight())
 }
+func (m dashboardModel) previewBottomOffset(lines []string) int {
+	return clampLineOffset(len(lines), lines, m.previewVisibleHeight())
+}
 func (m dashboardModel) clampDiffOffset(offset int, lines []string) int {
 	return clampLineOffset(offset, lines, m.diffVisibleHeight())
 }
@@ -1193,7 +1387,7 @@ func (m dashboardModel) hasRightPanel() bool {
 		rightWidth := max(24, m.width/4)
 		return rightWidth < m.width-20
 	}
-	return m.tab == 1 && m.preview.rightTitle != "" && m.width >= 60
+	return m.tab == tabWorktrees && m.preview.rightTitle != "" && m.width >= 60
 }
 
 func (m *dashboardModel) focusPanelAt(x int) {
@@ -1235,20 +1429,26 @@ func (m dashboardModel) clampHelpOffset(offset int) int {
 
 func (m dashboardModel) helpLines() []string {
 	return []string{
-		"↑/k, ↓/j     Move selection",
-		"Enter, 1–9   Open selected row",
+		"↑/k, ↓/j     Move (Agents/Worktrees)",
+		"Ctrl+j/k      Move (Sessions)",
+		"Session icons " + dashboardIcon(" live,  configured,  repo", "L live, C configured, R repo"),
+		"Enter         Open selected row",
+		"1–9           Open row (Agents/Worktrees)",
 		"Click         Select row",
 		"Double-click  Open row",
 		"Mouse wheel   Scroll table or preview",
 		"Tab           Switch tabs",
-		"/             Filter active tab",
-		"Enter / Esc   Accept / clear filter",
-		"d             Open Git diff",
+		"/             Filter (Agents/Worktrees)",
+		"Type          Filter (Sessions)",
+		"Enter / Esc   Open / clear session filter",
+		"d             Open Git diff (Agents/Worktrees)",
 		"Shift+←/→     Focus split panel",
 		"a             Add worktree (Worktrees)",
 		"r             Remove worktree (Worktrees)",
-		"o             Open pull request",
+		"Ctrl+d        Remove live session (Sessions)",
+		"o             Open pull request (Agents/Worktrees)",
 		"Ctrl+u/d      Page preview, diff, or help",
+		"              (Ctrl+d removes in Sessions)",
 		"h/l           Pan long lines",
 		"+/-           Resize preview by 10%",
 		"s             Toggle agent scope",
@@ -1290,13 +1490,28 @@ func (m *dashboardModel) move(delta int) {
 
 func (m dashboardModel) rows() []item {
 	var rows []item
-	if m.tab == 0 {
+	switch m.tab {
+	case tabAgents:
 		rows = m.agents
-	} else {
+	case tabWorktrees:
 		rows = m.worktrees
+	case tabSessions:
+		rows = m.sessions
 	}
 	if m.query == "" {
 		return rows
+	}
+	if m.tab == tabSessions {
+		targets := make([]string, len(rows))
+		for index, item := range rows {
+			targets[index] = item.title + " " + compactHome(item.cwd) + " " + item.cwd
+		}
+		matches := fuzzy.Find(m.query, targets)
+		filtered := make([]item, 0, len(matches))
+		for _, match := range matches {
+			filtered = append(filtered, rows[match.Index])
+		}
+		return filtered
 	}
 	query := strings.ToLower(m.query)
 	filtered := make([]item, 0, len(rows))
@@ -1417,11 +1632,20 @@ func copyPRStatus(dst *item, src item) {
 }
 
 func (m dashboardModel) contentHeight() int { return max(0, m.height-3) }
+func (m dashboardModel) previewShown() bool { return m.previewEnabled[m.tab] || m.themePicker }
 func (m dashboardModel) tableHeight() int {
 	content := m.contentHeight()
+	if !m.previewShown() {
+		return content
+	}
 	return max(2, min(content-3, content*(100-m.previewSize)/100))
 }
-func (m dashboardModel) previewHeight() int { return m.contentHeight() - m.tableHeight() }
+func (m dashboardModel) previewHeight() int {
+	if !m.previewShown() {
+		return 0
+	}
+	return m.contentHeight() - m.tableHeight()
+}
 
 func (m *dashboardModel) resizePreview(delta int) {
 	m.previewSize = max(minPreviewSize, min(maxPreviewSize, m.previewSize+delta))

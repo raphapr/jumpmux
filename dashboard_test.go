@@ -459,6 +459,32 @@ func TestDashboardDiffOffsetsAndMinimumLayout(t *testing.T) {
 	}
 }
 
+func TestDashboardCyclesSessionsTab(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height = 80, 20
+	model.agents = []item{{kind: "session", target: "%1", cwd: "/repo"}}
+	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo"}}
+	model.sessions = []item{{kind: "tmux-session", target: "dev", title: "dev", cwd: "/repo", sessionSource: "config"}, {kind: "tmux-session", target: "ops", title: "ops", cwd: "/ops", sessionSource: "config"}}
+	for _, tab := range []int{tabWorktrees, tabSessions} {
+		updated, _ := model.switchTab(tab)
+		model = updated.(dashboardModel)
+		if model.tab != tab {
+			t.Fatalf("tab = %d, want %d", model.tab, tab)
+		}
+	}
+	model.index = 1
+	updated, _ := model.switchTab(tabAgents)
+	model = updated.(dashboardModel)
+	updated, _ = model.switchTab(tabSessions)
+	model = updated.(dashboardModel)
+	if model.index != 1 || model.selectedTarget() != "ops" {
+		t.Fatalf("session selection was not restored: index=%d target=%q", model.index, model.selectedTarget())
+	}
+	if labels := model.tabLabels(); len(labels) != tabCount {
+		t.Fatalf("tab labels = %#v", labels)
+	}
+}
+
 func TestDashboardFooterAndHeaderWidths(t *testing.T) {
 	for _, width := range []int{40, 60, 100, 120} {
 		model := newDashboard("/repo")
@@ -494,8 +520,11 @@ func TestDashboardFooterAndHeaderWidths(t *testing.T) {
 	if updated.(dashboardModel).tab != 0 {
 		t.Fatal("blank header space switched tabs")
 	}
-	updated, _ = model.Update(tea.MouseMsg{X: hitboxes[1][0], Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
-	if updated.(dashboardModel).tab != 1 {
-		t.Fatal("tab hitbox did not use rendered label")
+	for tab := tabWorktrees; tab < tabCount; tab++ {
+		updated, _ = model.Update(tea.MouseMsg{X: hitboxes[tab][0], Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+		model = updated.(dashboardModel)
+		if model.tab != tab {
+			t.Fatalf("tab %d hitbox did not use rendered label", tab)
+		}
 	}
 }

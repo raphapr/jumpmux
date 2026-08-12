@@ -15,7 +15,7 @@ func TestDashboardConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicWrite(path, []byte("# jumpmux\nworktree_backend = \"git\"\ntheme = \"teal-drift\"\ndefault_scope = 'session'\nnerdfont = false\n[future]\nvalue = true\n"), 0o600); err != nil {
+	if err := atomicWrite(path, []byte("# jumpmux\nworktree_backend = \"git\"\ntheme = \"teal-drift\"\ndefault_scope = 'session'\nnerdfont = false\n[preview]\nagents = true\nworktrees = false\nsessions = false\n[future]\nvalue = true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -23,11 +23,11 @@ func TestDashboardConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.worktreeBackend != backendGit || !config.hasTheme || config.theme != schemeTealDrift || !config.hasDefaultScope || config.defaultScope != scopeSession || !config.hasNerdFont || config.nerdFont {
+	if config.worktreeBackend != backendGit || !config.hasTheme || config.theme != schemeTealDrift || !config.hasDefaultScope || config.defaultScope != scopeSession || !config.hasNerdFont || config.nerdFont || config.preview != [tabCount]bool{true, false, false} {
 		t.Fatalf("config = %#v", config)
 	}
 	model := newDashboardForLaunch("/repo", "", false)
-	if model.scheme != schemeTealDrift || model.scope != scopeSession || nerdFontEnabled || dashboardIcon(gitDiffIcon, "*") != "*" {
+	if model.scheme != schemeTealDrift || model.scope != scopeSession || nerdFontEnabled || dashboardIcon(gitDiffIcon, "*") != "*" || model.previewEnabled != [tabCount]bool{true, false, false} {
 		t.Fatalf("dashboard preferences = theme %q, scope %q, nerd font %t", model.scheme.slug(), model.scope.label(), nerdFontEnabled)
 	}
 
@@ -44,7 +44,7 @@ func TestDashboardConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "# jumpmux\nworktree_backend = \"git\"\ntheme = \"emberforge\"\ndefault_scope = \"all\"\nnerdfont = false\n[future]\nvalue = true\n"
+	want := "# jumpmux\nworktree_backend = \"git\"\ntheme = \"emberforge\"\ndefault_scope = \"all\"\nnerdfont = false\n[preview]\nagents = true\nworktrees = false\nsessions = false\n[future]\nvalue = true\n"
 	if string(data) != want {
 		t.Fatalf("saved config = %q, want %q", data, want)
 	}
@@ -56,7 +56,7 @@ func TestDashboardConfigRejectsInvalidPreferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, config := range []string{"theme = \"unknown\"\n", "default_scope = \"project\"\n", "nerdfont = maybe\n"} {
+	for _, config := range []string{"theme = \"unknown\"\n", "default_scope = \"project\"\n", "nerdfont = maybe\n", "[preview]\nsessions = maybe\n", "[preview]\nunknown = true\n"} {
 		if err := atomicWrite(path, []byte(config), 0o600); err != nil {
 			t.Fatal(err)
 		}

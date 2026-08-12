@@ -47,6 +47,19 @@ func TestAgentPreviewCapturesPaneHistory(t *testing.T) {
 	}
 }
 
+func TestSessionPreviewCapturesCurrentAlternateScreen(t *testing.T) {
+	bin := t.TempDir()
+	script := "#!/bin/sh\nprintf 'btop\\n\\033[31mcpu 42%%\\033[0m\\n'\n"
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	message := loadSessionPreview(item{kind: "tmux-session", target: "dev", title: "dev", cwd: "/repo", muxSessionID: "$1", pane: "%7"}, schemeDefault, 1)().(previewMsg)
+	if message.title != "Active pane: dev" || !message.followBottom || len(message.lines) != 2 || message.lines[0] != "btop" || ansi.Strip(message.lines[1]) != "cpu 42%" {
+		t.Fatalf("session pane preview = %#v", message)
+	}
+}
+
 func TestAgentPreviewFollowsBottomUntilScrolled(t *testing.T) {
 	model := newDashboard("/repo")
 	model.agents = []item{{kind: "session", target: "%7", pane: "%7", cwd: "/repo"}}

@@ -27,6 +27,18 @@ func TestParsers(t *testing.T) {
 	})
 }
 
+func TestDashboardTab(t *testing.T) {
+	for name, want := range map[string]int{"agents": tabAgents, "worktrees": tabWorktrees, "sessions": tabSessions} {
+		got, err := dashboardTab(name)
+		if err != nil || got != want {
+			t.Fatalf("dashboardTab(%q) = %d, %v", name, got, err)
+		}
+	}
+	if _, err := dashboardTab("other"); err == nil {
+		t.Fatal("invalid tab was accepted")
+	}
+}
+
 func TestCommandTimeoutKillsDescendants(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -109,6 +121,14 @@ func TestDiffSupportsUnbornRepository(t *testing.T) {
 	dirty := loadDiff(item, 2)().(diffMsg)
 	if len(dirty.lines) != 2 || dirty.lines[0] != "Untracked files:" || dirty.lines[1] != "? new.txt" {
 		t.Fatalf("unexpected untracked diff: %#v", dirty)
+	}
+}
+
+func TestJumpDispatchesTmuxSession(t *testing.T) {
+	t.Setenv("TMUX", "")
+	err := jump(item{kind: "tmux-session", target: "dev"})
+	if err == nil || !strings.Contains(err.Error(), "inside tmux") {
+		t.Fatalf("tmux session jump dispatch = %v", err)
 	}
 }
 

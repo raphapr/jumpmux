@@ -2,9 +2,11 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestDashboardScope(t *testing.T) {
@@ -38,6 +40,22 @@ func TestDashboardScope(t *testing.T) {
 	}
 	if got.scope != scopeAll || len(got.agents) != 2 || !config.hasDefaultScope || config.defaultScope != scopeAll {
 		t.Fatalf("all scope = %s, agents = %#v", got.scope.label(), got.agents)
+	}
+}
+
+func TestPerTabPreviewVisibility(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height = 80, 20
+	model.previewEnabled = [tabCount]bool{true, false, false}
+	model.tab = tabAgents
+	if model.previewHeight() == 0 {
+		t.Fatal("enabled Agents preview is hidden")
+	}
+	for _, tab := range []int{tabWorktrees, tabSessions} {
+		model.tab = tab
+		if model.previewHeight() != 0 || model.tableHeight() != model.contentHeight() || strings.Contains(ansi.Strip(model.View()), "Preview") {
+			t.Fatalf("disabled tab %d still renders a preview", tab)
+		}
 	}
 }
 
