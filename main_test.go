@@ -50,24 +50,6 @@ func TestContextJSON(t *testing.T) {
 	}
 }
 
-func TestSessionsLast(t *testing.T) {
-	log := filepath.Join(t.TempDir(), "tmux.log")
-	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$TMUX_LOG\"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("TMUX", "/tmp/tmux,1,0")
-	t.Setenv("TMUX_LOG", log)
-	if handled, err := contextCommand([]string{"sessions", "last"}); !handled || err != nil {
-		t.Fatalf("sessions last = %t, %v", handled, err)
-	}
-	data, err := os.ReadFile(log)
-	if err != nil || strings.TrimSpace(string(data)) != "switch-client -l" {
-		t.Fatalf("sessions last command = %q, %v", data, err)
-	}
-}
-
 func TestContextCommandValidation(t *testing.T) {
 	for _, args := range [][]string{{"sessions"}, {"sessions", "list", "--yaml"}, {"agents", "connect", "%1"}, {"sessions", "connect", "dev"}, {"sessions", "last", "extra"}, {"worktrees", "other", "x"}} {
 		if handled, err := contextCommand(args); !handled || err == nil {

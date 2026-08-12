@@ -222,6 +222,52 @@ esac
 	}
 }
 
+func TestSwitchLastTmuxSession(t *testing.T) {
+	log := writeFakeTmux(t, `
+printf '%s\n' "$*" >> "$TMUX_LOG"
+case "$1" in
+  list-sessions) printf '$1\037current\037300\036\n$2\037ignored\037250\036\n$3\037previous\037200\036\n' ;;
+esac
+`)
+	t.Setenv("TMUX", "/tmp/tmux,1,0")
+	t.Setenv("TMUX_LOG", log)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	writeSessionsConfig(t, "[sessions]\nexclude = [\"^ignored$\"]\n")
+	if err := switchLastTmuxSession(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil || !strings.Contains(string(data), "switch-client -t $3") {
+		t.Fatalf("last session command = %s, %v", data, err)
+	}
+}
+
+func TestSwitchLastTmuxSessionAcceptsNeverAttached(t *testing.T) {
+	log := writeFakeTmux(t, `
+printf '%s\n' "$*" >> "$TMUX_LOG"
+case "$1" in
+  list-sessions) printf '$1\037current\037300\036\n$2\037new\037\036\n' ;;
+esac
+`)
+	t.Setenv("TMUX_LOG", log)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := switchLastTmuxSession(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(log)
+	if !strings.Contains(string(data), "switch-client -t $2") {
+		t.Fatalf("never-attached session command = %s", data)
+	}
+}
+
+func TestSwitchLastTmuxSessionRequiresHistory(t *testing.T) {
+	writeFakeTmux(t, `case "$1" in list-sessions) printf '$1\037only\037300\036\n' ;; esac`)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := switchLastTmuxSession(); err == nil || !strings.Contains(err.Error(), "no last session") {
+		t.Fatalf("single session history = %v", err)
+	}
+}
+
 func TestSessionOpenOutsideTmux(t *testing.T) {
 	log := writeFakeTmux(t, `printf '%s\n' "$*" > "$TMUX_LOG"`)
 	t.Setenv("TMUX", "")

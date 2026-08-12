@@ -152,8 +152,7 @@ func contextCommand(args []string) (bool, error) {
 		if os.Getenv("TMUX") == "" {
 			return true, errors.New("run jumpmux inside tmux to switch sessions")
 		}
-		_, err := tmuxOutput("switch-client", "-l")
-		return true, err
+		return true, switchLastTmuxSession()
 	}
 	cwd, err := os.Getwd()
 	if err != nil {

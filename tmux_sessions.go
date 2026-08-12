@@ -445,6 +445,45 @@ func switchTmuxSession(id string) error {
 	return err
 }
 
+func switchLastTmuxSession() error {
+	config, err := loadSessionsConfig()
+	if err != nil {
+		return err
+	}
+	format := "#{session_id}" + tmuxFieldSeparator + "#{session_name}" + tmuxFieldSeparator + "#{session_last_attached}" + tmuxRecordSeparator
+	output, err := tmuxOutput("list-sessions", "-F", format)
+	if err != nil {
+		return err
+	}
+	type recentSession struct {
+		id       string
+		attached int64
+	}
+	sessions := []recentSession{}
+	for _, record := range tmuxRecords(output) {
+		parts := strings.Split(record, tmuxFieldSeparator)
+		if len(parts) != 3 || !validTmuxSessionID(parts[0]) {
+			return errors.New("tmux returned malformed session history")
+		}
+		var attached int64
+		if parts[2] != "" {
+			attached, err = strconv.ParseInt(parts[2], 10, 64)
+			if err != nil || attached < 0 {
+				return errors.New("tmux returned malformed session history")
+			}
+		}
+		if config != nil && sessionExcluded(config.exclude, parts[1]) {
+			continue
+		}
+		sessions = append(sessions, recentSession{id: parts[0], attached: attached})
+	}
+	sort.Slice(sessions, func(i, j int) bool { return sessions[i].attached > sessions[j].attached })
+	if len(sessions) < 2 {
+		return errors.New("no last session found")
+	}
+	return switchTmuxSession(sessions[1].id)
+}
+
 func removeTmuxSession(selected item) error {
 	if !validTmuxSessionID(selected.muxSessionID) {
 		return fmt.Errorf("invalid tmux session ID %q", selected.muxSessionID)
