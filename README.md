@@ -15,9 +15,9 @@ Selecting an agent focuses its tmux pane. Selecting a worktree focuses its agent
 - Git
 - tmux
 - [Pi](https://pi.dev)
-- [Worktrunk](https://worktrunk.dev/) (optional) for default-branch detection and worktree actions
-- [GitHub CLI](https://cli.github.com/) (optional) for PR data and browser actions
-- A Nerd Font for detailed icons
+- [Nerd Font](https://www.nerdfonts.com/) (optional)
+- [Worktrunk](https://worktrunk.dev/) (optional)
+- [GitHub CLI](https://cli.github.com/) (optional)
 
 ## Install
 
