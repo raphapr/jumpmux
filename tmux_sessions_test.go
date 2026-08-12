@@ -594,14 +594,14 @@ func TestSessionsDashboardTab(t *testing.T) {
 	}
 	model.query = ""
 	view := ansi.Strip(model.View())
-	for _, want := range []string{"Agents 0", "Worktrees 0", "[Sessions 2]", "Session", "Path", "Win", "↵ Open"} {
+	for _, want := range []string{"Agents 0", "Worktrees 0", "[Sessions 2 · All]", "Session", "Path", "Win", "↵ Open"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("sessions view missing %q:\n%s", want, view)
 		}
 	}
 	model.query = "dev"
 	footer := ansi.Strip(model.renderFooter(80))
-	for _, want := range []string{"^j/k Move", "↵ Open", "type Search", "Tab Next", "Esc Clear", "^c Quit"} {
+	for _, want := range []string{"^j/k Move", "↵ Open", "^f All", "Tab Next", "Esc Clear", "^c Quit"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("sessions footer missing %q: %s", want, footer)
 		}

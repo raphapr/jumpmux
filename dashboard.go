@@ -23,6 +23,22 @@ const (
 	tabCount
 )
 
+type sessionFilter uint8
+
+const (
+	sessionFilterAll sessionFilter = iota
+	sessionFilterLive
+	sessionFilterInactive
+	sessionFilterConfigured
+	sessionFilterDiscovered
+)
+
+var sessionFilters = [...]sessionFilter{sessionFilterAll, sessionFilterLive, sessionFilterInactive, sessionFilterConfigured, sessionFilterDiscovered}
+
+func (filter sessionFilter) label() string {
+	return [...]string{"All", "Live", "Inactive", "Configured", "Discovered"}[filter]
+}
+
 const (
 	refreshInterval      = 2 * time.Second
 	gitRefreshPeriod     = 5 * time.Second
@@ -73,6 +89,7 @@ type dashboardModel struct {
 	themePickerInput                                                      textinput.Model
 	themePickerIndex, themePickerOffset                                   int
 	themePickerPrevious                                                   colorScheme
+	sessionFilter                                                         sessionFilter
 	actionTextInput                                                       textinput.Model
 	preview                                                               previewData
 	previewOffset, diffOff, rightOffset, xOffset, previewSize             int
@@ -264,6 +281,17 @@ func (m *dashboardModel) closeThemePicker(save bool) tea.Cmd {
 	if selected, ok := m.selected(); ok {
 		return m.requestPreview(selected)
 	}
+	return nil
+}
+
+func (m *dashboardModel) cycleSessionFilter() tea.Cmd {
+	target := m.selectedTarget()
+	m.sessionFilter = sessionFilters[(int(m.sessionFilter)+1)%len(sessionFilters)]
+	m.restoreSelection(target)
+	if selected, ok := m.selected(); ok {
+		return m.requestPreview(selected)
+	}
+	m.preview, m.loading = previewData{}, false
 	return nil
 }
 
@@ -1181,6 +1209,10 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.switchTab((m.tab + 1) % tabCount)
 	case "t":
 		return m, m.openThemePicker()
+	case "ctrl+f":
+		if m.tab == tabSessions {
+			return m, m.cycleSessionFilter()
+		}
 	case "s":
 		if m.tab != tabAgents {
 			return m, nil
@@ -1439,8 +1471,9 @@ func (m dashboardModel) helpLines() []string {
 		"Mouse wheel   Scroll table or preview",
 		"Tab           Switch tabs",
 		"/             Filter (Agents/Worktrees)",
-		"Type          Filter (Sessions)",
-		"Enter / Esc   Open / clear session filter",
+		"Type          Search Sessions",
+		"Ctrl+f        Cycle Session filter",
+		"Enter / Esc   Open / clear session search",
 		"d             Open Git diff (Agents/Worktrees)",
 		"Shift+←/→     Focus split panel",
 		"a             Add worktree (Worktrees)",
@@ -1496,7 +1529,20 @@ func (m dashboardModel) rows() []item {
 	case tabWorktrees:
 		rows = m.worktrees
 	case tabSessions:
-		rows = m.sessions
+		rows = slices.DeleteFunc(slices.Clone(m.sessions), func(item item) bool {
+			switch m.sessionFilter {
+			case sessionFilterLive:
+				return item.muxSessionID == ""
+			case sessionFilterInactive:
+				return item.muxSessionID != ""
+			case sessionFilterConfigured:
+				return item.sessionSource != "config"
+			case sessionFilterDiscovered:
+				return item.sessionSource != "discovered"
+			default:
+				return false
+			}
+		})
 	}
 	if m.query == "" {
 		return rows

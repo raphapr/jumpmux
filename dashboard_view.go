@@ -52,9 +52,12 @@ func (m dashboardModel) tabLabels() [tabCount]string {
 		fmt.Sprintf("Worktrees %d", len(m.worktrees)),
 		fmt.Sprintf("Sessions %d", len(m.sessions)),
 	}
-	if m.tab == tabAgents {
+	switch m.tab {
+	case tabAgents:
 		labels[tabAgents] = fmt.Sprintf("[Agents %d · %s]", len(m.agents), m.scope.label())
-	} else {
+	case tabSessions:
+		labels[tabSessions] = fmt.Sprintf("[Sessions %d · %s]", len(m.rows()), m.sessionFilter.label())
+	default:
 		labels[m.tab] = "[" + labels[m.tab] + "]"
 	}
 	if 2+ansi.StringWidth(strings.Join(labels[:], " │ ")) > m.width {
@@ -62,6 +65,9 @@ func (m dashboardModel) tabLabels() [tabCount]string {
 		if m.tab == tabAgents {
 			labels[tabAgents] = "[" + labels[tabAgents] + "]"
 		}
+	}
+	if m.tab == tabSessions && 2+ansi.StringWidth(strings.Join(labels[:], " │ ")) > m.width {
+		labels[tabSessions] = fmt.Sprintf("[Sessions %d]", len(m.rows()))
 	}
 	return labels
 }
@@ -109,6 +115,8 @@ func (m dashboardModel) renderTable(width int) string {
 			message = "Loading " + label + "…"
 		} else if m.query != "" {
 			message = "No matches for /" + safeText(m.query)
+		} else if m.tab == tabSessions && m.sessionFilter != sessionFilterAll {
+			message = "No " + strings.ToLower(m.sessionFilter.label()) + " sessions."
 		}
 		lines = append(lines, mutedStyle.Render("  "+message))
 	}
@@ -385,13 +393,23 @@ func (m dashboardModel) renderFooter(width int) string {
 		input := m.filterInputs[m.tab]
 		styleTextInput(&input)
 		if m.tab == tabSessions {
-			controls := []string{footerCommand("^j/^k", "Move"), footerCommand("↵", "Open")}
+			separator := borderStyle.Render(" │ ")
+			base := []string{footerCommand("Esc", "Clear"), footerCommand("^c", "Quit")}
+			optional := []string{footerCommand("^j/^k", "Move"), footerCommand("↵", "Open")}
 			if selected, ok := m.selected(); ok && selected.muxSessionID != "" {
-				controls = append(controls, footerCommand("^d", "Remove"))
+				optional = append(optional, footerCommand("^d", "Remove"))
 			}
-			controls = append(controls, footerCommand("Esc", "Clear"), footerCommand("^c", "Quit"))
-			suffix := "  " + strings.Join(controls, borderStyle.Render(" │ "))
-			input.Width = max(1, width-ansi.StringWidth(suffix)-2)
+			controls := []string{}
+			for _, candidate := range optional {
+				next := append(append([]string{}, controls...), candidate)
+				suffix := "  " + strings.Join(append(next, base...), separator)
+				if 2+ansi.StringWidth(input.Prompt)+2+ansi.StringWidth(suffix) <= width {
+					controls = next
+				}
+			}
+			controls = append(controls, base...)
+			suffix := "  " + strings.Join(controls, separator)
+			input.Width = max(1, width-ansi.StringWidth(suffix)-ansi.StringWidth(input.Prompt)-3)
 			input.SetCursor(input.Position())
 			return padANSI("  "+input.View()+suffix, width)
 		}
@@ -409,10 +427,13 @@ func (m dashboardModel) renderFooter(width int) string {
 		if selected, ok := m.selected(); ok && selected.muxSessionID != "" {
 			candidates = append(candidates, footerCommand("^d", "Remove"))
 		}
-		candidates = append(candidates, footerCommand("type", "Search"), footerCommand("Tab", "Next"))
-		if m.query != "" {
+		candidates = append(candidates, footerCommand("^f", m.sessionFilter.label()))
+		if m.query == "" {
+			candidates = append(candidates, footerCommand("type", "Search"))
+		} else {
 			candidates = append(candidates, footerCommand("Esc", "Clear"))
 		}
+		candidates = append(candidates, footerCommand("Tab", "Next"))
 		return m.prioritizedFooterWithBase(width, candidates, []string{footerCommand("^c", "Quit")})
 	}
 	candidates := []string{footerCommand("↵", "Open")}

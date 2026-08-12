@@ -40,6 +40,7 @@ func TestDashboardTab(t *testing.T) {
 }
 
 func TestContextJSON(t *testing.T) {
+	t.Setenv("JUMPMUX_PLAIN", "")
 	entries := contextJSON([]item{
 		{kind: "session", target: "%1", title: "agent", cwd: "/agent", status: "working"},
 		{kind: "worktree", target: "/repo", title: "feature", cwd: "/repo", pane: "%2"},

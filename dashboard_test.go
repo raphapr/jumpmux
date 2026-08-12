@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -482,6 +483,55 @@ func TestDashboardCyclesSessionsTab(t *testing.T) {
 	}
 	if labels := model.tabLabels(); len(labels) != tabCount {
 		t.Fatalf("tab labels = %#v", labels)
+	}
+}
+
+func TestSessionFilters(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height, model.tab = 100, 20, tabSessions
+	model.sessions = []item{
+		{kind: "tmux-session", target: "live", title: "live", muxSessionID: "$1"},
+		{kind: "tmux-session", target: "configured", title: "configured", sessionSource: "config"},
+		{kind: "tmux-session", target: "discovered", title: "discovered", sessionSource: "discovered"},
+	}
+	for filter, want := range map[sessionFilter][]string{
+		sessionFilterAll:        {"live", "configured", "discovered"},
+		sessionFilterLive:       {"live"},
+		sessionFilterInactive:   {"configured", "discovered"},
+		sessionFilterConfigured: {"configured"},
+		sessionFilterDiscovered: {"discovered"},
+	} {
+		model.sessionFilter = filter
+		rows := model.rows()
+		got := make([]string, len(rows))
+		for index := range rows {
+			got[index] = rows[index].target
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("filter %s = %v, want %v", filter.label(), got, want)
+		}
+	}
+
+	model.sessionFilter = sessionFilterAll
+	for _, want := range []sessionFilter{sessionFilterLive, sessionFilterInactive, sessionFilterConfigured, sessionFilterDiscovered, sessionFilterAll} {
+		updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlF})
+		model = updated.(dashboardModel)
+		if model.sessionFilter != want || !strings.Contains(ansi.Strip(model.tabLabels()[tabSessions]), want.label()) {
+			t.Fatalf("Ctrl+f filter = %s, want %s", model.sessionFilter.label(), want.label())
+		}
+	}
+}
+
+func TestSessionSearchFooterFits(t *testing.T) {
+	for _, width := range []int{40, 60, 80, 100} {
+		model := newDashboard("/repo")
+		model.width, model.height, model.tab, model.filter, model.query = width, 20, tabSessions, true, "x"
+		model.filterInputs[tabSessions].SetValue("x")
+		model.sessions = []item{{kind: "tmux-session", target: "live", title: "live", muxSessionID: "$1"}}
+		footer := ansi.Strip(model.renderFooter(width))
+		if ansi.StringWidth(footer) != width || !strings.Contains(footer, "Esc Clear") || !strings.Contains(footer, "^c Quit") {
+			t.Fatalf("width %d search footer = %q (%d cells)", width, footer, ansi.StringWidth(footer))
+		}
 	}
 }
 
