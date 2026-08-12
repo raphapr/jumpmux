@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -161,8 +162,8 @@ func expandSessionPath(path string) string {
 	return filepath.Join(home, strings.TrimPrefix(path, "~/"))
 }
 
-func listLiveTmuxSessions() ([]tmuxSession, error) {
-	if os.Getenv("TMUX") == "" {
+func listLiveTmuxSessions(includeServer bool) ([]tmuxSession, error) {
+	if !includeServer && os.Getenv("TMUX") == "" {
 		return nil, nil
 	}
 	format := strings.Join([]string{
@@ -171,6 +172,9 @@ func listLiveTmuxSessions() ([]tmuxSession, error) {
 	}, tmuxFieldSeparator) + tmuxRecordSeparator
 	output, err := tmuxOutput("list-panes", "-a", "-F", format)
 	if err != nil {
+		if includeServer && (strings.Contains(err.Error(), "no server running") || strings.Contains(err.Error(), "failed to connect")) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	if !validTmuxRecordOutput(output) {
@@ -279,7 +283,7 @@ func discoverSessions(command []string) ([]configuredSession, error) {
 	return sessions, nil
 }
 
-func listSessions() ([]item, error) {
+func listSessions(includeServer bool) ([]item, error) {
 	config, err := loadSessionsConfig()
 	if err != nil {
 		return nil, err
@@ -291,7 +295,7 @@ func listSessions() ([]item, error) {
 	if discoverErr != nil {
 		return nil, discoverErr
 	}
-	live, liveErr := listLiveTmuxSessions()
+	live, liveErr := listLiveTmuxSessions(includeServer)
 	items := make(map[string]item, len(config.sessions)+len(discovered)+len(live))
 	for _, session := range config.sessions {
 		if sessionExcluded(config.exclude, session.name) {
@@ -389,11 +393,20 @@ func sessionByName(name string) (tmuxSession, bool, error) {
 }
 
 func jumpTmuxSession(selected item) error {
-	if os.Getenv("TMUX") == "" {
-		return errors.New("run jumpmux inside tmux to switch sessions")
-	}
 	if selected.muxSessionID != "" && !validTmuxSessionID(selected.muxSessionID) {
 		return fmt.Errorf("invalid tmux session ID %q", selected.muxSessionID)
+	}
+	if os.Getenv("TMUX") == "" {
+		if selected.sessionSource == "" && selected.muxSessionID == "" {
+			return errors.New("the selected tmux session is no longer open")
+		}
+		args := []string{"new-session", "-A", "-s", selected.target}
+		if selected.cwd != "" {
+			args = append(args, "-c", selected.cwd)
+		}
+		command := exec.Command("tmux", args...)
+		command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+		return command.Run()
 	}
 	live, exists, err := sessionByName(selected.target)
 	if err != nil {

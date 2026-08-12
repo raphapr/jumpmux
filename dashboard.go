@@ -349,7 +349,7 @@ func refreshAgentGit(agents []item) tea.Cmd {
 
 func refreshSessions(generation uint64) tea.Cmd {
 	return func() tea.Msg {
-		sessions, err := listSessions()
+		sessions, err := listSessions(false)
 		return sessionDataMsg{generation: generation, sessions: sessions, err: err}
 	}
 }

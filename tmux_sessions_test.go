@@ -113,9 +113,25 @@ func TestConfiguredSessionsLoadOutsideTmux(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	writeSessionsConfig(t, "[[sessions.entries]]\nname = \"dev\"\npath = \""+project+"\"\n")
-	sessions, err := listSessions()
+	sessions, err := listSessions(false)
 	if err != nil || len(sessions) != 1 || sessions[0].sessionSource != "config" {
 		t.Fatalf("configured sessions outside tmux = %#v, %v", sessions, err)
+	}
+}
+
+func TestSessionsCLIListsLiveSessionsOutsideTmux(t *testing.T) {
+	project := t.TempDir()
+	t.Setenv("TMUX", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	writeSessionsConfig(t, "[[sessions.entries]]\nname = \"dev\"\npath = \""+project+"\"\n")
+	writeFakeTmux(t, `
+case "$1" in
+  list-panes) printf '$1\037dev\037\061\037\061\037\061\037%%7\037/tmp/live\036\n' ;;
+esac
+`)
+	sessions, err := listSessions(true)
+	if err != nil || len(sessions) != 1 || sessions[0].muxSessionID != "$1" || sessions[0].cwd != project {
+		t.Fatalf("CLI sessions outside tmux = %#v, %v", sessions, err)
 	}
 }
 
@@ -136,7 +152,7 @@ case "$1" in
   list-panes) printf '$1\037dev\037\063\037\061\037\061\037%%7\037/tmp/live\036\n' ;;
 esac
 `)
-	sessions, err := listSessions()
+	sessions, err := listSessions(false)
 	if err != nil || len(sessions) != 2 {
 		t.Fatalf("sessions = %#v, %v", sessions, err)
 	}
@@ -160,7 +176,7 @@ case "$1" in
   list-panes) printf '$1\037dev\037\063\037\061\037\061\037%%7\037/tmp/live\036\n$2\037other\037\061\037\061\037\061\037%%8\037/tmp/other\036\n' ;;
 esac
 `)
-	sessions, err := listSessions()
+	sessions, err := listSessions(false)
 	if err != nil || len(sessions) != 2 {
 		t.Fatalf("sessions = %#v, %v", sessions, err)
 	}
@@ -182,7 +198,7 @@ esac
 `)
 	t.Setenv("TMUX", "/tmp/tmux,1,0")
 	t.Setenv("TMUX_LOG", log)
-	if _, err := listLiveTmuxSessions(); err != nil {
+	if _, err := listLiveTmuxSessions(false); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(log)
@@ -201,8 +217,24 @@ case "$1" in
   list-panes) printf '$1\037dev\0370\0371' ;;
 esac
 `)
-	if _, err := listLiveTmuxSessions(); err == nil || !strings.Contains(err.Error(), "malformed pane record") {
+	if _, err := listLiveTmuxSessions(false); err == nil || !strings.Contains(err.Error(), "malformed pane record") {
 		t.Fatalf("malformed session listing was accepted: %v", err)
+	}
+}
+
+func TestSessionOpenOutsideTmux(t *testing.T) {
+	log := writeFakeTmux(t, `printf '%s\n' "$*" > "$TMUX_LOG"`)
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_LOG", log)
+	if err := jumpTmuxSession(item{target: "dev", cwd: "/tmp/dev", sessionSource: "config"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "new-session -A -s dev -c /tmp/dev") {
+		t.Fatalf("outside tmux open = %s", data)
 	}
 }
 

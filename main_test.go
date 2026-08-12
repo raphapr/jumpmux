@@ -39,6 +39,46 @@ func TestDashboardTab(t *testing.T) {
 	}
 }
 
+func TestContextJSON(t *testing.T) {
+	entries := contextJSON([]item{
+		{kind: "session", target: "%1", title: "agent", cwd: "/agent", status: "working"},
+		{kind: "worktree", target: "/repo", title: "feature", cwd: "/repo", pane: "%2"},
+		{kind: "tmux-session", target: "dev", title: "dev", cwd: "/dev", muxSessionID: "$1", tmuxWindows: 2},
+	})
+	if len(entries) != 3 || entries[0].ID != "%1" || entries[0].Icon != workingIcon || entries[1].Name != "feature" || entries[2].Name != "dev" || entries[2].Path != "/dev" {
+		t.Fatalf("context JSON = %#v", entries)
+	}
+}
+
+func TestSessionsLast(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "tmux.log")
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$TMUX_LOG\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX", "/tmp/tmux,1,0")
+	t.Setenv("TMUX_LOG", log)
+	if handled, err := contextCommand([]string{"sessions", "last"}); !handled || err != nil {
+		t.Fatalf("sessions last = %t, %v", handled, err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil || strings.TrimSpace(string(data)) != "switch-client -l" {
+		t.Fatalf("sessions last command = %q, %v", data, err)
+	}
+}
+
+func TestContextCommandValidation(t *testing.T) {
+	for _, args := range [][]string{{"sessions"}, {"sessions", "list", "--yaml"}, {"agents", "connect", "%1"}, {"sessions", "connect", "dev"}, {"sessions", "last", "extra"}, {"worktrees", "other", "x"}} {
+		if handled, err := contextCommand(args); !handled || err == nil {
+			t.Fatalf("contextCommand(%q) = %t, %v", args, handled, err)
+		}
+	}
+	if handled, err := contextCommand([]string{"--help"}); handled || err != nil {
+		t.Fatalf("non-context command = %t, %v", handled, err)
+	}
+}
+
 func TestCommandTimeoutKillsDescendants(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -121,14 +161,6 @@ func TestDiffSupportsUnbornRepository(t *testing.T) {
 	dirty := loadDiff(item, 2)().(diffMsg)
 	if len(dirty.lines) != 2 || dirty.lines[0] != "Untracked files:" || dirty.lines[1] != "? new.txt" {
 		t.Fatalf("unexpected untracked diff: %#v", dirty)
-	}
-}
-
-func TestJumpDispatchesTmuxSession(t *testing.T) {
-	t.Setenv("TMUX", "")
-	err := jump(item{kind: "tmux-session", target: "dev"})
-	if err == nil || !strings.Contains(err.Error(), "inside tmux") {
-		t.Fatalf("tmux session jump dispatch = %v", err)
 	}
 }
 

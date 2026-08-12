@@ -80,6 +80,13 @@ type worktree struct {
 	branch string
 }
 
+type contextItem struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+	Icon string `json:"icon"`
+}
+
 var fileLineCache = struct {
 	sync.Mutex
 	values map[string]fileLineCount
@@ -131,12 +138,110 @@ func dashboardTab(name string) (int, error) {
 	}
 }
 
+func contextCommand(args []string) (bool, error) {
+	if len(args) == 0 || (args[0] != "agents" && args[0] != "worktrees" && args[0] != "sessions") {
+		return false, nil
+	}
+	if len(args) < 2 {
+		return true, fmt.Errorf("%s requires list or open", args[0])
+	}
+	if args[0] == "sessions" && args[1] == "last" {
+		if len(args) != 2 {
+			return true, errors.New("usage: jumpmux sessions last")
+		}
+		if os.Getenv("TMUX") == "" {
+			return true, errors.New("run jumpmux inside tmux to switch sessions")
+		}
+		_, err := tmuxOutput("switch-client", "-l")
+		return true, err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return true, err
+	}
+	var items []item
+	switch args[0] {
+	case "agents":
+		items, err = listLiveAgents()
+	case "sessions":
+		items, err = listSessions(true)
+	case "worktrees":
+		items, err = listWorktreeItems(cwd)
+		if err == nil {
+			var agents []item
+			agents, err = listLiveAgents()
+			if err == nil {
+				attachAgentsToWorktrees(items, agents)
+				err = attachTmuxWorktrees(items)
+			}
+		}
+	}
+	if err != nil {
+		return true, err
+	}
+	switch args[1] {
+	case "list":
+		if len(args) > 3 || (len(args) == 3 && args[2] != "--json") {
+			return true, fmt.Errorf("usage: jumpmux %s list [--json]", args[0])
+		}
+		config, err := loadConfig()
+		if err != nil {
+			return true, err
+		}
+		nerdFontEnabled = !config.hasNerdFont || config.nerdFont
+		entries := contextJSON(items)
+		if len(args) == 3 {
+			return true, json.NewEncoder(os.Stdout).Encode(entries)
+		}
+		for _, entry := range entries {
+			fmt.Printf("%s %-24s %s\n", entry.Icon, safeText(entry.Name), safeText(compactHome(entry.Path)))
+		}
+		return true, nil
+	case "open":
+		if len(args) != 3 {
+			return true, fmt.Errorf("usage: jumpmux %s open <id>", args[0])
+		}
+		for _, item := range items {
+			if item.target == args[2] {
+				return true, jump(item)
+			}
+		}
+		return true, fmt.Errorf("%s %q not found", strings.TrimSuffix(args[0], "s"), args[2])
+	default:
+		return true, fmt.Errorf("unknown %s command %q", args[0], args[1])
+	}
+}
+
+func contextJSON(items []item) []contextItem {
+	result := make([]contextItem, 0, len(items))
+	for _, item := range items {
+		entry := contextItem{ID: item.target, Name: item.title, Path: item.cwd}
+		switch item.kind {
+		case "session":
+			entry.Icon = dashboardIcon(workingIcon, "A")
+			if item.status == "done" {
+				entry.Icon = doneIcon
+			}
+		case "worktree":
+			entry.Icon = dashboardIcon("", "W")
+		case "tmux-session":
+			entry.Icon, _ = sessionIcon(item)
+		}
+		result = append(result, entry)
+	}
+	return result
+}
+
 func main() {
+	if handled, err := contextCommand(os.Args[1:]); handled {
+		exitOnError(err)
+		return
+	}
 	forceSessionScope, initialTab := false, tabAgents
 	for index := 1; index < len(os.Args); index++ {
 		switch os.Args[index] {
 		case "-h", "--help":
-			fmt.Print("jumpmux — dashboard for Git worktrees, live Pi agents, and tmux sessions\n\nUsage: jumpmux [--session] [-t|--tab <agents|worktrees|sessions>] [--list|--version|setup]\n")
+			fmt.Print("jumpmux — dashboard for Git worktrees, live Pi agents, and tmux sessions\n\nUsage:\n  jumpmux [--session] [-t|--tab <agents|worktrees|sessions>]\n  jumpmux <agents|worktrees|sessions> list [--json]\n  jumpmux <agents|worktrees|sessions> open <id>\n  jumpmux sessions last\n  jumpmux [--list|--version|setup]\n")
 			return
 		case "-s", "--session":
 			forceSessionScope = true

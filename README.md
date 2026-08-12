@@ -138,8 +138,13 @@ Set `nerdfont = false` in the configuration to replace Nerd Font Git, PR, check,
 jumpmux                 # open the dashboard with the saved scope
 jumpmux --session       # start with agents from the current tmux session
 jumpmux -t sessions     # open the Sessions tab (`--tab` also works)
+jumpmux sessions list   # print sessions (`--json` for scripts)
+jumpmux sessions open dev
+jumpmux sessions last   # switch to the previous tmux session
+jumpmux agents list
+jumpmux worktrees list
 jumpmux --list          # print available contexts
-jumpmux setup      # install or update the Pi extension
+jumpmux setup           # install or update the Pi extension
 jumpmux --version
 jumpmux --help
 ```
