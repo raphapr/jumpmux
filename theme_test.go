@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -13,11 +14,43 @@ func TestColorSchemes(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	defer applyColorScheme(schemeDefault)
 
-	if len(colorSchemes) != 12 || schemeTealDrift.next() != schemeDefault {
-		t.Fatalf("scheme cycle = %#v", colorSchemes)
+	if len(colorSchemes) != 16 {
+		t.Fatalf("scheme count = %d", len(colorSchemes))
 	}
 	if themePalettes[schemeDefault].accent.Dark != "#CBA6F7" || themePalettes[schemeEmberforge].header.Light != "#AA641E" {
 		t.Fatal("dashboard palette values changed")
+	}
+	for _, test := range []struct {
+		scheme   colorScheme
+		slug     string
+		expected []string
+	}{
+		{schemeCatppuccinLatte, "catppuccin-latte", []string{"#EFF1F5", "#CCD0DA", "#D2D4DC", "#7287FD", "#4C4F69", "#8C8FA1", "#9CA0B0", "#7287FD", "#7287FD", "#DF8E1D", "#DC8A78", "#179299", "#1E66F5", "#40A02B", "#DF8E1D", "#D20F39", "#8839EF"}},
+		{schemeCatppuccinFrappe, "catppuccin-frappe", []string{"#303446", "#414559", "#494E63", "#BABBF1", "#C6D0F5", "#838BA7", "#737994", "#BABBF1", "#BABBF1", "#E5C890", "#F2D5CF", "#81C8BE", "#8CAAEE", "#A6D189", "#E5C890", "#E78284", "#CA9EE6"}},
+		{schemeCatppuccinMacchiato, "catppuccin-macchiato", []string{"#24273A", "#363A4F", "#404459", "#B7BDF8", "#CAD3F5", "#8087A2", "#6E738D", "#B7BDF8", "#B7BDF8", "#EED49F", "#F4DBD6", "#8BD5CA", "#8AADF4", "#A6DA95", "#EED49F", "#ED8796", "#C6A0F6"}},
+		{schemeCatppuccinMocha, "catppuccin-mocha", []string{"#1E1E2E", "#313244", "#3B3D4F", "#B4BEFE", "#CDD6F4", "#7F849C", "#6C7086", "#B4BEFE", "#B4BEFE", "#F9E2AF", "#F5E0DC", "#94E2D5", "#89B4FA", "#A6E3A1", "#F9E2AF", "#F38BA8", "#CBA6F7"}},
+	} {
+		palette := themePalettes[test.scheme]
+		colors := []lipgloss.AdaptiveColor{palette.background, palette.currentRow, palette.selected, palette.currentWorktree, palette.text, palette.dimmed, palette.border, palette.activeBorder, palette.header, palette.keycap, palette.cursor, palette.info, palette.diff, palette.success, palette.warning, palette.danger, palette.accent}
+		if test.scheme.slug() != test.slug || colorSchemeFromSlug(test.slug) != test.scheme {
+			t.Fatalf("Catppuccin scheme = %#v", test)
+		}
+		for index, color := range colors {
+			if color.Light != test.expected[index] || color.Dark != test.expected[index] {
+				t.Fatalf("%s color %d = %#v, want %s", test.slug, index, color, test.expected[index])
+			}
+		}
+		applyColorScheme(test.scheme)
+		if !dashboardBackgroundEnabled || dashboardBackgroundColor != palette.background {
+			t.Fatalf("%s background was not applied", test.slug)
+		}
+	}
+	applyColorScheme(schemeDefault)
+	if dashboardBackgroundEnabled {
+		t.Fatal("default scheme retained the Catppuccin background")
+	}
+	if input := "plain\x1b[0m styled\nnext"; paintDashboardBackground(input) != input {
+		t.Fatal("default scheme painted the dashboard background")
 	}
 	if err := saveColorScheme(schemeEmberforge); err != nil {
 		t.Fatal(err)
@@ -29,12 +62,66 @@ func TestColorSchemes(t *testing.T) {
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
 	got := updated.(dashboardModel)
+	if !got.themePicker || got.scheme != schemeEmberforge {
+		t.Fatalf("theme picker = %#v", got)
+	}
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	got = updated.(dashboardModel)
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got = updated.(dashboardModel)
 	config, err := loadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.scheme != schemeGlacierSignal || !config.hasTheme || config.theme != schemeGlacierSignal {
-		t.Fatalf("cycled scheme = %s", got.scheme.slug())
+	if got.themePicker || got.scheme != schemeGlacierSignal || !config.hasTheme || config.theme != schemeGlacierSignal {
+		t.Fatalf("selected scheme = %s", got.scheme.slug())
+	}
+}
+
+func TestCatppuccinDashboardBackground(t *testing.T) {
+	previousProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(0) // termenv.TrueColor; avoid a direct test dependency.
+	defer func() {
+		lipgloss.SetColorProfile(previousProfile)
+		applyColorScheme(schemeDefault)
+	}()
+
+	applyColorScheme(schemeCatppuccinMocha)
+	input := "plain\x1b[0m styled\nnext"
+	painted := paintDashboardBackground(input)
+	if strings.Count(painted, "48;2;30;30;46m") < 3 || !strings.HasSuffix(painted, "\x1b[0m") || ansi.Strip(painted) != ansi.Strip(input) {
+		t.Fatalf("painted dashboard = %q", painted)
+	}
+
+	applyColorScheme(schemeDefault)
+	if got := paintDashboardBackground(input); got != input {
+		t.Fatalf("default dashboard = %q", got)
+	}
+}
+
+func TestThemePickerFiltersAndCancels(t *testing.T) {
+	defer applyColorScheme(schemeDefault)
+	model := newDashboard("/repo")
+	model.width, model.height = 40, 10
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	model = updated.(dashboardModel)
+	for _, key := range "cat" {
+		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{key}})
+		model = updated.(dashboardModel)
+	}
+	if !model.themePicker || model.scheme != schemeCatppuccinLatte || model.themePickerInput.Value() != "cat" {
+		t.Fatalf("filtered picker = %#v", model)
+	}
+	picker := ansi.Strip(model.View())
+	if !strings.Contains(picker, "[Agents") || !strings.Contains(picker, "catppuccin-latte") || strings.Contains(picker, "Built-in") || strings.Contains(picker, "Catppuccin\n") || !strings.Contains(picker, "Apply") || !strings.Contains(picker, "Cancel") || len(strings.Split(picker, "\n")) != model.height {
+		t.Fatalf("picker view = %q", picker)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(dashboardModel)
+	if model.themePicker || model.scheme != schemeDefault {
+		t.Fatalf("cancelled picker = %#v", model)
 	}
 }
 

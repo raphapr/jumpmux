@@ -1,6 +1,6 @@
 # jumpmux
 
-jumpmux is a terminal dashboard for moving between Git worktrees and live Pi agents in tmux. It is inspired by [Workmux](https://github.com/raine/workmux), but takes a more opinionated approach.
+jumpmux is a terminal dashboard for moving between Git worktrees and live agents in tmux. It is inspired by [Workmux](https://github.com/raine/workmux), but takes a more opinionated approach.
 
 ## Tabs
 
@@ -36,14 +36,17 @@ The extension reports the current pane's agent state.
 | ---------------------------- | --------------------------------------------------------------------- |
 | Mouse click / double-click   | Select / focus an agent or worktree                                   |
 | Mouse wheel                  | Scroll the table, focused panel, or Help                              |
-| `j`/`k`, arrows              | Move the selection; scroll the focused diff panel or Help             |
+| `j`/`k`, arrows              | Move the selection, browse themes, or scroll the focused diff panel   |
 | `1`–`9`                      | Open that numbered row                                                |
 | `Tab`                        | Switch tabs                                                           |
 | `Enter`                      | Focus the selected agent or worktree                                  |
 | `/`                          | Filter the active tab                                                 |
 | `Shift+Left` / `Shift+Right` | Focus the left or right preview/diff panel                            |
 | `s`                          | Toggle agent scope between all and current tmux session               |
-| `t`                          | Cycle color schemes                                                   |
+| `t`                          | Open the theme picker                                                 |
+| `Enter` in the theme picker  | Apply the selected theme                                              |
+| `Esc` in the theme picker    | Restore the previous theme and close                                  |
+| Type in the theme picker     | Filter theme names                                                    |
 | `Enter` while filtering      | Accept the filter                                                     |
 | `Esc` while filtering        | Clear and close the filter                                            |
 | `d`                          | Open the selected context's Git WIP diff                              |
@@ -98,11 +101,11 @@ jumpmux queries each agent repository with `gh pr list`. It matches fork PRs aga
 
 ### Themes and fonts
 
-Press `t` to cycle these color schemes:
+Press `t` to open the theme picker and browse these color schemes:
 
-`default`, `emberforge`, `glacier-signal`, `obsidian-pop`, `slate-garden`, `phosphor-arcade`, `lasergrid`, `mossfire`, `night-sorbet`, `graphite-code`, `festival-circuit`, `teal-drift`
+`default`, `emberforge`, `glacier-signal`, `obsidian-pop`, `slate-garden`, `phosphor-arcade`, `lasergrid`, `mossfire`, `night-sorbet`, `graphite-code`, `festival-circuit`, `teal-drift`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha`
 
-jumpmux selects dark or light colors from the terminal profile and saves the selected scheme in the user configuration directory.
+Built-in themes follow the terminal profile. Catppuccin flavours use their fixed palette. jumpmux saves the selected scheme in the user configuration directory.
 
 Set `nerdfont = false` in the configuration to replace Nerd Font Git, PR, check, and stale icons with text symbols. `JUMPMUX_PLAIN=1` overrides the setting for one launch.
 

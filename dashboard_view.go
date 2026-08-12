@@ -21,20 +21,20 @@ func (m dashboardModel) View() string {
 		for index := range lines {
 			lines[index] = padANSI(lines[index], width)
 		}
-		return strings.Join(lines, "\n")
+		return paintDashboardBackground(strings.Join(lines, "\n"))
 	}
 	if m.help {
-		return m.renderHelp(width)
+		return paintDashboardBackground(m.renderHelp(width))
 	}
 	if m.diff {
-		return m.renderDiff(width)
+		return paintDashboardBackground(m.renderDiff(width))
 	}
-	return strings.Join([]string{
+	return paintDashboardBackground(strings.Join([]string{
 		m.renderHeader(width),
 		m.renderTable(width),
 		m.renderPreview(width),
 		m.renderFooter(width),
-	}, "\n")
+	}, "\n"))
 }
 
 func (m dashboardModel) renderHeader(width int) string {
@@ -245,6 +245,9 @@ func (m dashboardModel) matchingWorktree(session item) (item, bool) {
 
 func (m dashboardModel) renderPreview(width int) string {
 	height := m.previewHeight()
+	if m.themePicker {
+		return m.renderThemePicker(width, height)
+	}
 	if m.action == actionRemoveWorktree {
 		return renderPanel("Remove worktree", m.removePreviewLines(), width, height, 0, 0, false, true)
 	}
@@ -288,6 +291,9 @@ func (m dashboardModel) removePreviewLines() []string {
 }
 
 func (m dashboardModel) renderFooter(width int) string {
+	if m.themePicker {
+		return m.renderThemePickerFooter(width)
+	}
 	switch m.action {
 	case actionAddWorktree:
 		input := m.actionTextInput
@@ -387,6 +393,46 @@ func footerToggle(key, label string, active bool) string {
 	return footerCommand(key, label)
 }
 
+func (m dashboardModel) themePickerLines() ([]string, int) {
+	themes := m.themeOptions()
+	if len(themes) == 0 {
+		return []string{mutedStyle.Render("No themes match \"" + safeText(m.themePickerInput.Value()) + "\".")}, 0
+	}
+	lines, selectedLine := make([]string, 0, len(themes)), 0
+	for index, scheme := range themes {
+		if index == m.themePickerIndex {
+			selectedLine = len(lines)
+			lines = append(lines, infoStyle.Render("▌ ")+textStyle.Render(scheme.slug()))
+			continue
+		}
+		lines = append(lines, "  "+mutedStyle.Render(scheme.slug()))
+	}
+	return lines, selectedLine
+}
+
+func (m dashboardModel) renderThemePicker(width, height int) string {
+	lines, _ := m.themePickerLines()
+	themes := m.themeOptions()
+	title := "Theme"
+	if len(themes) > 0 {
+		title = fmt.Sprintf("Theme: %s (%d/%d)", m.scheme.slug(), m.themePickerIndex+1, len(themes))
+	}
+	return renderPanel(title, lines, width, height, m.themePickerOffset, 0, false, true)
+}
+
+func (m dashboardModel) renderThemePickerFooter(width int) string {
+	input := m.themePickerInput
+	styleTextInput(&input)
+	apply := footerCommand("Enter", "Apply")
+	if width < 60 {
+		apply = footerCommand("↵", "Apply")
+	}
+	suffix := "  " + apply + " " + footerCommand("Esc", "Cancel")
+	input.Width = max(1, width-3-ansi.StringWidth(input.Prompt)-ansi.StringWidth(suffix))
+	input.SetCursor(input.Position())
+	return padANSI("  "+input.View()+suffix, width)
+}
+
 func (m dashboardModel) renderHelp(width int) string {
 	lines := m.helpLines()
 	start := m.helpOffset + 1
@@ -422,13 +468,15 @@ func renderPanel(title string, lines []string, width, height, offset, xOffset in
 	innerWidth, innerHeight := width-2, height-2
 	offset = min(max(0, offset), max(0, len(lines)-innerHeight))
 
+	panelBorderStyle := borderStyle
 	if focused {
 		title = "▶ " + title
+		panelBorderStyle = activeBorderStyle
 	}
 	title = " " + safeText(title) + " "
 	title = ansi.Truncate(title, max(0, innerWidth-1), "")
-	topLeft := borderStyle.Render("┌─") + headerStyle.Render(title)
-	top := topLeft + borderStyle.Render(strings.Repeat("─", max(0, width-ansi.StringWidth(topLeft)-1))+"┐")
+	topLeft := panelBorderStyle.Render("┌─") + headerStyle.Render(title)
+	top := topLeft + panelBorderStyle.Render(strings.Repeat("─", max(0, width-ansi.StringWidth(topLeft)-1))+"┐")
 	out := []string{top}
 	for index := 0; index < innerHeight; index++ {
 		line := ""
@@ -440,8 +488,8 @@ func renderPanel(title string, lines []string, width, height, offset, xOffset in
 			}
 			line = clipLine(line, innerWidth, xOffset)
 		}
-		out = append(out, borderStyle.Render("│")+padANSI(line, innerWidth)+borderStyle.Render("│"))
+		out = append(out, panelBorderStyle.Render("│")+padANSI(line, innerWidth)+panelBorderStyle.Render("│"))
 	}
-	out = append(out, borderStyle.Render("└"+strings.Repeat("─", innerWidth)+"┘"))
+	out = append(out, panelBorderStyle.Render("└"+strings.Repeat("─", innerWidth)+"┘"))
 	return strings.Join(out, "\n")
 }

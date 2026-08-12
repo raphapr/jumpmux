@@ -23,6 +23,10 @@ const (
 	schemeGraphiteCode
 	schemeFestivalCircuit
 	schemeTealDrift
+	schemeCatppuccinLatte
+	schemeCatppuccinFrappe
+	schemeCatppuccinMacchiato
+	schemeCatppuccinMocha
 )
 
 var colorSchemes = [...]colorScheme{
@@ -38,10 +42,10 @@ var colorSchemes = [...]colorScheme{
 	schemeGraphiteCode,
 	schemeFestivalCircuit,
 	schemeTealDrift,
-}
-
-func (scheme colorScheme) next() colorScheme {
-	return colorSchemes[(int(scheme)+1)%len(colorSchemes)]
+	schemeCatppuccinLatte,
+	schemeCatppuccinFrappe,
+	schemeCatppuccinMacchiato,
+	schemeCatppuccinMocha,
 }
 
 func (scheme colorScheme) slug() string {
@@ -70,6 +74,14 @@ func (scheme colorScheme) slug() string {
 		return "festival-circuit"
 	case schemeTealDrift:
 		return "teal-drift"
+	case schemeCatppuccinLatte:
+		return "catppuccin-latte"
+	case schemeCatppuccinFrappe:
+		return "catppuccin-frappe"
+	case schemeCatppuccinMacchiato:
+		return "catppuccin-macchiato"
+	case schemeCatppuccinMocha:
+		return "catppuccin-mocha"
 	default:
 		return "default"
 	}
@@ -85,14 +97,18 @@ func colorSchemeFromSlug(value string) colorScheme {
 }
 
 type themePalette struct {
-	currentRow, currentWorktree, selected lipgloss.AdaptiveColor
-	text, dimmed, border, header          lipgloss.AdaptiveColor
-	keycap, info, success, warning        lipgloss.AdaptiveColor
-	danger, accent                        lipgloss.AdaptiveColor
+	background, currentRow, currentWorktree, selected lipgloss.AdaptiveColor
+	text, dimmed, border, activeBorder, header        lipgloss.AdaptiveColor
+	keycap, cursor, info, diff, success, warning      lipgloss.AdaptiveColor
+	danger, accent                                    lipgloss.AdaptiveColor
 }
 
 func adaptive(light, dark string) lipgloss.AdaptiveColor {
 	return lipgloss.AdaptiveColor{Light: light, Dark: dark}
+}
+
+func fixed(color string) lipgloss.AdaptiveColor {
+	return adaptive(color, color)
 }
 
 var themePalettes = [...]themePalette{
@@ -276,6 +292,84 @@ var themePalettes = [...]themePalette{
 		danger:          adaptive("#B43232", "#DC7878"),
 		accent:          adaptive("#734B91", "#B48CC8"),
 	},
+	// Terminals cannot render Catppuccin's translucent selection color, so
+	// selected preblends Overlay 2 at 25% over Base.
+	schemeCatppuccinLatte: {
+		background:      fixed("#EFF1F5"),
+		currentRow:      fixed("#CCD0DA"),
+		selected:        fixed("#D2D4DC"),
+		currentWorktree: fixed("#7287FD"),
+		dimmed:          fixed("#8C8FA1"),
+		text:            fixed("#4C4F69"),
+		border:          fixed("#9CA0B0"),
+		activeBorder:    fixed("#7287FD"),
+		header:          fixed("#7287FD"),
+		keycap:          fixed("#DF8E1D"),
+		cursor:          fixed("#DC8A78"),
+		info:            fixed("#179299"),
+		diff:            fixed("#1E66F5"),
+		success:         fixed("#40A02B"),
+		warning:         fixed("#DF8E1D"),
+		danger:          fixed("#D20F39"),
+		accent:          fixed("#8839EF"),
+	},
+	schemeCatppuccinFrappe: {
+		background:      fixed("#303446"),
+		currentRow:      fixed("#414559"),
+		selected:        fixed("#494E63"),
+		currentWorktree: fixed("#BABBF1"),
+		dimmed:          fixed("#838BA7"),
+		text:            fixed("#C6D0F5"),
+		border:          fixed("#737994"),
+		activeBorder:    fixed("#BABBF1"),
+		header:          fixed("#BABBF1"),
+		keycap:          fixed("#E5C890"),
+		cursor:          fixed("#F2D5CF"),
+		info:            fixed("#81C8BE"),
+		diff:            fixed("#8CAAEE"),
+		success:         fixed("#A6D189"),
+		warning:         fixed("#E5C890"),
+		danger:          fixed("#E78284"),
+		accent:          fixed("#CA9EE6"),
+	},
+	schemeCatppuccinMacchiato: {
+		background:      fixed("#24273A"),
+		currentRow:      fixed("#363A4F"),
+		selected:        fixed("#404459"),
+		currentWorktree: fixed("#B7BDF8"),
+		dimmed:          fixed("#8087A2"),
+		text:            fixed("#CAD3F5"),
+		border:          fixed("#6E738D"),
+		activeBorder:    fixed("#B7BDF8"),
+		header:          fixed("#B7BDF8"),
+		keycap:          fixed("#EED49F"),
+		cursor:          fixed("#F4DBD6"),
+		info:            fixed("#8BD5CA"),
+		diff:            fixed("#8AADF4"),
+		success:         fixed("#A6DA95"),
+		warning:         fixed("#EED49F"),
+		danger:          fixed("#ED8796"),
+		accent:          fixed("#C6A0F6"),
+	},
+	schemeCatppuccinMocha: {
+		background:      fixed("#1E1E2E"),
+		currentRow:      fixed("#313244"),
+		selected:        fixed("#3B3D4F"),
+		currentWorktree: fixed("#B4BEFE"),
+		dimmed:          fixed("#7F849C"),
+		text:            fixed("#CDD6F4"),
+		border:          fixed("#6C7086"),
+		activeBorder:    fixed("#B4BEFE"),
+		header:          fixed("#B4BEFE"),
+		keycap:          fixed("#F9E2AF"),
+		cursor:          fixed("#F5E0DC"),
+		info:            fixed("#94E2D5"),
+		diff:            fixed("#89B4FA"),
+		success:         fixed("#A6E3A1"),
+		warning:         fixed("#F9E2AF"),
+		danger:          fixed("#F38BA8"),
+		accent:          fixed("#CBA6F7"),
+	},
 }
 
 func applyColorScheme(scheme colorScheme) {
@@ -283,6 +377,8 @@ func applyColorScheme(scheme colorScheme) {
 		scheme = schemeDefault
 	}
 	palette := themePalettes[scheme]
+	dashboardBackgroundColor = palette.background
+	dashboardBackgroundEnabled = palette.background.Light != "" || palette.background.Dark != ""
 	currentRowColor = palette.currentRow
 	currentWorktreeColor = palette.currentWorktree
 	selectedColor = palette.selected
@@ -297,11 +393,25 @@ func applyColorScheme(scheme colorScheme) {
 	dangerColor = palette.danger
 	accentColor = palette.accent
 
+	activeBorder := palette.activeBorder
+	if activeBorder.Light == "" && activeBorder.Dark == "" {
+		activeBorder = palette.border
+	}
+	cursor := palette.cursor
+	if cursor.Light == "" && cursor.Dark == "" {
+		cursor = palette.keycap
+	}
+	diff := palette.diff
+	if diff.Light == "" && diff.Dark == "" {
+		diff = palette.info
+	}
 	textStyle = lipgloss.NewStyle().Foreground(textColor)
 	headerStyle = lipgloss.NewStyle().Foreground(headerColor).Bold(true)
 	mutedStyle = lipgloss.NewStyle().Foreground(dimmedColor)
 	borderStyle = lipgloss.NewStyle().Foreground(borderColor)
+	activeBorderStyle = lipgloss.NewStyle().Foreground(activeBorder)
 	keycapStyle = lipgloss.NewStyle().Foreground(keycapColor)
+	cursorStyle = lipgloss.NewStyle().Foreground(cursor)
 	infoStyle = lipgloss.NewStyle().Foreground(infoColor)
 	successStyle = lipgloss.NewStyle().Foreground(successColor)
 	warningStyle = lipgloss.NewStyle().Foreground(warningColor)
@@ -312,7 +422,23 @@ func applyColorScheme(scheme colorScheme) {
 	currentWorktreeStyle = lipgloss.NewStyle().Foreground(currentWorktreeColor)
 	addedStyle = successStyle
 	removedStyle = dangerStyle
-	diffHeadStyle = lipgloss.NewStyle().Foreground(infoColor).Bold(true)
+	diffHeadStyle = lipgloss.NewStyle().Foreground(diff).Bold(true)
+}
+
+func paintDashboardBackground(value string) string {
+	if !dashboardBackgroundEnabled {
+		return value
+	}
+	sample := lipgloss.NewStyle().Foreground(textColor).Background(dashboardBackgroundColor).Render(" ")
+	prefix, _, ok := strings.Cut(sample, " ")
+	if !ok || prefix == "" {
+		return value
+	}
+	lines := strings.Split(value, "\n")
+	for index, line := range lines {
+		lines[index] = prefix + strings.ReplaceAll(line, "\x1b[0m", "\x1b[0m"+prefix) + "\x1b[0m"
+	}
+	return strings.Join(lines, "\n")
 }
 
 func loadLegacyColorScheme() colorScheme {

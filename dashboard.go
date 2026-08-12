@@ -34,9 +34,12 @@ var (
 	textColor, dimmedColor, borderColor, headerColor     lipgloss.AdaptiveColor
 	keycapColor, infoColor, successColor, warningColor   lipgloss.AdaptiveColor
 	dangerColor, accentColor                             lipgloss.AdaptiveColor
+	dashboardBackgroundColor                             lipgloss.AdaptiveColor
+	dashboardBackgroundEnabled                           bool
 
 	textStyle, headerStyle, mutedStyle, borderStyle   lipgloss.Style
-	keycapStyle, infoStyle, successStyle              lipgloss.Style
+	activeBorderStyle, keycapStyle, cursorStyle       lipgloss.Style
+	infoStyle, successStyle                           lipgloss.Style
 	warningStyle, dangerStyle, accentStyle            lipgloss.Style
 	selectedStyle, currentStyle, currentWorktreeStyle lipgloss.Style
 	addedStyle, removedStyle, diffHeadStyle           lipgloss.Style
@@ -55,10 +58,13 @@ type dashboardModel struct {
 	launchSession                                             string
 	worktreeGeneration                                        uint64
 	previewRequest, diffRequest                               uint64
-	filter, diff, help                                        bool
+	filter, diff, help, themePicker                           bool
 	query                                                     string
 	queries                                                   [2]string
 	filterInputs                                              [2]textinput.Model
+	themePickerInput                                          textinput.Model
+	themePickerIndex, themePickerOffset                       int
+	themePickerPrevious                                       colorScheme
 	actionTextInput                                           textinput.Model
 	preview                                                   previewData
 	previewOffset, diffOff, rightOffset, xOffset, previewSize int
@@ -167,7 +173,7 @@ type previewTickMsg uint64
 func newDashboard(cwd string) dashboardModel {
 	nerdFontEnabled = true
 	applyColorScheme(schemeDefault)
-	return dashboardModel{cwd: cwd, now: time.Now(), width: 80, height: 24, previewSize: defaultPreviewSize, scheme: schemeDefault, worktreeGeneration: 1, agentGit: map[string]item{}, gitCache: map[string]item{}, prCache: map[string]item{}, filterInputs: [2]textinput.Model{newTextInput("/"), newTextInput("/")}, actionTextInput: newTextInput(""), agentsInFlight: true, worktreesInFlight: true}
+	return dashboardModel{cwd: cwd, now: time.Now(), width: 80, height: 24, previewSize: defaultPreviewSize, scheme: schemeDefault, worktreeGeneration: 1, agentGit: map[string]item{}, gitCache: map[string]item{}, prCache: map[string]item{}, filterInputs: [2]textinput.Model{newTextInput("/"), newTextInput("/")}, themePickerInput: newTextInput("filter: "), actionTextInput: newTextInput(""), agentsInFlight: true, worktreesInFlight: true}
 }
 
 func newTextInput(prompt string) textinput.Model {
@@ -182,7 +188,66 @@ func styleTextInput(input *textinput.Model) {
 	input.TextStyle = textStyle
 	input.PlaceholderStyle = mutedStyle
 	input.CompletionStyle = mutedStyle
-	input.Cursor.Style = keycapStyle
+	input.Cursor.Style = cursorStyle
+}
+
+func (m dashboardModel) themeOptions() []colorScheme {
+	query := strings.ToLower(strings.TrimSpace(m.themePickerInput.Value()))
+	themes := make([]colorScheme, 0, len(colorSchemes))
+	for _, scheme := range colorSchemes {
+		if query == "" || strings.Contains(scheme.slug(), query) {
+			themes = append(themes, scheme)
+		}
+	}
+	return themes
+}
+
+func (m *dashboardModel) selectTheme(index int) {
+	themes := m.themeOptions()
+	if len(themes) == 0 {
+		m.themePickerIndex, m.themePickerOffset = 0, 0
+		return
+	}
+	m.themePickerIndex = (index%len(themes) + len(themes)) % len(themes)
+	m.scheme = themes[m.themePickerIndex]
+	applyColorScheme(m.scheme)
+	m.revealThemeSelection()
+}
+
+func (m *dashboardModel) revealThemeSelection() {
+	lines, selectedLine := m.themePickerLines()
+	visible := max(1, m.previewHeight()-2)
+	if selectedLine < m.themePickerOffset {
+		m.themePickerOffset = selectedLine
+	}
+	if selectedLine >= m.themePickerOffset+visible {
+		m.themePickerOffset = selectedLine - visible + 1
+	}
+	m.themePickerOffset = clampLineOffset(m.themePickerOffset, lines, visible)
+}
+
+func (m *dashboardModel) openThemePicker() tea.Cmd {
+	m.themePicker, m.themePickerPrevious, m.themePickerOffset = true, m.scheme, 0
+	m.themePickerInput.SetValue("")
+	m.themePickerIndex = max(0, slices.Index(colorSchemes[:], m.scheme))
+	m.lastClickTarget, m.lastClickAt = "", time.Time{}
+	m.revealThemeSelection()
+	return m.themePickerInput.Focus()
+}
+
+func (m *dashboardModel) closeThemePicker(save bool) tea.Cmd {
+	m.themePicker = false
+	m.themePickerInput.Blur()
+	if !save {
+		m.scheme = m.themePickerPrevious
+		applyColorScheme(m.scheme)
+	} else {
+		m.err = saveColorScheme(m.scheme)
+	}
+	if selected, ok := m.selected(); ok {
+		return m.requestPreview(selected)
+	}
+	return nil
 }
 
 func (m *dashboardModel) resizeInputs() {
@@ -190,6 +255,7 @@ func (m *dashboardModel) resizeInputs() {
 	for index := range m.filterInputs {
 		m.filterInputs[index].Width = width
 	}
+	m.themePickerInput.Width = width
 	m.actionTextInput.Width = width
 }
 
@@ -708,6 +774,15 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
+	if m.themePicker {
+		previous := m.themePickerInput.Value()
+		var command tea.Cmd
+		m.themePickerInput, command = m.themePickerInput.Update(msg)
+		if m.themePickerInput.Value() != previous {
+			m.selectTheme(0)
+		}
+		return m, command
+	}
 	if m.filter {
 		previous := m.filterInputs[m.tab].Value()
 		var command tea.Cmd
@@ -745,7 +820,7 @@ func (m dashboardModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.filter || m.action != actionNone {
+	if m.themePicker || m.filter || m.action != actionNone {
 		return m, nil
 	}
 	if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
@@ -824,6 +899,9 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.helpOffset = m.clampHelpOffset(m.helpOffset + m.helpHeight()/2)
 		}
 		return m, nil
+	}
+	if m.themePicker {
+		return m.handleThemePickerKey(msg)
 	}
 	if m.action != actionNone {
 		return m.handleActionKey(msg)
@@ -924,12 +1002,7 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		return m.switchTab(1 - m.tab)
 	case "t":
-		m.scheme = m.scheme.next()
-		applyColorScheme(m.scheme)
-		m.err = saveColorScheme(m.scheme)
-		if selected, ok := m.selected(); ok {
-			return m, m.requestPreview(selected)
-		}
+		return m, m.openThemePicker()
 	case "s":
 		if m.tab != 0 {
 			return m, nil
@@ -1019,6 +1092,31 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if selected, ok := m.selected(); ok {
 			return m, m.requestPreview(selected)
 		}
+	}
+	return m, nil
+}
+
+func (m dashboardModel) handleThemePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		return m, m.closeThemePicker(false)
+	case "enter":
+		if len(m.themeOptions()) == 0 {
+			return m, nil
+		}
+		return m, m.closeThemePicker(true)
+	case "j", "down":
+		m.selectTheme(m.themePickerIndex + 1)
+	case "k", "up":
+		m.selectTheme(m.themePickerIndex - 1)
+	default:
+		previous := m.themePickerInput.Value()
+		var command tea.Cmd
+		m.themePickerInput, command = m.themePickerInput.Update(msg)
+		if m.themePickerInput.Value() != previous {
+			m.selectTheme(0)
+		}
+		return m, command
 	}
 	return m, nil
 }
@@ -1154,7 +1252,9 @@ func (m dashboardModel) helpLines() []string {
 		"h/l           Pan long lines",
 		"+/-           Resize preview by 10%",
 		"s             Toggle agent scope",
-		"t             Cycle color scheme",
+		"t             Open theme picker",
+		"Theme picker  Type filters; j/k browses",
+		"              Enter applies; Esc cancels",
 	}
 }
 
