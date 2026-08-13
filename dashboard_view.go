@@ -408,11 +408,24 @@ func (m dashboardModel) renderPreview(width int) string {
 		return renderPanel(m.previewTitle(selected, "Preview: "+m.displayWorktree(selected)), []string{"Loading…"}, width, height, 0, 0, false, true)
 	}
 	title := m.previewTitle(selected, m.preview.title)
+	lines := m.preview.lines
+	if selected.kind == "session" {
+		lines = append([]string(nil), lines...)
+		index := 0
+		if selected.muxSessionName != "" && len(lines) > index && lines[index] == "Session "+safeText(selected.muxSessionName) {
+			lines[index] = mutedStyle.Render("Session ") + textStyle.Render(safeText(selected.muxSessionName))
+			index++
+		}
+		git := m.gitItem(selected)
+		if failed := failedChecksPreview(git.prFailedChecks); git.prCheck == checkFailure && failed != "" && len(lines) > index && lines[index] == failed {
+			lines[index] = failedChecksPreviewStyled(git.prFailedChecks)
+		}
+	}
 	if m.tab != tabWorktrees || m.preview.rightTitle == "" || width < 60 {
-		return renderPanel(title, m.preview.lines, width, height, m.previewOffset, m.xOffset, false, true)
+		return renderPanel(title, lines, width, height, m.previewOffset, m.xOffset, false, true)
 	}
 	leftWidth := min(40, width/2)
-	left := renderPanel(title, m.preview.lines, leftWidth, height, m.previewOffset, m.xOffset, false, m.panelFocus == panelLeft)
+	left := renderPanel(title, lines, leftWidth, height, m.previewOffset, m.xOffset, false, m.panelFocus == panelLeft)
 	right := renderPanel(m.preview.rightTitle, styleGitLog(m.preview.rightLines), width-leftWidth, height, m.rightOffset, m.xOffset, false, m.panelFocus == panelRight)
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 }

@@ -106,7 +106,7 @@ type dashboardModel struct {
 	agentsLoaded, worktreesLoaded, sessionsLoaded                         bool
 	lastRefresh                                                           [tabCount]time.Time
 	agentsInFlight, agentGitInFlight, worktreesInFlight, sessionsInFlight bool
-	agentGitRefreshed                                                     time.Time
+	agentGitRefreshed, worktreeGitRefreshed                               time.Time
 	worktreePending                                                       int
 	err, agentErr, worktreeErr, sessionsErr                               error
 	notice                                                                string
@@ -618,7 +618,7 @@ func loadAgentPreview(item item, scheme colorScheme, request uint64) tea.Cmd {
 	return func() tea.Msg {
 		preview := previewData{request: request, scheme: scheme, target: item.target, kind: item.kind, updated: item.updated, title: "Preview: " + worktreeName(item.cwd), followBottom: true}
 		if item.muxSessionName != "" {
-			preview.lines = append(preview.lines, mutedStyle.Render("Session ")+textStyle.Render(safeText(item.muxSessionName)))
+			preview.lines = append(preview.lines, "Session "+safeText(item.muxSessionName))
 		}
 		if item.prCheck == checkFailure {
 			preview.lines = append(preview.lines, failedChecksPreview(item.prFailedChecks))
@@ -671,7 +671,7 @@ func worktreePreview(item item, scheme colorScheme, request uint64) previewData 
 			mutedStyle.Render("Agent   ") + agentSummary(item, time.Now()),
 			mutedStyle.Render("Mux     ") + muxView(item),
 			mutedStyle.Render("State   ") + textStyle.Render(state),
-			failedChecksPreview(item.prFailedChecks),
+			failedChecksPreviewStyled(item.prFailedChecks),
 		},
 		rightTitle: "Git Log",
 	}
@@ -686,13 +686,21 @@ func failedChecksPreview(names []string) string {
 	if len(names) > limit {
 		value += fmt.Sprintf(" +%d", len(names)-limit)
 	}
-	return dangerStyle.Render("Failed checks: ") + textStyle.Render(safeText(value))
+	return "Failed checks: " + safeText(value)
+}
+
+func failedChecksPreviewStyled(names []string) string {
+	line := failedChecksPreview(names)
+	if line == "" {
+		return ""
+	}
+	return dangerStyle.Render("Failed checks: ") + textStyle.Render(strings.TrimPrefix(line, "Failed checks: "))
 }
 
 func sessionPreview(item item, scheme colorScheme, request uint64) previewData {
-	lines := []string{mutedStyle.Render("Inactive (Enter creates it)")}
+	lines := []string{"Inactive (Enter creates it)"}
 	if item.muxSessionID != "" {
-		lines = []string{mutedStyle.Render("Loading pane…")}
+		lines = []string{"Loading pane…"}
 	}
 	return previewData{
 		request: request, scheme: scheme, target: item.target, kind: item.kind,
@@ -1037,11 +1045,15 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.worktreesInFlight = false
 				return m, nil
 			}
-			m.worktreePending = len(msg.worktrees) + 2
+			m.worktreePending = 2
 			commands := []tea.Cmd{
-				refreshWorktreeGit(msg.worktrees, msg.generation),
 				refreshWorktreePR(m.cwd, msg.worktrees, msg.generation),
 				refreshWorktreeMux(msg.worktrees, msg.generation),
+			}
+			if len(msg.worktrees) > 0 && time.Since(m.worktreeGitRefreshed) >= gitRefreshPeriod {
+				m.worktreeGitRefreshed = time.Now()
+				m.worktreePending += len(msg.worktrees)
+				commands = append(commands, refreshWorktreeGit(msg.worktrees, msg.generation))
 			}
 			if selected, ok := m.selected(); ok && selected.kind == "worktree" && !m.diff {
 				commands = append(commands, m.requestPreview(selected))
@@ -1244,13 +1256,13 @@ func (m dashboardModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if m.diff {
 			m.focusPanelAt(msg.X)
 			m.scrollFocusedPanel(delta)
-		} else if m.wideLayout() && msg.X >= m.wideTableWidth() {
+		} else if m.previewShown() && m.wideLayout() && msg.X >= m.wideTableWidth() {
 			m.focusPanelAt(msg.X)
 			m.scrollFocusedPanel(delta)
-		} else if msg.Y >= 2+m.tableHeight() {
+		} else if m.previewShown() && msg.Y >= 2+m.tableHeight() {
 			m.focusPanelAt(msg.X)
 			m.scrollFocusedPanel(delta)
-		} else {
+		} else if msg.Y < 2+m.tableHeight() {
 			m.move(delta)
 			if selected, ok := m.selected(); ok {
 				return m, m.requestPreview(selected)
@@ -1265,12 +1277,14 @@ func (m dashboardModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.focusPanelAt(msg.X)
 		return m, nil
 	}
-	if m.wideLayout() && msg.X >= m.wideTableWidth() {
+	if m.previewShown() && m.wideLayout() && msg.X >= m.wideTableWidth() {
 		m.focusPanelAt(msg.X)
 		return m, nil
 	}
 	if msg.Y >= 2+m.tableHeight() {
-		m.focusPanelAt(msg.X)
+		if m.previewShown() {
+			m.focusPanelAt(msg.X)
+		}
 		return m, nil
 	}
 	if msg.Y == 0 {
@@ -1986,23 +2000,31 @@ func (m dashboardModel) helpLines() []string {
 }
 
 func (m dashboardModel) clampX(offset int) int {
-	longest := 0
-	for _, lines := range [][]string{m.preview.lines, m.preview.rightLines} {
-		for _, line := range lines {
-			longest = max(longest, ansi.StringWidth(line))
-		}
-	}
-	viewport := max(1, m.width-2)
+	width := m.previewRenderWidth()
+	leftWidth, rightWidth := width, 0
 	if m.diff {
-		rightWidth := max(24, m.width/4)
-		if rightWidth >= m.width-20 {
+		rightWidth = max(24, width/4)
+		if rightWidth >= width-20 {
 			rightWidth = 0
 		}
-		viewport = max(1, m.width-rightWidth-2)
-	} else if m.preview.rightTitle != "" && m.width >= 60 {
-		viewport = max(1, min(40, m.width/2)-2)
+		leftWidth -= rightWidth
+	} else if m.hasRightPanel() {
+		leftWidth = min(40, width/2)
+		rightWidth = width - leftWidth
 	}
-	return max(0, min(offset, max(0, longest-viewport+1)))
+	maxOffset := max(0, longestLineWidth(m.preview.lines)-max(1, leftWidth-2)+1)
+	if rightWidth > 0 {
+		maxOffset = max(maxOffset, max(0, longestLineWidth(m.preview.rightLines)-max(1, rightWidth-2)+1))
+	}
+	return max(0, min(offset, maxOffset))
+}
+
+func longestLineWidth(lines []string) int {
+	width := 0
+	for _, line := range lines {
+		width = max(width, ansi.StringWidth(line))
+	}
+	return width
 }
 
 func (m *dashboardModel) move(delta int) {

@@ -147,6 +147,21 @@ func TestWorktreeGitRefreshStreamsRows(t *testing.T) {
 	}
 }
 
+func TestWorktreeGitRefreshIsThrottled(t *testing.T) {
+	model := newDashboard("/repo")
+	worktrees := []item{{kind: "worktree", target: "/repo", cwd: "/repo"}}
+	updated, command := model.Update(worktreeDataMsg{stage: worktreeListStage, generation: model.worktreeGeneration, worktrees: worktrees})
+	model = updated.(dashboardModel)
+	if batch, ok := command().(tea.BatchMsg); !ok || len(batch) != 3 {
+		t.Fatalf("initial worktree detail commands = %#v", command())
+	}
+	model.worktreeGeneration++
+	_, command = model.Update(worktreeDataMsg{stage: worktreeListStage, generation: model.worktreeGeneration, worktrees: worktrees})
+	if batch, ok := command().(tea.BatchMsg); !ok || len(batch) != 2 {
+		t.Fatalf("throttled worktree detail commands = %#v", command())
+	}
+}
+
 func TestWorktreePreviewRendersMetadataBeforeGitCommands(t *testing.T) {
 	model := newDashboard("/repo")
 	model.width, model.height, model.tab = 100, 30, 1
@@ -489,6 +504,59 @@ func TestMouseClickChoosesRow(t *testing.T) {
 	got = updated.(dashboardModel)
 	if !got.chosen || got.selection.target != "second" || cmd == nil {
 		t.Fatalf("double click did not choose second row: %#v", got)
+	}
+}
+
+func TestPreviewCommandsReturnUnstyledData(t *testing.T) {
+	defer applyColorScheme(schemeDefault)
+	applyColorScheme(schemeEmberforge)
+	writeFakeTmux(t, "exit 1")
+	agent := loadAgentPreview(item{kind: "session", target: "%1", pane: "%1", muxSessionName: "dev", prCheck: checkFailure, prFailedChecks: []string{"unit"}}, schemeEmberforge, 1)().(previewMsg)
+	for _, line := range agent.lines {
+		if ansi.Strip(line) != line {
+			t.Fatalf("agent preview command styled %q", line)
+		}
+	}
+	for _, preview := range []previewData{
+		sessionPreview(item{kind: "tmux-session", title: "inactive"}, schemeEmberforge, 1),
+		sessionPreview(item{kind: "tmux-session", title: "live", muxSessionID: "$1"}, schemeEmberforge, 1),
+	} {
+		for _, line := range preview.lines {
+			if ansi.Strip(line) != line {
+				t.Fatalf("session preview command styled %q", line)
+			}
+		}
+	}
+}
+
+func TestHiddenPreviewMouseDoesNotFocusPreview(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height, model.previewOverride[tabAgents] = 100, 30, -1
+	footerY := 2 + model.tableHeight()
+	for _, mouse := range []tea.MouseMsg{
+		{X: 5, Y: footerY, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress},
+		{X: 5, Y: footerY, Button: tea.MouseButtonWheelDown},
+	} {
+		updated, _ := model.Update(mouse)
+		model = updated.(dashboardModel)
+		if model.previewFocused || model.previewOverride[tabAgents] != -1 {
+			t.Fatalf("hidden preview handled footer mouse: %#v", model)
+		}
+	}
+}
+
+func TestWidePreviewClampXUsesSplitWidth(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height, model.tab = 160, 24, tabWorktrees
+	line := strings.Repeat("x", 197) + "END"
+	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo"}}
+	model.preview = previewData{target: "/repo", rightTitle: "Git Log", lines: []string{line}}
+	if got, want := model.clampX(1000), 167; got != want {
+		t.Fatalf("wide preview clamp = %d, want %d", got, want)
+	}
+	model.xOffset = model.clampX(1000)
+	if preview := ansi.Strip(model.renderPreview(model.previewRenderWidth())); !strings.Contains(preview, "END") {
+		t.Fatalf("wide preview could not pan to end:\n%s", preview)
 	}
 }
 

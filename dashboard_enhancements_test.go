@@ -80,6 +80,26 @@ func TestPreviewFailedChecksAndWorktreeIndicators(t *testing.T) {
 			t.Fatalf("preview missing %q:\n%s", want, plain)
 		}
 	}
+	if line := preview.lines[len(preview.lines)-1]; !strings.Contains(line, dangerStyle.Render("Failed checks: ")) {
+		t.Fatalf("worktree failed-check label is not emphasized: %q", line)
+	}
+
+	agent := item{kind: "session", target: "%1", cwd: "/repo", muxSessionName: "dev"}
+	model := newDashboard("/repo")
+	model.width, model.height = 80, 20
+	model.agents = []item{agent}
+	model.agentGit[agent.cwd] = item{gitLoaded: true, prCheck: checkFailure, prFailedChecks: pr.FailedChecks}
+	model.preview = previewData{target: agent.target, kind: agent.kind, title: "Preview", lines: []string{"Session dev", failedChecksPreview(pr.FailedChecks), "Session captured pane output"}}
+	raw := strings.Join(model.preview.lines, "\n")
+	rendered := model.renderPreview(model.width)
+	for _, style := range []string{mutedStyle.Render("Session "), dangerStyle.Render("Failed checks: ")} {
+		if !strings.Contains(rendered, style) {
+			t.Fatalf("agent preview missing styled label %q:\n%s", ansi.Strip(style), rendered)
+		}
+	}
+	if got := strings.Join(model.preview.lines, "\n"); got != raw {
+		t.Fatalf("rendering mutated raw preview lines: %q", got)
+	}
 	writeFakeTmux(t, "printf '1\\t4\\nfirst\\nsecond\\nthird\\nfourth\\n'")
 	message := loadAgentPreview(item{kind: "session", target: "%1", pane: "%1", prCheck: checkFailure, prFailedChecks: pr.FailedChecks}, schemeDefault, 1)().(previewMsg)
 	if !strings.Contains(ansi.Strip(strings.Join(message.lines, "\n")), "Failed checks: unit, lint") {
