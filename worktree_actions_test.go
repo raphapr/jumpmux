@@ -204,12 +204,44 @@ func TestNativeGitWorktreeActionsKeepBranch(t *testing.T) {
 	}
 }
 
+func TestWorktrunkRemovalRefusesDirtyWorktree(t *testing.T) {
+	parent := t.TempDir()
+	repo, worktree := filepath.Join(parent, "repo"), filepath.Join(parent, "feature")
+	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "feature", worktree}} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "dirty"), []byte("dirty"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin, log := t.TempDir(), filepath.Join(t.TempDir(), "wt.log")
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "wt"), []byte("#!/bin/sh\necho called >>\"$WT_LOG\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WT_LOG", log)
+	if err := removeWorktree(repo, worktree, backendWT); err == nil || !strings.Contains(err.Error(), "dirty") {
+		t.Fatalf("dirty worktree removal = %v", err)
+	}
+	if _, err := os.Stat(log); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("wt was invoked for dirty worktree: %v", err)
+	}
+}
+
 func TestWorktrunkActionCommands(t *testing.T) {
 	repo := t.TempDir()
 	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.com"}, {"commit", "--allow-empty", "-qm", "base"}} {
 		if output, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, output)
 		}
+	}
+	worktree := filepath.Join(filepath.Dir(repo), "feature")
+	if output, err := exec.Command("git", "-C", repo, "worktree", "add", "-qb", "feature", worktree).CombinedOutput(); err != nil {
+		t.Fatalf("add worktree: %v\n%s", err, output)
 	}
 	bin, log := t.TempDir(), filepath.Join(t.TempDir(), "wt.log")
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$WT_LOG\"\n"
@@ -221,7 +253,7 @@ func TestWorktrunkActionCommands(t *testing.T) {
 	if err := addWorktree(repo, "feature", backendWT); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeWorktree(repo, filepath.Join(filepath.Dir(repo), "feature"), backendWT); err != nil {
+	if err := removeWorktree(repo, worktree, backendWT); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(log)

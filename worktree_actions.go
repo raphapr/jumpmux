@@ -88,7 +88,14 @@ func removeWorktree(repo, path string, backend worktreeBackend) error {
 	ctx, cancel := context.WithTimeout(context.Background(), worktreeActionTimeout)
 	defer cancel()
 	if backend == backendWT {
-		output, err := runActionCommand(ctx, root, "wt", "-y", "-C", root, "remove", path, "--foreground")
+		output, err := runActionCommand(ctx, path, "git", "status", "--porcelain")
+		if err != nil {
+			return actionError("check worktree status", output, err)
+		}
+		if strings.TrimSpace(string(output)) != "" {
+			return errors.New("cannot remove dirty worktree")
+		}
+		output, err = runActionCommand(ctx, root, "wt", "-y", "-C", root, "remove", path, "--foreground")
 		if err != nil {
 			return actionError("remove worktree", output, err)
 		}
