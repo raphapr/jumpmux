@@ -22,8 +22,8 @@ import (
 
 const (
 	version          = "0.23.0"
-	workingIcon      = "🤖"
-	doneIcon         = "✅"
+	workingIcon      = ""
+	doneIcon         = ""
 	staleAgentIcon   = "󰔛"
 	gitDiffIcon      = "󰏫"
 	gitConflictIcon  = "󰀪"

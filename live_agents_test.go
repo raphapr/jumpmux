@@ -200,13 +200,23 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"new-window -d -P", "@jumpmux_worktree " + cwd, "switch-client -t $1", "window-status-format", "@jumpmux_status 🤖", "@jumpmux_status ✅", "set-hook -w -t %7 pane-focus-in[987654]", "set-hook -uw -t %7 pane-focus-in[987654]", "set-option -uw -t %7 @jumpmux_status"} {
+	for _, expected := range []string{"new-window -d -P", "@jumpmux_worktree " + cwd, "switch-client -t $1", "window-status-format", "@jumpmux_status ", "@jumpmux_status ", "set-hook -w -t %7 pane-focus-in[987654]", "set-hook -uw -t %7 pane-focus-in[987654]", "set-option -uw -t %7 @jumpmux_status"} {
 		if !strings.Contains(string(log), expected) {
 			t.Fatalf("tmux log missing %q:\n%s", expected, log)
 		}
 	}
 	if got := injectTmuxStatusFormat("#I:#W#{?window_flags,#{window_flags}, }"); got != "#I:#W"+jumpmuxStatusFormat+"#{?window_flags,#{window_flags}, }" {
 		t.Fatalf("status format = %q", got)
+	}
+	if !strings.Contains(jumpmuxStatusFormat, "#[nobold]") || !strings.Contains(jumpmuxStatusFormat, "#{@jumpmux_status} #[default]") {
+		t.Fatalf("status format does not reserve the glyph's second cell: %q", jumpmuxStatusFormat)
+	}
+	for _, existing := range []string{plainJumpmuxStatusFormat, boldJumpmuxStatusFormat, narrowJumpmuxStatusFormat, narrowJumpmuxStatusFormat + jumpmuxStatusFormat} {
+		format := strings.Replace("#I:#W#{?window_flags,#{window_flags}, }", "#{?window_flags", existing+"#{?window_flags", 1)
+		got := injectTmuxStatusFormat(format)
+		if strings.Count(got, "@jumpmux_status") != 2 || !strings.Contains(got, jumpmuxStatusFormat) {
+			t.Fatalf("status format migration = %q", got)
+		}
 	}
 	if got := windowStatusIcon(doneIcon + "\n" + workingIcon); got != workingIcon {
 		t.Fatalf("multi-pane window status = %q", got)

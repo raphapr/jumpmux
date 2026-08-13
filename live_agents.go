@@ -22,9 +22,12 @@ import (
 var piExtension []byte
 
 const (
-	jumpmuxStatusFormat = "#{?@jumpmux_status, #{@jumpmux_status},}"
-	jumpmuxFocusHook    = "pane-focus-in[987654]"
-	tmuxTimeout         = 2 * time.Second
+	jumpmuxStatusFormat       = "#{?@jumpmux_status, #[nobold]#{@jumpmux_status} #[default],}"
+	plainJumpmuxStatusFormat  = "#{?@jumpmux_status, #{@jumpmux_status},}"
+	boldJumpmuxStatusFormat   = "#{?@jumpmux_status, #[bold]#{@jumpmux_status}#[default],}"
+	narrowJumpmuxStatusFormat = "#{?@jumpmux_status, #[nobold]#{@jumpmux_status}#[default],}"
+	jumpmuxFocusHook          = "pane-focus-in[987654]"
+	tmuxTimeout               = 2 * time.Second
 )
 
 var tmuxPaneCache struct {
@@ -485,10 +488,11 @@ func ensureTmuxStatusFormat(pane string) error {
 		if err != nil || format == "" {
 			format = "#I:#W#{?window_flags,#{window_flags}, }"
 		}
-		if strings.Contains(format, "@jumpmux_status") {
+		normalized := injectTmuxStatusFormat(format)
+		if normalized == format {
 			continue
 		}
-		if _, err := tmuxOutput("set-option", "-w", "-t", pane, option, injectTmuxStatusFormat(format)); err != nil {
+		if _, err := tmuxOutput("set-option", "-w", "-t", pane, option, normalized); err != nil {
 			return err
 		}
 	}
@@ -496,6 +500,9 @@ func ensureTmuxStatusFormat(pane string) error {
 }
 
 func injectTmuxStatusFormat(format string) string {
+	for _, existing := range []string{jumpmuxStatusFormat, plainJumpmuxStatusFormat, boldJumpmuxStatusFormat, narrowJumpmuxStatusFormat} {
+		format = strings.ReplaceAll(format, existing, "")
+	}
 	position := len(format)
 	for _, pattern := range []string{"#{window_flags", "#{?window_flags", "#{F}"} {
 		if index := strings.Index(format, pattern); index >= 0 && index < position {

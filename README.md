@@ -144,7 +144,7 @@ Press `t` to open the theme picker and browse these color schemes:
 
 Built-in themes adapt to the terminal profile. Catppuccin themes use fixed palettes. jumpmux saves the selected theme in its configuration file.
 
-Set `nerdfont = false` in the configuration to replace Nerd Font Git, PR, check, and stale icons with text symbols. `JUMPMUX_PLAIN=1` overrides the setting for one launch.
+Agent status uses `` for working and `` for done. Set `nerdfont = false` to replace Nerd Font Git, PR, check, and stale icons with text symbols. `JUMPMUX_PLAIN=1` overrides the setting for one launch.
 
 ## Usage
 
