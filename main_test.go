@@ -51,6 +51,14 @@ func TestContextJSON(t *testing.T) {
 	}
 }
 
+func TestContextJSONDoneAgentUsesPlainIcon(t *testing.T) {
+	defer func() { nerdFontEnabled = true }()
+	nerdFontEnabled = false
+	if icon := contextJSON([]item{{kind: "session", status: "done"}})[0].Icon; icon != "D" {
+		t.Fatalf("done agent plain icon = %q, want D", icon)
+	}
+}
+
 func TestSessionIconPrecedenceAcrossContext(t *testing.T) {
 	defer func() { nerdFontEnabled = true }()
 	nerdFontEnabled = false

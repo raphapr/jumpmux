@@ -226,7 +226,7 @@ func contextJSON(items []item) []contextItem {
 		case "session":
 			entry.Icon = dashboardIcon(workingIcon, "A")
 			if item.status == "done" {
-				entry.Icon = doneIcon
+				entry.Icon = dashboardIcon(doneIcon, "D")
 			}
 		case "worktree":
 			entry.Icon = dashboardIcon("", "W")
