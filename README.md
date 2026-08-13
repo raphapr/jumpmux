@@ -1,6 +1,8 @@
 # jumpmux
 
-jumpmux is a terminal dashboard for moving between Git worktrees, live agents, and tmux sessions. It is inspired by [Workmux](https://github.com/raine/workmux), but takes a more opinionated approach.
+Jumpmux is a terminal dashboard for navigating Git worktrees and AI agents, with built-in tmux session management.
+
+Inspired by [Workmux](https://github.com/raine/workmux) and [sesh](https://github.com/joshmedeski/sesh).
 
 ## Tabs
 
@@ -13,13 +15,10 @@ Selecting an agent focuses its tmux pane. Selecting a worktree focuses its agent
 ## Requirements
 
 - Go 1.24+ to install from source
-- Git
+- git
 - tmux
-- Session locations are optional. Configure them in `~/.config/jumpmux/config.toml`.
 - [Pi](https://pi.dev)
-- [Nerd Font](https://www.nerdfonts.com/) (optional)
-- [Worktrunk](https://worktrunk.dev/) (optional)
-- [GitHub CLI](https://cli.github.com/) (optional)
+- Optionals: [Nerd Font](https://www.nerdfonts.com/), [Worktrunk](https://worktrunk.dev/), [GitHub CLI](https://cli.github.com/)
 
 ## Install
 
@@ -75,12 +74,6 @@ The extension reports the current pane's agent state.
 | `Ctrl+C`                                  | Quit from any state                                                    |
 
 ## Dashboard behavior
-
-### Layout
-
-Below 60 columns, jumpmux starts table-only. `Ctrl+v` can force a preview for this launch without changing `[preview]` configuration. At 140 columns and wider, the table and preview sit side by side. Other sizes use the vertical split. `+` and `-` change the vertical preview from 10% to 90%. jumpmux stores that value as `preview_size` in `$XDG_STATE_HOME/jumpmux/settings.json`, or `~/.local/state/jumpmux/settings.json` when `XDG_STATE_HOME` is unset.
-
-The Worktrees preview splits into status and Git log panels on terminals at least 60 columns wide. The diff view splits into diff and file panels when space permits. Click a preview or diff panel, or use `Shift+Left` and `Shift+Right`, to choose which panel receives scroll input. The header shows non-default modes such as SEARCH, PREVIEW, CONFIRM, THEME, or WORKING beside refresh status. Normal browsing has no mode label.
 
 ### Agents
 
