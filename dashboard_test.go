@@ -368,13 +368,12 @@ func TestDashboardClipboardPasteRefreshesFilterPreview(t *testing.T) {
 	}
 }
 
-func TestDashboardBlocksModalMouseAndClearsDoubleClick(t *testing.T) {
+func TestDashboardBlocksNonSearchModalMouseAndClearsDoubleClick(t *testing.T) {
 	model := newDashboard("/repo")
 	model.width, model.height = 100, 30
 	model.agents = []item{{kind: "session", target: "one", cwd: "/repo"}, {kind: "session", target: "two", cwd: "/other"}}
 	click := tea.MouseMsg{X: 5, Y: 4, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
 	for _, state := range []func(*dashboardModel){
-		func(m *dashboardModel) { m.filter = true },
 		func(m *dashboardModel) { m.help = true },
 		func(m *dashboardModel) { m.action = actionRunning },
 	} {
@@ -529,8 +528,11 @@ func TestSessionSearchFooterFits(t *testing.T) {
 		model.filterInputs[tabSessions].SetValue("x")
 		model.sessions = []item{{kind: "tmux-session", target: "live", title: "live", muxSessionID: "$1"}}
 		footer := ansi.Strip(model.renderFooter(width))
-		if ansi.StringWidth(footer) != width || !strings.Contains(footer, "Esc Clear") || !strings.Contains(footer, "^c Quit") {
+		if ansi.StringWidth(footer) != width || !strings.Contains(footer, "search: x") || !strings.Contains(footer, "Esc Clear") || !strings.Contains(footer, "^c Quit") {
 			t.Fatalf("width %d search footer = %q (%d cells)", width, footer, ansi.StringWidth(footer))
+		}
+		if width >= 80 && !strings.Contains(footer, "^j/k/n/p Move") {
+			t.Fatalf("width %d search footer omits navigation: %q", width, footer)
 		}
 	}
 }
@@ -610,10 +612,10 @@ func TestSessionsReservedKeysAndPreviewPaging(t *testing.T) {
 	model.help = false
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
 	model = updated.(dashboardModel)
-	if !model.actionMenu || model.query != "" {
-		t.Fatalf("Sessions Space did not open Actions before search: %#v", model)
+	if model.actionMenu || model.query != " " {
+		t.Fatalf("Sessions Space was not inserted into search: %#v", model)
 	}
-	model.actionMenu, model.filter = false, false
+	model.filter = false
 	model.preview = previewData{target: "dev", kind: "tmux-session", lines: make([]string, 100)}
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 	model = updated.(dashboardModel)
@@ -624,6 +626,30 @@ func TestSessionsReservedKeysAndPreviewPaging(t *testing.T) {
 	model = updated.(dashboardModel)
 	if model.action != actionRemoveSession {
 		t.Fatalf("Ctrl+D action = %d, want remove session", model.action)
+	}
+}
+
+func TestSessionSearchClearsActionErrorAndSupportsMouse(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height, model.tab, model.filter = 80, 20, tabSessions, true
+	model.sessions = []item{{kind: "tmux-session", target: "one", title: "one"}, {kind: "tmux-session", target: "two", title: "two"}}
+	model.filterInputs[tabSessions].Focus()
+	model.err = errors.New("old action failed")
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	model = updated.(dashboardModel)
+	if model.err != nil || model.query != "o" {
+		t.Fatalf("search input = query %q, err %v", model.query, model.err)
+	}
+	updated, _ = model.Update(tea.MouseMsg{X: 3, Y: 4, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	model = updated.(dashboardModel)
+	if model.index != 1 {
+		t.Fatalf("search mouse selection index = %d", model.index)
+	}
+	x := model.tabHitboxes()[tabAgents][0]
+	updated, _ = model.Update(tea.MouseMsg{X: x, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if got := updated.(dashboardModel); got.tab != tabAgents || got.filter {
+		t.Fatalf("search tab click did not leave search: tab %d filter %v", got.tab, got.filter)
 	}
 }
 

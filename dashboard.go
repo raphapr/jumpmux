@@ -241,7 +241,7 @@ type previewTickMsg uint64
 func newDashboard(cwd string) dashboardModel {
 	nerdFontEnabled = true
 	applyColorScheme(schemeDefault)
-	return dashboardModel{cwd: cwd, now: time.Now(), width: 80, height: 24, previewSize: defaultPreviewSize, previewEnabled: [tabCount]bool{true, true, true}, scheme: schemeDefault, focused: true, worktreeGeneration: 1, agentGit: map[string]item{}, gitCache: map[string]item{}, prCache: map[string]item{}, filterInputs: [tabCount]textinput.Model{newTextInput("/"), newTextInput("/"), newTextInput("/")}, themePickerInput: newTextInput("filter: "), actionTextInput: newTextInput(""), agentsInFlight: true, worktreesInFlight: true, sessionsInFlight: true}
+	return dashboardModel{cwd: cwd, now: time.Now(), width: 80, height: 24, previewSize: defaultPreviewSize, previewEnabled: [tabCount]bool{true, true, true}, scheme: schemeDefault, focused: true, worktreeGeneration: 1, agentGit: map[string]item{}, gitCache: map[string]item{}, prCache: map[string]item{}, filterInputs: [tabCount]textinput.Model{newTextInput("/"), newTextInput("/"), newTextInput("search: ")}, themePickerInput: newTextInput("filter: "), actionTextInput: newTextInput(""), agentsInFlight: true, worktreesInFlight: true, sessionsInFlight: true}
 }
 
 func newTextInput(prompt string) textinput.Model {
@@ -1200,6 +1200,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.query == previous {
 			return m, command
 		}
+		m.clearActionError()
 		m.index = 0
 		if selected, ok := m.selected(); ok {
 			return m, tea.Batch(command, m.requestPreview(selected))
@@ -1229,7 +1230,7 @@ func (m dashboardModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.themePicker || m.actionMenu || m.filter || m.action != actionNone {
+	if m.themePicker || m.actionMenu || m.action != actionNone {
 		return m, nil
 	}
 	if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
@@ -1346,7 +1347,7 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.help, m.helpOffset = true, 0
 		return m, nil
 	}
-	if key == " " {
+	if key == " " && !m.filter {
 		return m, m.openActionMenu()
 	}
 	if m.livePreviewPaused() && (key == "G" || key == "end") {
@@ -1445,10 +1446,14 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.filterInputs[m.tab].SetValue("")
 			m.filterInputs[m.tab].Blur()
 		default:
+			previous := m.filterInputs[m.tab].Value()
 			var command tea.Cmd
 			m.filterInputs[m.tab], command = m.filterInputs[m.tab].Update(msg)
 			m.query, m.index = m.filterInputs[m.tab].Value(), 0
 			m.queries[m.tab] = m.query
+			if m.query != previous {
+				m.clearActionError()
+			}
 			if selected, ok := m.selected(); ok {
 				return m, tea.Batch(command, m.requestPreview(selected))
 			}
@@ -1519,6 +1524,7 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.tab == tabSessions && msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
+		m.clearActionError()
 		m.filter = true
 		m.filterInputs[m.tab].SetValue(m.query)
 		m.filterInputs[m.tab].CursorEnd()
@@ -1834,6 +1840,8 @@ func (m dashboardModel) switchTab(tab int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.queries[m.tab], m.tabTargets[m.tab] = m.query, m.selectedTarget()
+	m.filterInputs[m.tab].Blur()
+	m.filter = false
 	m.tab, m.index, m.previewOffset, m.rightOffset, m.xOffset, m.panelFocus, m.previewFocused = tab, 0, 0, 0, 0, panelLeft, false
 	m.query = m.queries[m.tab]
 	m.filterInputs[m.tab].SetValue(m.query)

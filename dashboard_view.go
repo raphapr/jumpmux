@@ -120,7 +120,7 @@ func (m dashboardModel) tabLabels() [tabCount]string {
 	case tabAgents:
 		labels[tabAgents] = fmt.Sprintf("[Agents %d · %s]", len(m.agents), m.scope.label())
 	case tabSessions:
-		labels[tabSessions] = fmt.Sprintf("[Sessions %d · %s]", len(m.rows()), m.sessionFilter.label())
+		labels[tabSessions] = fmt.Sprintf("[Sessions %d/%d · %s]", len(m.rows()), len(m.sessions), m.sessionFilter.label())
 	default:
 		labels[m.tab] = "[" + labels[m.tab] + "]"
 	}
@@ -131,7 +131,9 @@ func (m dashboardModel) tabLabels() [tabCount]string {
 		}
 	}
 	if m.tab == tabSessions && 2+ansi.StringWidth(strings.Join(labels[:], " │ ")) > m.width {
-		labels[tabSessions] = fmt.Sprintf("[Sessions %d]", len(m.rows()))
+		labels[tabAgents] = fmt.Sprintf("A %d", len(m.agents))
+		labels[tabWorktrees] = fmt.Sprintf("W %d", len(m.worktrees))
+		labels[tabSessions] = fmt.Sprintf("[S %d/%d %s]", len(m.rows()), len(m.sessions), m.sessionFilter.label())
 	}
 	return labels
 }
@@ -178,7 +180,11 @@ func (m dashboardModel) renderTable(width int) string {
 		if !loaded {
 			message = "Loading " + label + "…"
 		} else if m.query != "" {
-			message = "No matches for /" + safeText(m.query) + ". Esc clears search."
+			if m.tab == tabSessions {
+				message = "No sessions match “" + safeText(m.query) + "”. Esc clears search."
+			} else {
+				message = "No matches for /" + safeText(m.query) + ". Esc clears search."
+			}
 		} else if m.tab == tabSessions && m.sessionFilter != sessionFilterAll {
 			message = "No " + strings.ToLower(m.sessionFilter.label()) + " sessions. Ctrl+f changes filter."
 		} else {
@@ -563,7 +569,7 @@ func (m dashboardModel) renderFooter(width int) string {
 		if m.tab == tabSessions {
 			separator := borderStyle.Render(" │ ")
 			base := []string{footerCommand("Esc", "Clear"), footerCommand("^c", "Quit")}
-			optional := []string{footerCommand("^j/^k", "Move"), footerCommand("↵", "Open")}
+			optional := []string{footerCommand("^j/k/n/p", "Move"), footerCommand("↵", "Open")}
 			if selected, ok := m.selected(); ok && selected.muxSessionID != "" {
 				optional = append(optional, footerCommand("^d", "Remove"))
 			}

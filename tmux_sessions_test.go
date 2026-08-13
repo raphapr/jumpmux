@@ -482,14 +482,15 @@ func TestSessionIconsAndColumns(t *testing.T) {
 	}
 }
 
-func TestSessionTabWorksWhileSearching(t *testing.T) {
+func TestSessionTabSwitchClosesSearchAndPreservesQuery(t *testing.T) {
 	model := newDashboard("/repo")
 	model.tab, model.filter, model.query = tabSessions, true, "dev"
 	model.filterInputs[tabSessions].SetValue("dev")
+	model.filterInputs[tabSessions].Focus()
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyTab})
 	model = updated.(dashboardModel)
-	if model.tab != tabAgents || model.filterInputs[tabSessions].Value() != "dev" {
-		t.Fatalf("search tab switch = tab %d, query %q", model.tab, model.filterInputs[tabSessions].Value())
+	if model.tab != tabAgents || model.filter || model.filterInputs[tabSessions].Focused() || model.filterInputs[tabSessions].Value() != "dev" {
+		t.Fatalf("search tab switch = tab %d, filter %v, focused %v, query %q", model.tab, model.filter, model.filterInputs[tabSessions].Focused(), model.filterInputs[tabSessions].Value())
 	}
 }
 
@@ -690,9 +691,16 @@ func TestSessionsDashboardTab(t *testing.T) {
 	if rows := model.rows(); len(rows) != 1 || rows[0].title != "dev" {
 		t.Fatalf("fuzzy session filter = %#v", rows)
 	}
+	if label := ansi.Strip(model.tabLabels()[tabSessions]); label != "[Sessions 1/2 · All]" {
+		t.Fatalf("filtered Sessions label = %q", label)
+	}
+	model.query = "missing"
+	if view := ansi.Strip(model.View()); !strings.Contains(view, "No sessions match “missing”") {
+		t.Fatalf("Sessions empty search message:\n%s", view)
+	}
 	model.query = ""
 	view := ansi.Strip(model.View())
-	for _, want := range []string{"Agents 0", "Worktrees 0", "[Sessions 2 · All]", "Session", "Path", "Win", "↵ Open"} {
+	for _, want := range []string{"Agents 0", "Worktrees 0", "[Sessions 2/2 · All]", "Session", "Path", "Win", "↵ Open"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("sessions view missing %q:\n%s", want, view)
 		}
@@ -706,5 +714,9 @@ func TestSessionsDashboardTab(t *testing.T) {
 	}
 	if strings.Contains(footer, "Diff") || strings.Contains(footer, "PR") || strings.Contains(footer, "Scope") || strings.Contains(footer, "Add") || strings.Contains(footer, "q Quit") {
 		t.Fatalf("sessions footer exposes unreachable or unrelated actions: %s", footer)
+	}
+	model.width, model.query, model.sessionFilter = 40, "", sessionFilterLive
+	if header := ansi.Strip(model.renderHeader(40)); !strings.Contains(strings.Split(header, "\n")[0], "Live") {
+		t.Fatalf("narrow Sessions header hides scope: %q", header)
 	}
 }
