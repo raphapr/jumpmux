@@ -20,7 +20,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-var version = "0.23.0"
+var version = "dev"
 
 const (
 	workingIcon      = ""
