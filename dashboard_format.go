@@ -215,7 +215,48 @@ func prStatusSpans(item item, now time.Time) []prStatusSpan {
 }
 
 func prText(item item, now time.Time) string {
-	spans := prStatusSpans(item, now)
+	return statusSpansText(prStatusSpans(item, now))
+}
+
+func prCell(item item, width int, now time.Time, background *lipgloss.AdaptiveColor) string {
+	return statusSpansCell(prStatusSpans(item, now), width, background)
+}
+
+func compactPRText(item item, now time.Time) string {
+	return statusSpansText(compactPRStatusSpans(item, now))
+}
+
+func compactPRCell(item item, width int, now time.Time, background *lipgloss.AdaptiveColor) string {
+	return statusSpansCell(compactPRStatusSpans(item, now), width, background)
+}
+
+func compactPRStatusSpans(item item, now time.Time) []prStatusSpan {
+	if item.prNumber == 0 {
+		return []prStatusSpan{{text: "-", style: mutedStyle}}
+	}
+	spans := []prStatusSpan{{text: fmt.Sprintf("#%d", item.prNumber), style: successStyle}}
+	if item.prDraft {
+		spans = append(spans, prStatusSpan{text: dashboardIcon(prDraftIcon, "D"), style: mutedStyle})
+	} else {
+		switch item.prState {
+		case "MERGED":
+			return append(spans, prStatusSpan{text: dashboardIcon(prMergedIcon, "M"), style: accentStyle})
+		case "CLOSED":
+			return append(spans, prStatusSpan{text: dashboardIcon(prClosedIcon, "X"), style: dangerStyle})
+		}
+	}
+	switch item.prCheck {
+	case checkSuccess:
+		spans = append(spans, prStatusSpan{text: dashboardIcon(checkSuccessIcon, "+"), style: successStyle})
+	case checkFailure:
+		spans = append(spans, prStatusSpan{text: dashboardIcon(checkFailureIcon, "x"), style: dangerStyle})
+	case checkPending:
+		spans = append(spans, prStatusSpan{text: spinnerFrame(now), style: accentStyle})
+	}
+	return spans
+}
+
+func statusSpansText(spans []prStatusSpan) string {
 	parts := make([]string, len(spans))
 	for index, span := range spans {
 		parts[index] = span.text
@@ -223,8 +264,7 @@ func prText(item item, now time.Time) string {
 	return strings.Join(parts, " ")
 }
 
-func prCell(item item, width int, now time.Time, background *lipgloss.AdaptiveColor) string {
-	spans := prStatusSpans(item, now)
+func statusSpansCell(spans []prStatusSpan, width int, background *lipgloss.AdaptiveColor) string {
 	parts := make([]string, len(spans))
 	for index, span := range spans {
 		parts[index] = withBackground(span.style, background).Render(span.text)
@@ -316,6 +356,66 @@ func gitStatusCell(item item, width int, now time.Time, background *lipgloss.Ada
 	return padANSIBackground(strings.Join(parts, withBackground(textStyle, background).Render(" ")), width, background)
 }
 
+func compactGitStatusSpans(item item, now time.Time) []gitStatusSpan {
+	var spans []gitStatusSpan
+	add := func(text string, style lipgloss.Style) {
+		spans = append(spans, gitStatusSpan{text: text, style: style})
+	}
+	if item.locked {
+		add(dashboardIcon("󰌾", "LOCK"), warningStyle)
+	}
+	if item.prunable {
+		add(dashboardIcon("󰆴", "PRUNE"), dangerStyle)
+	}
+	if !item.gitLoaded {
+		add(spinnerFrame(now), mutedStyle)
+		return spans
+	}
+	if item.isRebasing {
+		add(dashboardIcon(gitRebaseIcon, "R"), warningStyle)
+	}
+	if item.dirty || item.added > 0 || item.removed > 0 {
+		add(dashboardIcon(gitDiffIcon, "*"), accentStyle)
+		if item.added > 0 {
+			add(fmt.Sprintf("+%d", item.added), successStyle)
+		}
+		if item.removed > 0 {
+			add(fmt.Sprintf("-%d", item.removed), dangerStyle)
+		}
+	}
+	if item.hasConflict {
+		add(dashboardIcon(gitConflictIcon, "!"), dangerStyle)
+	}
+	if item.ahead > 0 {
+		add(fmt.Sprintf("↑%d", item.ahead), infoStyle)
+	}
+	if item.behind > 0 {
+		add(fmt.Sprintf("↓%d", item.behind), warningStyle)
+	}
+	if len(spans) == 0 {
+		add("-", mutedStyle)
+	}
+	return spans
+}
+
+func compactGitStatusText(item item, now time.Time) string {
+	spans := compactGitStatusSpans(item, now)
+	parts := make([]string, len(spans))
+	for index, span := range spans {
+		parts[index] = span.text
+	}
+	return strings.Join(parts, " ")
+}
+
+func compactGitStatusCell(item item, width int, now time.Time, background *lipgloss.AdaptiveColor) string {
+	spans := compactGitStatusSpans(item, now)
+	parts := make([]string, len(spans))
+	for index, span := range spans {
+		parts[index] = withBackground(span.style, background).Render(span.text)
+	}
+	return padANSIBackground(strings.Join(parts, withBackground(textStyle, background).Render(" ")), width, background)
+}
+
 func elapsedCell(value time.Time, width int, now time.Time, background *lipgloss.AdaptiveColor) string {
 	if value.IsZero() {
 		return renderCell(mutedStyle, "-", width, background)
@@ -375,9 +475,9 @@ func muxView(item item) string {
 }
 
 func statusText(item item, now time.Time) string {
-	icon := doneIcon
+	icon := dashboardIcon(doneIcon, "D")
 	if item.status == "working" {
-		icon = workingIcon
+		icon = dashboardIcon(workingIcon, "W")
 	}
 	if isStale(item, now) {
 		return icon + " " + dashboardIcon(staleAgentIcon, "old")
@@ -408,9 +508,17 @@ func statusView(item item, now time.Time) string {
 	return style.Render(statusText(item, now))
 }
 
-func agentSummaryCell(item item, width int, now time.Time, background *lipgloss.AdaptiveColor) string {
+func agentSummaryCell(item item, width int, now time.Time, background *lipgloss.AdaptiveColor, loaded bool, err error) string {
+	if err != nil {
+		return renderCell(dangerStyle, dashboardIcon("󰅙", "!"), width, background)
+	}
 	if item.sessionTitle == "" {
-		return renderCell(mutedStyle, "-", width, background)
+		switch {
+		case !loaded:
+			return renderCell(mutedStyle, spinnerFrame(now), width, background)
+		default:
+			return renderCell(mutedStyle, "-", width, background)
+		}
 	}
 	style := successStyle
 	if isStale(item, now) {

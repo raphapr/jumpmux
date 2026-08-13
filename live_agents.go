@@ -264,16 +264,14 @@ func attachTmuxWorktrees(items []item) error {
 	if err != nil {
 		return err
 	}
-	currentPane, currentPath := activeTmuxContext()
+	_, currentPath := activeTmuxClientContext()
+	setCurrentWorktree(items, currentPath)
 	for index := range items {
 		if items[index].kind != "worktree" {
 			continue
 		}
 		var chosen tmuxPane
 		for _, pane := range panes {
-			if pane.ID == currentPane && pathWithin(cmp.Or(currentPath, pane.Path), items[index].cwd) {
-				items[index].current = true
-			}
 			if pane.Worktree != "" && samePath(pane.Worktree, items[index].cwd) && chosen.ID == "" {
 				chosen = pane
 			}
@@ -290,6 +288,23 @@ func attachTmuxWorktrees(items []item) error {
 	return nil
 }
 
+func setCurrentWorktree(items []item, currentPath string) bool {
+	current := -1
+	for index := range items {
+		if items[index].kind == "worktree" && pathWithin(currentPath, items[index].cwd) && (current < 0 || len(items[index].cwd) > len(items[current].cwd)) {
+			current = index
+		}
+	}
+	if current < 0 {
+		return false
+	}
+	for index := range items {
+		items[index].current = false
+	}
+	items[current].current = true
+	return true
+}
+
 func activeTmuxSession() string {
 	session, err := tmuxOutput("display-message", "-p", "#{client_session}")
 	if err != nil {
@@ -298,7 +313,7 @@ func activeTmuxSession() string {
 	return strings.TrimSpace(session)
 }
 
-func activeTmuxContext() (string, string) {
+func activeTmuxClientContext() (string, string) {
 	if session := activeTmuxSession(); session != "" {
 		output, err := tmuxOutput("display-message", "-p", "-t", session, "#{pane_id}\t#{pane_current_path}")
 		if err == nil {
@@ -307,6 +322,13 @@ func activeTmuxContext() (string, string) {
 				return parts[0], parts[1]
 			}
 		}
+	}
+	return "", ""
+}
+
+func activeTmuxContext() (string, string) {
+	if pane, path := activeTmuxClientContext(); pane != "" {
+		return pane, path
 	}
 	return os.Getenv("TMUX_PANE"), ""
 }

@@ -223,16 +223,32 @@ esac
 	}
 }
 
+func TestCurrentWorktreeUsesDeepestActiveTmuxPath(t *testing.T) {
+	items := []item{
+		{kind: "worktree", cwd: "/repo", current: true},
+		{kind: "worktree", cwd: "/repo/nested", current: true},
+	}
+	if !setCurrentWorktree(items, "/repo/nested/subdir") || items[0].current || !items[1].current {
+		t.Fatalf("active tmux path did not choose deepest worktree: %#v", items)
+	}
+	for _, activePath := range []string{"", "/outside"} {
+		items = []item{{kind: "worktree", cwd: "/repo", current: true}, {kind: "worktree", cwd: "/other"}}
+		if setCurrentWorktree(items, activePath) || !items[0].current || items[1].current {
+			t.Fatalf("unmatched tmux path %q did not preserve launch-directory fallback: %#v", activePath, items)
+		}
+	}
+}
+
 func TestAgentStatusDisplay(t *testing.T) {
 	started := time.Unix(0, 0)
 	working := item{status: "working", updated: started}
-	if got := statusText(working, started); got != workingIcon+" "+spinnerFrame(started) {
+	if got := statusText(working, started); got != dashboardIcon(workingIcon, "W")+" "+spinnerFrame(started) {
 		t.Fatalf("working status = %q", got)
 	}
-	if got := statusText(working, started.Add(clockInterval)); got != workingIcon+" "+spinnerFrame(started.Add(clockInterval)) {
+	if got := statusText(working, started.Add(clockInterval)); got != dashboardIcon(workingIcon, "W")+" "+spinnerFrame(started.Add(clockInterval)) {
 		t.Fatalf("next spinner frame = %q", got)
 	}
-	if got := statusText(working, started.Add(staleThreshold+time.Second)); got != workingIcon+" "+dashboardIcon(staleAgentIcon, "old") {
+	if got := statusText(working, started.Add(staleThreshold+time.Second)); got != dashboardIcon(workingIcon, "W")+" "+dashboardIcon(staleAgentIcon, "old") {
 		t.Fatalf("stale status = %q", got)
 	}
 }

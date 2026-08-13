@@ -379,8 +379,6 @@ func applyColorScheme(scheme colorScheme) {
 	palette := themePalettes[scheme]
 	dashboardBackgroundColor = palette.background
 	dashboardBackgroundEnabled = palette.background.Light != "" || palette.background.Dark != ""
-	currentRowColor = palette.currentRow
-	currentWorktreeColor = palette.currentWorktree
 	selectedColor = palette.selected
 	textColor = palette.text
 	dimmedColor = palette.dimmed
@@ -418,8 +416,6 @@ func applyColorScheme(scheme colorScheme) {
 	dangerStyle = lipgloss.NewStyle().Foreground(dangerColor)
 	accentStyle = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
 	selectedStyle = lipgloss.NewStyle().Background(selectedColor)
-	currentStyle = lipgloss.NewStyle().Background(currentRowColor)
-	currentWorktreeStyle = lipgloss.NewStyle().Foreground(currentWorktreeColor)
 	addedStyle = successStyle
 	removedStyle = dangerStyle
 	diffHeadStyle = lipgloss.NewStyle().Foreground(diff).Bold(true)

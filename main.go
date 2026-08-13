@@ -624,6 +624,19 @@ func worktreePRDetails(repo string, items []item) []item {
 }
 
 func attachAgentsToWorktrees(items, agents []item) {
+	representatives := make([]item, len(items))
+	hasRepresentative := make([]bool, len(items))
+	for _, agent := range agents {
+		match := -1
+		for index := range items {
+			if pathWithin(agent.cwd, items[index].cwd) && (match < 0 || len(items[index].cwd) > len(items[match].cwd)) {
+				match = index
+			}
+		}
+		if match >= 0 && (!hasRepresentative[match] || preferAgent(agent, representatives[match])) {
+			representatives[match], hasRepresentative[match] = agent, true
+		}
+	}
 	for index := range items {
 		if items[index].sessionTitle != "" {
 			items[index].pane = ""
@@ -635,28 +648,29 @@ func attachAgentsToWorktrees(items, agents []item) {
 		items[index].sessionTitle = ""
 		items[index].status = ""
 		items[index].updated = time.Time{}
-
-		currentAgent := false
-		for _, agent := range agents {
-			if !pathWithin(agent.cwd, items[index].cwd) || (currentAgent && !agent.current) {
-				continue
-			}
-			if agent.current || items[index].sessionTitle == "" || agent.updated.After(items[index].updated) {
-				items[index].sessionTitle = agent.title
-				items[index].updated = agent.updated
-				items[index].status = agent.status
-				items[index].pane = agent.pane
-				items[index].muxSessionID = agent.muxSessionID
-				items[index].muxSessionName = agent.muxSessionName
-				items[index].muxWindowID = agent.muxWindowID
-				items[index].muxWindowName = agent.muxWindowName
-				if agent.current {
-					items[index].current = true
-					currentAgent = true
-				}
-			}
+		if !hasRepresentative[index] {
+			continue
 		}
+		agent := representatives[index]
+		items[index].sessionTitle = agent.title
+		items[index].updated = agent.updated
+		items[index].status = agent.status
+		items[index].pane = agent.pane
+		items[index].muxSessionID = agent.muxSessionID
+		items[index].muxSessionName = agent.muxSessionName
+		items[index].muxWindowID = agent.muxWindowID
+		items[index].muxWindowName = agent.muxWindowName
 	}
+}
+
+func preferAgent(candidate, current item) bool {
+	if candidate.current != current.current {
+		return candidate.current
+	}
+	if (candidate.status == "working") != (current.status == "working") {
+		return candidate.status == "working"
+	}
+	return candidate.updated.After(current.updated)
 }
 
 func listWorktrees(cwd string) ([]worktree, string, error) {

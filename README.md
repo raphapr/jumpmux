@@ -10,7 +10,7 @@ It is inspired by [Workmux](https://github.com/raine/workmux), but takes a more 
 - **Worktrees:** Worktrees from the current repository with Project, Worktree, Git, PR, Mux, Age, and Agent columns.
 - **Sessions:** Configured locations, discovered repositories, and live tmux sessions with Session, Path, Windows, and Last-attached columns.
 
-Selecting an agent focuses its tmux pane. Selecting a worktree focuses its agent pane or its jumpmux tmux window. The first jump creates a window in that worktree. Later jumps reuse it. Inside tmux, selecting a live session switches the current client; selecting an inactive configured session creates it detached at its configured path, then switches to it. Outside tmux, selecting either attaches to the named session, creating a configured session when needed.
+`▌` marks the selected row. A subtle `▏` marks the current agent, worktree, or session. Selecting an agent focuses its tmux pane. Selecting a worktree focuses its agent pane or its jumpmux tmux window. The first jump creates a window in that worktree. Later jumps reuse it. Inside tmux, selecting a live session switches the current client; selecting an inactive configured session creates it detached at its configured path, then switches to it. Outside tmux, selecting either attaches to the named session, creating a configured session when needed.
 
 ## Requirements
 
@@ -79,7 +79,7 @@ The extension reports the current pane's agent state.
 
 The Pi extension writes agent status records. Before displaying a record, jumpmux checks its pane with `tmux list-panes`. Set `JUMPMUX_STATE_DIR` to change the status directory. `jumpmux setup` honors `PI_CODING_AGENT_DIR`.
 
-The preview captures up to 200 lines from the selected pane every 500 ms while the terminal has focus. It preserves SGR colors and strips Pi's prompt and footer. Scrolling up shows `PAUSED line/total`. Press `G` or `End` to follow new output again. When focus returns, jumpmux refreshes the data and selected preview.
+The preview captures up to 200 lines from the selected pane every 500 ms while the terminal has focus. It includes the tmux session name, preserves SGR colors, and strips Pi's prompt and footer. Scrolling up shows `PAUSED line/total`. Press `G` or `End` to follow new output again. When focus returns, jumpmux refreshes the data and selected preview.
 
 Working agents show a Braille spinner. Statuses older than one hour show `󰔛`. The Time column changes color after five minutes and one hour. Set `JUMPMUX_REDUCED_MOTION=1` to replace animation with a static loader and reduce clock updates to once per second.
 
@@ -108,7 +108,7 @@ Session icons:
 - ``: discovered
 - Plain mode: `L`, `C`, and `R`
 
-The current session has a highlighted row. Live previews capture the active pane every 500 ms, including alternate-screen programs such as `btop`. Inactive configured entries show a creation hint.
+Live previews capture the active pane every 500 ms, including alternate-screen programs such as `btop`. Inactive configured entries show a creation hint.
 
 jumpmux merges rows with the same name. Configured paths take precedence; live-only rows use the active pane path. Rows appear in three groups: live, configured, and discovered. Each group sorts by name. Press `Ctrl+r` to sort by the `Last` column until jumpmux exits. Searches sort by fuzzy match score.
 
@@ -116,15 +116,7 @@ Press `Space` for copy, rename, PR, cleanup, and removal actions available on th
 
 ### Git
 
-Worktree rows use the current repository. Agent rows read Git state from each agent's working directory.
-
-Git cells show:
-
-- A loading spinner
-- The non-default base branch
-- Committed and uncommitted line counts
-- Rebase or conflict state
-- Upstream ahead and behind counts
+Worktree rows use the current repository. Agent rows read Git state from each agent's working directory. Agent Git cells compactly show loading, dirty line counts, rebase or conflict state, and upstream ahead and behind counts. Worktree Git cells also show the non-default base branch and distinguish committed from uncommitted line counts.
 
 When `wt` is available, jumpmux reads the default branch from `wt list --format=json` schema 2. Otherwise, it uses Git metadata.
 
@@ -132,7 +124,7 @@ jumpmux loads `git_status_cache.json` before the first render, refreshes Git dat
 
 ### Pull requests
 
-PR cells show `#number state-icon check-icon`. Checks use `󰄴` for success, `󰅙` for failure, and a spinner while pending. Agent and worktree previews list up to three failed checks.
+Worktree PR cells show `#number state-icon check-icon`. Agent PR cells omit the open-state icon to reduce noise. Checks use `󰄴` for success, `󰅙` for failure, and a spinner while pending. Agent and worktree previews list up to three failed checks.
 
 jumpmux calls `gh pr list` for each agent repository. It matches fork PRs against the branch's upstream repository and prefers an open PR. It loads `pr_status_cache.json` before the first render and keeps cached data when GitHub is unavailable.
 
@@ -144,7 +136,7 @@ Press `t` to open the theme picker and browse these color schemes:
 
 Built-in themes adapt to the terminal profile. Catppuccin themes use fixed palettes. jumpmux saves the selected theme in its configuration file.
 
-Agent status uses `` for working and `` for done. Set `nerdfont = false` to replace Nerd Font Git, PR, check, and stale icons with text symbols. `JUMPMUX_PLAIN=1` overrides the setting for one launch.
+Agent status uses `` for working and `` for done, with `W` and `D` in plain mode. Set `nerdfont = false` to replace Nerd Font Git, PR, check, and stale icons with text symbols. `JUMPMUX_PLAIN=1` overrides the setting for one launch.
 
 ## Usage
 

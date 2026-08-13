@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -60,6 +61,80 @@ func TestDashboardRefreshIsIncremental(t *testing.T) {
 	})
 	if stale := updated.(dashboardModel); stale.worktrees[0].target != "/other" {
 		t.Fatalf("stale worktree list was applied: %#v", stale.worktrees)
+	}
+}
+
+func TestWorktreeCurrentMarkerReplacesStaleAsyncState(t *testing.T) {
+	current := []item{
+		{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main", current: true},
+		{kind: "worktree", target: "/repo/nested", cwd: "/repo/nested", branch: "nested", current: true},
+	}
+	fresh := []item{
+		{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main", current: true},
+		{kind: "worktree", target: "/repo/nested", cwd: "/repo/nested", branch: "nested"},
+	}
+	merged := mergeWorktreeData(current, fresh, worktreeListStage)
+	if merged[0].current != true || merged[1].current {
+		t.Fatalf("worktree list accumulated stale current markers: %#v", merged)
+	}
+	attachAgentsToWorktrees(merged, []item{{cwd: "/repo/nested", current: true, title: "agent"}})
+	if merged[0].sessionTitle != "" || merged[1].sessionTitle != "agent" || merged[1].current {
+		t.Fatalf("nested agent was not attached only to its deepest worktree: %#v", merged)
+	}
+}
+
+func TestWorktreeRepresentativeAgentPriority(t *testing.T) {
+	now := time.Now()
+	items := []item{{kind: "worktree", cwd: "/repo"}}
+	attachAgentsToWorktrees(items, []item{
+		{cwd: "/repo", title: "older working", status: "working", updated: now.Add(-time.Minute)},
+		{cwd: "/repo", title: "newer done", status: "done", updated: now},
+	})
+	if items[0].sessionTitle != "older working" {
+		t.Fatalf("done agent replaced working representative: %#v", items[0])
+	}
+	attachAgentsToWorktrees(items, []item{
+		{cwd: "/repo", title: "working", status: "working", updated: now},
+		{cwd: "/repo", title: "current done", status: "done", current: true, updated: now.Add(-time.Hour)},
+	})
+	if items[0].sessionTitle != "current done" {
+		t.Fatalf("current agent did not win representative priority: %#v", items[0])
+	}
+}
+
+func TestWorktreeAgentRefreshPreservesErrorsAndClearsSuccessfulEmptyResults(t *testing.T) {
+	now := time.Now()
+	winner := item{
+		kind: "session", cwd: "/repo", title: "winner", status: "working", updated: now,
+		pane: "%2", muxSessionID: "$2", muxSessionName: "dev", muxWindowID: "@2", muxWindowName: "code",
+	}
+	model := newDashboard("/repo")
+	model.tab, model.width, model.height = tabWorktrees, 100, 20
+	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main"}}
+	updated, _ := model.Update(dashboardDataMsg(dashboardData{agents: []item{
+		{kind: "session", cwd: "/repo", title: "newer done", status: "done", updated: now.Add(time.Minute), pane: "%1"},
+		winner,
+	}}))
+	model = updated.(dashboardModel)
+	got := model.worktrees[0]
+	if got.sessionTitle != winner.title || got.status != winner.status || !got.updated.Equal(winner.updated) || got.pane != winner.pane || got.muxSessionID != winner.muxSessionID || got.muxSessionName != winner.muxSessionName || got.muxWindowID != winner.muxWindowID || got.muxWindowName != winner.muxWindowName {
+		t.Fatalf("representative fields came from different agents: %#v", got)
+	}
+
+	updated, _ = model.Update(dashboardDataMsg(dashboardData{err: errors.New("agents unavailable")}))
+	model = updated.(dashboardModel)
+	if got := model.worktrees[0]; got.sessionTitle != winner.title || got.pane != winner.pane {
+		t.Fatalf("transient agent error cleared representative: %#v", got)
+	}
+	row := model.tableRow(model.worktrees[0], 1, model.width, model.columns(model.width, model.rows()))
+	if !strings.Contains(ansi.Strip(row), dashboardIcon("󰅙", "!")) {
+		t.Fatalf("agent error marker missing from Worktrees row: %q", row)
+	}
+
+	updated, _ = model.Update(dashboardDataMsg(dashboardData{}))
+	got = updated.(dashboardModel).worktrees[0]
+	if got.sessionTitle != "" || got.status != "" || !got.updated.IsZero() || got.pane != "" || got.muxSessionID != "" || got.muxSessionName != "" || got.muxWindowID != "" || got.muxWindowName != "" {
+		t.Fatalf("successful empty agent refresh retained stale fields: %#v", got)
 	}
 }
 
@@ -119,7 +194,7 @@ func TestDashboardLayout(t *testing.T) {
 
 	view := model.View()
 	plain := ansi.Strip(view)
-	for _, expected := range []string{"[Agents 2 · all] │ Worktrees 1", "# Project", "Git", dashboardIcon(gitDiffIcon, "*"), "+12", "-3", "PR", "#42 " + dashboardIcon(prOpenIcon, "O") + " " + dashboardIcon(checkFailureIcon, "x"), "Status", doneIcon, "Time", "Title", "┌─ ▶ Preview: repo ", "↵ Open", "? Help"} {
+	for _, expected := range []string{"[Agents 2 · all] │ Worktrees 1", "# Project", "Git", dashboardIcon(gitDiffIcon, "*"), "+12", "-3", "PR", "#42 " + dashboardIcon(checkFailureIcon, "x"), "Status", dashboardIcon(doneIcon, "D"), "Time", "Title", "┌─ ▶ Preview: repo ", "↵ Open", "? Help"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("dashboard missing %q:\n%s", expected, plain)
 		}
@@ -129,14 +204,8 @@ func TestDashboardLayout(t *testing.T) {
 	}
 	lines := strings.Split(view, "\n")
 	for _, line := range lines {
-		if !strings.Contains(ansi.Strip(line), "Current project") {
-			continue
-		}
-		for _, style := range []string{currentStyle.Render("probe"), currentWorktreeStyle.Render("probe")} {
-			prefix := strings.SplitN(style, "probe", 2)[0]
-			if prefix != "" && !strings.Contains(line, prefix) {
-				t.Fatalf("current project row missing highlight: %q", line)
-			}
+		if strings.Contains(ansi.Strip(line), "Current project") && !strings.Contains(ansi.Strip(line), "▏") {
+			t.Fatalf("current project row is missing its subtle marker: %q", line)
 		}
 	}
 	if len(lines) != model.height {
@@ -146,6 +215,183 @@ func TestDashboardLayout(t *testing.T) {
 		if width := ansi.StringWidth(line); width > model.width {
 			t.Fatalf("line %d width = %d, want <= %d", index, width, model.width)
 		}
+	}
+}
+
+func TestCurrentRowsUseOnlySubtleMarker(t *testing.T) {
+	for _, tab := range []int{tabAgents, tabWorktrees, tabSessions} {
+		model := newDashboard("/repo")
+		model.tab, model.width, model.height, model.index = tab, 100, 20, 1
+		base := item{cwd: "/repo", title: "row", branch: "main", gitLoaded: true}
+		switch tab {
+		case tabAgents:
+			base.kind, base.target = "session", "%1"
+			model.agents = []item{base}
+		case tabWorktrees:
+			base.kind, base.target = "worktree", "/repo"
+			model.worktrees = []item{base}
+		case tabSessions:
+			base.kind, base.target, base.muxSessionID = "tmux-session", "dev", "$1"
+			model.sessions = []item{base}
+		}
+		columns := model.columns(model.width, model.rows())
+		ordinary := model.tableRow(base, 0, model.width, columns)
+		base.current = true
+		current := model.tableRow(base, 0, model.width, columns)
+		if !strings.Contains(ansi.Strip(current), "▏") || ansi.Strip(current)[len("▏ "):] != ansi.Strip(ordinary)[len("  "):] {
+			t.Fatalf("tab %d current row changed beyond its marker: ordinary=%q current=%q", tab, ordinary, current)
+		}
+		model.index = 0
+		selected := model.tableRow(base, 0, model.width, columns)
+		if !strings.Contains(ansi.Strip(selected), "▌") || strings.Contains(ansi.Strip(selected), "▏") {
+			t.Fatalf("tab %d selected current row did not prefer selection marker: %q", tab, selected)
+		}
+	}
+}
+
+func TestAgentsAndWorktreesRenderCompactAndRichGitPR(t *testing.T) {
+	previousNerd, previousProfile := nerdFontEnabled, lipgloss.ColorProfile()
+	defer func() {
+		nerdFontEnabled = previousNerd
+		lipgloss.SetColorProfile(previousProfile)
+	}()
+	nerdFontEnabled = false
+	t.Setenv("JUMPMUX_PLAIN", "1")
+	lipgloss.SetColorProfile(0)
+
+	now := time.Now()
+	git := item{gitLoaded: true, baseBranch: "release", committedAdded: 5, committedRemoved: 2, dirty: true, added: 3, removed: 1, hasConflict: true, isRebasing: true, ahead: 2, behind: 1, prNumber: 42, prState: "OPEN", prCheck: checkFailure}
+	for _, test := range []struct {
+		item item
+		want string
+	}{
+		{item{}, "-"},
+		{item{prNumber: 1, prState: "OPEN"}, "#1"},
+		{item{prNumber: 2, prState: "OPEN", prCheck: checkFailure}, "#2 x"},
+		{item{prNumber: 3, prDraft: true, prCheck: checkSuccess}, "#3 D +"},
+		{item{prNumber: 4, prState: "MERGED", prCheck: checkFailure}, "#4 M"},
+		{item{prNumber: 5, prState: "CLOSED", prCheck: checkFailure}, "#5 X"},
+	} {
+		if got := compactPRText(test.item, now); got != test.want {
+			t.Errorf("compactPRText(%#v) = %q, want %q", test.item, got, test.want)
+		}
+	}
+
+	agentModel := newDashboard("/repo")
+	agentModel.width, agentModel.height = 140, 20
+	agent := item{kind: "session", target: "%1", cwd: "/repo", title: "agent"}
+	agentModel.agents = []item{agent}
+	agentModel.agentGit[agent.cwd] = git
+	agentRow := agentModel.tableRow(agent, 1, agentModel.width, agentModel.columns(agentModel.width, agentModel.rows()))
+
+	worktreeModel := newDashboard("/repo")
+	worktreeModel.width, worktreeModel.height, worktreeModel.tab = 140, 20, tabWorktrees
+	worktree := git
+	worktree.kind, worktree.target, worktree.cwd, worktree.branch = "worktree", "/repo", "/repo", "feature"
+	worktreeModel.worktrees = []item{worktree}
+	worktreeRow := worktreeModel.tableRow(worktree, 1, worktreeModel.width, worktreeModel.columns(worktreeModel.width, worktreeModel.rows()))
+
+	agentPlain, worktreePlain := ansi.Strip(agentRow), ansi.Strip(worktreeRow)
+	for _, unexpected := range []string{"→release", "+5", "-2", "#42 O"} {
+		if strings.Contains(agentPlain, unexpected) {
+			t.Errorf("Agents row retained rich detail %q: %q", unexpected, agentPlain)
+		}
+	}
+	for _, expected := range []string{"R", "*", "+3", "-1", "!", "↑2", "↓1", "#42 x"} {
+		if !strings.Contains(agentPlain, expected) {
+			t.Errorf("Agents row missing compact detail %q: %q", expected, agentPlain)
+		}
+	}
+	for _, expected := range []string{"→release", "+5", "-2", "#42 O x"} {
+		if !strings.Contains(worktreePlain, expected) {
+			t.Errorf("Worktrees row lost rich detail %q: %q", expected, worktreePlain)
+		}
+	}
+
+	failureModel := newDashboard("/repo")
+	failureModel.width, failureModel.height = 140, 20
+	failureModel.agents = []item{agent}
+	failureModel.agentGit[agent.cwd] = item{gitLoaded: true, prNumber: 42, prState: "OPEN", prCheck: checkFailure}
+	failureRow := failureModel.tableRow(agent, 1, failureModel.width, failureModel.columns(failureModel.width, failureModel.rows()))
+	failureToken := dangerStyle.Render(dashboardIcon(checkFailureIcon, "x"))
+	if strings.Count(failureRow, failureToken) != 1 || strings.Contains(failureRow, dangerStyle.Render("#42")) {
+		t.Fatalf("failed CI danger styling was not confined to its PR token: %q", failureRow)
+	}
+}
+
+func TestWorktreeAgentCellStatesAndPlainIcons(t *testing.T) {
+	previousNerd := nerdFontEnabled
+	defer func() { nerdFontEnabled = previousNerd }()
+	nerdFontEnabled = true
+	t.Setenv("JUMPMUX_PLAIN", "1")
+	now := time.Now()
+	for _, test := range []struct {
+		name   string
+		item   item
+		loaded bool
+		err    error
+		want   string
+	}{
+		{name: "loading", want: spinnerFrame(now)},
+		{name: "error", loaded: true, err: errors.New("unavailable"), want: "!"},
+		{name: "empty", loaded: true, want: "-"},
+		{name: "working", item: item{sessionTitle: "agent", status: "working", updated: now}, loaded: true, want: "W " + spinnerFrame(now) + " agent"},
+		{name: "done", item: item{sessionTitle: "agent", status: "done", updated: now}, loaded: true, want: "D agent"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := ansi.Strip(agentSummaryCell(test.item, 20, now, nil, test.loaded, test.err))
+			if !strings.Contains(got, test.want) {
+				t.Fatalf("Agent cell = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestAgentRowsFitNarrowWidthsWithNerdAndPlainIcons(t *testing.T) {
+	previousNerd := nerdFontEnabled
+	defer func() { nerdFontEnabled = previousNerd }()
+	for _, test := range []struct {
+		name  string
+		plain string
+	}{
+		{name: "nerd"},
+		{name: "plain", plain: "1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			nerdFontEnabled = true
+			t.Setenv("JUMPMUX_PLAIN", test.plain)
+			model := newDashboard("/repo")
+			model.width, model.height = 40, 12
+			agent := item{kind: "session", target: "%1", cwd: "/repo", title: "agent"}
+			model.agents = []item{agent}
+			model.agentGit[agent.cwd] = item{gitLoaded: true, dirty: true, added: 1, prNumber: 42, prState: "OPEN", prCheck: checkFailure}
+			rows := model.rows()
+			columns := model.columns(model.width, rows)
+			for _, line := range []string{model.tableHeader(model.width, columns), model.tableRow(rows[0], 1, model.width, columns)} {
+				if got := ansi.StringWidth(line); got != model.width {
+					t.Fatalf("narrow %s line width = %d, want %d: %q", test.name, got, model.width, line)
+				}
+			}
+		})
+	}
+}
+
+func TestAgentFilterAndPreviewIncludeSessionMetadata(t *testing.T) {
+	model := newDashboard("/repo")
+	model.agents = []item{{kind: "session", target: "%1", cwd: "/repo", title: "keep title", muxSessionName: "dev"}}
+	model.query = "dev"
+	if rows := model.rows(); len(rows) != 1 || rows[0].title != "keep title" {
+		t.Fatalf("agent session filter changed Title or excluded row: %#v", rows)
+	}
+	model.tab = tabWorktrees
+	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main", muxSessionName: "dev"}}
+	if rows := model.rows(); len(rows) != 0 {
+		t.Fatalf("worktree filter matched tmux session metadata: %#v", rows)
+	}
+	writeFakeTmux(t, "printf '1\\t1\\noutput\\n'")
+	preview := loadAgentPreview(model.agents[0], schemeDefault, 1)().(previewMsg)
+	if plain := ansi.Strip(strings.Join(preview.lines, "\n")); !strings.Contains(plain, "Session dev") || strings.Contains(preview.title, "dev") {
+		t.Fatalf("agent preview session metadata = title %q lines %q", preview.title, plain)
 	}
 }
 

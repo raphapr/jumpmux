@@ -221,10 +221,14 @@ func (m dashboardModel) columns(width int, rows []item) tableColumns {
 	project, worktree, git, pr := 8, 9, 5, 4
 	for _, item := range rows {
 		gitItem := m.gitItem(item)
+		gitText, prStatus := gitStatusText(gitItem, m.now), prText(gitItem, m.now)
+		if m.tab == tabAgents {
+			gitText, prStatus = compactGitStatusText(gitItem, m.now), compactPRText(gitItem, m.now)
+		}
 		project = max(project, ansi.StringWidth(projectName(item.cwd))+2)
 		worktree = max(worktree, ansi.StringWidth(m.displayWorktree(item))+1)
-		git = max(git, ansi.StringWidth(gitStatusText(gitItem, m.now))+1)
-		pr = max(pr, ansi.StringWidth(prText(gitItem, m.now)))
+		git = max(git, ansi.StringWidth(gitText)+1)
+		pr = max(pr, ansi.StringWidth(prStatus))
 	}
 	project = min(project, 22)
 	worktree = min(worktree, 26)
@@ -283,24 +287,19 @@ func (m dashboardModel) tableHeader(width int, c tableColumns) string {
 
 func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) string {
 	gitItem := m.gitItem(item)
-	isCurrent := item.current || (m.tab == tabAgents && gitItem.current)
 	var background *lipgloss.AdaptiveColor
 	if index == m.index {
 		background = &selectedColor
-	} else if isCurrent {
-		background = &currentRowColor
 	}
 	worktreeStyle := semanticRowStyle(item, gitItem, m.now)
 	if index == m.index {
 		worktreeStyle = textStyle
-	} else if isCurrent {
-		worktreeStyle = currentWorktreeStyle
 	}
 	prefix := renderCell(textStyle, "  ", 2, background)
 	if index == m.index {
 		prefix = renderCell(infoStyle, "▌ ", 2, background)
-	} else if isCurrent {
-		prefix = renderCell(currentWorktreeStyle, "▏ ", 2, background)
+	} else if item.current {
+		prefix = renderCell(textStyle, "▏ ", 2, background)
 	}
 
 	line := prefix
@@ -321,15 +320,17 @@ func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) st
 	if index < 9 {
 		jumpKey = strconv.Itoa(index + 1)
 	}
-	line += renderCell(keycapStyle, jumpKey, 2, background) + renderCell(worktreeStyle, projectName(item.cwd), c.project, background) + renderCell(worktreeStyle, m.displayWorktree(item), c.worktree, background) + gitStatusCell(gitItem, c.git, m.now, background) + prCell(gitItem, c.pr, m.now, background)
+	line += renderCell(keycapStyle, jumpKey, 2, background) + renderCell(worktreeStyle, projectName(item.cwd), c.project, background) + renderCell(worktreeStyle, m.displayWorktree(item), c.worktree, background)
 	if m.tab == tabAgents {
+		line += compactGitStatusCell(gitItem, c.git, m.now, background) + compactPRCell(gitItem, c.pr, m.now, background)
 		line += statusCell(item, c.status, m.now, background) + elapsedCell(item.updated, c.elapsed, m.now, background) + renderCell(worktreeStyle, item.title, c.tail, background)
 	} else {
+		line += gitStatusCell(gitItem, c.git, m.now, background) + prCell(gitItem, c.pr, m.now, background)
 		age := "-"
 		if !item.updated.IsZero() {
 			age = relativeAge(item.updated)
 		}
-		line += muxCell(item, c.status, background) + renderCell(mutedStyle, age, c.elapsed, background) + agentSummaryCell(item, c.tail, m.now, background)
+		line += muxCell(item, c.status, background) + renderCell(mutedStyle, age, c.elapsed, background) + agentSummaryCell(item, c.tail, m.now, background, m.agentsLoaded, m.agentErr)
 	}
 	return padANSIBackground(line, width, background)
 }
@@ -678,8 +679,6 @@ func sessionIcon(session item) (string, lipgloss.Style) {
 
 func semanticRowStyle(item, git item, now time.Time) lipgloss.Style {
 	switch {
-	case git.prCheck == checkFailure:
-		return dangerStyle
 	case isStale(item, now):
 		return mutedStyle
 	case item.status == "done":

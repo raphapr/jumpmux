@@ -56,19 +56,19 @@ var spinnerFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦",
 var nerdFontEnabled = true
 
 var (
-	currentRowColor, currentWorktreeColor, selectedColor lipgloss.AdaptiveColor
-	textColor, dimmedColor, borderColor, headerColor     lipgloss.AdaptiveColor
-	keycapColor, infoColor, successColor, warningColor   lipgloss.AdaptiveColor
-	dangerColor, accentColor                             lipgloss.AdaptiveColor
-	dashboardBackgroundColor                             lipgloss.AdaptiveColor
-	dashboardBackgroundEnabled                           bool
+	selectedColor                                      lipgloss.AdaptiveColor
+	textColor, dimmedColor, borderColor, headerColor   lipgloss.AdaptiveColor
+	keycapColor, infoColor, successColor, warningColor lipgloss.AdaptiveColor
+	dangerColor, accentColor                           lipgloss.AdaptiveColor
+	dashboardBackgroundColor                           lipgloss.AdaptiveColor
+	dashboardBackgroundEnabled                         bool
 
-	textStyle, headerStyle, mutedStyle, borderStyle   lipgloss.Style
-	activeBorderStyle, keycapStyle, cursorStyle       lipgloss.Style
-	infoStyle, successStyle                           lipgloss.Style
-	warningStyle, dangerStyle, accentStyle            lipgloss.Style
-	selectedStyle, currentStyle, currentWorktreeStyle lipgloss.Style
-	addedStyle, removedStyle, diffHeadStyle           lipgloss.Style
+	textStyle, headerStyle, mutedStyle, borderStyle lipgloss.Style
+	activeBorderStyle, keycapStyle, cursorStyle     lipgloss.Style
+	infoStyle, successStyle                         lipgloss.Style
+	warningStyle, dangerStyle, accentStyle          lipgloss.Style
+	selectedStyle                                   lipgloss.Style
+	addedStyle, removedStyle, diffHeadStyle         lipgloss.Style
 )
 
 type dashboardModel struct {
@@ -617,6 +617,9 @@ func refreshWorktreeMux(items []item, generation uint64) tea.Cmd {
 func loadAgentPreview(item item, scheme colorScheme, request uint64) tea.Cmd {
 	return func() tea.Msg {
 		preview := previewData{request: request, scheme: scheme, target: item.target, kind: item.kind, updated: item.updated, title: "Preview: " + worktreeName(item.cwd), followBottom: true}
+		if item.muxSessionName != "" {
+			preview.lines = append(preview.lines, mutedStyle.Render("Session ")+textStyle.Render(safeText(item.muxSessionName)))
+		}
 		if item.prCheck == checkFailure {
 			preview.lines = append(preview.lines, failedChecksPreview(item.prFailedChecks))
 		}
@@ -2062,7 +2065,11 @@ func (m dashboardModel) rows() []item {
 	query := strings.ToLower(m.query)
 	filtered := make([]item, 0, len(rows))
 	for _, item := range rows {
-		if strings.Contains(strings.ToLower(item.title+" "+item.cwd+" "+item.branch+" "+item.sessionTitle), query) {
+		fields := item.title + " " + item.cwd + " " + item.branch + " " + item.sessionTitle
+		if m.tab == tabAgents {
+			fields += " " + item.muxSessionName
+		}
+		if strings.Contains(strings.ToLower(fields), query) {
 			filtered = append(filtered, item)
 		}
 	}
@@ -2115,7 +2122,7 @@ func mergeWorktreeData(current, incoming []item, stage worktreeStage) []item {
 			if old, ok := existing[fresh.target]; ok {
 				branchChanged := old.branch != fresh.branch
 				old.kind, old.cwd, old.branch, old.title = fresh.kind, fresh.cwd, fresh.branch, fresh.title
-				old.current, old.locked, old.prunable = old.current || fresh.current, fresh.locked, fresh.prunable
+				old.current, old.locked, old.prunable = fresh.current, fresh.locked, fresh.prunable
 				if branchChanged {
 					old.prNumber, old.prState, old.prDraft, old.prCheck, old.prLoaded = 0, "", false, "", false
 					old.dirty, old.gitLoaded = false, false
