@@ -118,7 +118,7 @@ Live previews capture the active pane every 500 ms, including alternate-screen p
 
 jumpmux merges rows with the same name. Configured paths take precedence; live-only rows use the active pane path. Rows appear in three groups: live, configured, and discovered. Each group sorts by name. Press `Ctrl+r` to sort by the `Last` column until jumpmux exits. Searches sort by fuzzy match score.
 
-Press `Space` for copy, rename, PR, cleanup, and removal actions available on the selected row. `Ctrl+d` removes a live session after confirmation. Removing a live session does not delete its configured entry.
+Press `Space` for copy, rename, PR, rebase, merge, cleanup, and removal actions available on the selected row. Worktree rebase and merge use the configured worktree backend against its local default branch: Worktrunk when selected or available in `auto`, otherwise native Git. Merge keeps the worktree. `Ctrl+d` removes a live session after confirmation. Removing a live session does not delete its configured entry.
 
 ### Git
 

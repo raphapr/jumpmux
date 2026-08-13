@@ -11,7 +11,10 @@ import (
 	"time"
 )
 
-const worktreeActionTimeout = 2 * time.Minute
+const (
+	worktreeActionTimeout = 2 * time.Minute
+	worktreeMergeTimeout  = 30 * time.Minute
+)
 
 type worktreeBackend string
 
@@ -113,6 +116,72 @@ func removeWorktree(repo, path string, backend worktreeBackend) error {
 	output, err := runActionCommand(ctx, root, "git", "worktree", "remove", path)
 	if err != nil {
 		return actionError("remove worktree", output, err)
+	}
+	return nil
+}
+
+func updateWorktree(path, branch, operation string, backend worktreeBackend) error {
+	if operation != "rebase" && operation != "merge" {
+		return fmt.Errorf("unsupported worktree action %q", operation)
+	}
+	backend, err := actionWorktreeBackend(backend)
+	if err != nil {
+		return err
+	}
+	worktrees, _, err := listWorktrees(path)
+	if err != nil {
+		return err
+	}
+	if len(worktrees) == 0 || samePath(path, worktrees[0].path) {
+		return errors.New("cannot rebase or merge the primary worktree")
+	}
+	found := false
+	for _, worktree := range worktrees {
+		if samePath(path, worktree.path) && worktree.branch == branch && !worktree.prunable {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return errors.New("the selected worktree changed; refresh and try again")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), worktreeMergeTimeout)
+	defer cancel()
+	if backend == backendWT {
+		args := []string{"-C", path}
+		if operation == "rebase" {
+			args = append(args, "step", "rebase", "--format=json")
+		} else {
+			args = append(args, "merge", "--no-remove", "--format=json")
+		}
+		output, err := runActionCommand(ctx, path, "wt", args...)
+		if err != nil {
+			return actionError(operation+" worktree", output, err)
+		}
+		return nil
+	}
+
+	root := worktrees[0].path
+	base := gitDefaultBranch(root)
+	for _, dir := range []string{path, root} {
+		output, err := runActionCommand(ctx, dir, "git", "status", "--porcelain")
+		if err != nil {
+			return actionError("check worktree status", output, err)
+		}
+		if strings.TrimSpace(string(output)) != "" {
+			return fmt.Errorf("cannot %s with uncommitted changes in %s", operation, compactHome(dir))
+		}
+	}
+	if operation == "rebase" {
+		output, err := runActionCommand(ctx, path, "git", "rebase", base)
+		if err != nil {
+			return actionError("rebase worktree", output, err)
+		}
+		return nil
+	}
+	output, err := runActionCommand(ctx, root, "git", "merge", "--ff-only", branch)
+	if err != nil {
+		return actionError("merge worktree", output, err)
 	}
 	return nil
 }

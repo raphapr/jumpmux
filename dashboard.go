@@ -152,6 +152,8 @@ const (
 	actionRemoveSession
 	actionRenameSession
 	actionCleanupWorktree
+	actionRebaseWorktree
+	actionMergeWorktree
 	actionRunning
 )
 
@@ -159,11 +161,12 @@ const (
 	menuOpen menuAction = iota
 	menuDiff
 	menuPR
-	menuCopyPath
-	menuCopyName
+	menuCopySessionName
 	menuCopyPRURL
 	menuRename
 	menuCleanup
+	menuRebase
+	menuMerge
 	menuRemove
 )
 
@@ -361,35 +364,36 @@ func (m dashboardModel) actionMenuEntries() []actionMenuEntry {
 		return nil
 	}
 	entries := []actionMenuEntry{{menuOpen, "Open"}}
-	if selected.cwd != "" && m.tab != tabSessions {
-		entries = append(entries, actionMenuEntry{menuCopyPath, "Copy path"})
-	}
 	if m.tab == tabSessions {
+		entries = append(entries, actionMenuEntry{menuCopySessionName, "Copy session name"})
 		if selected.muxSessionID != "" {
-			entries = append(entries, actionMenuEntry{menuRename, "Rename session"}, actionMenuEntry{menuRemove, "Remove"})
+			entries = append(entries, actionMenuEntry{menuRename, "Rename session"}, actionMenuEntry{menuRemove, "Remove session"})
 		}
-		if selected.cwd != "" {
-			entries = append(entries, actionMenuEntry{menuCopyPath, "Copy path"})
-		}
-		entries = append(entries, actionMenuEntry{menuCopyName, "Copy session name"})
 		return entries
 	}
 	gitItem := m.gitItem(selected)
-	if gitItem.branch != "" {
-		entries = append(entries, actionMenuEntry{menuCopyName, "Copy branch"})
-	}
-	entries = append(entries, actionMenuEntry{menuDiff, "Diff"})
+	entries = append(entries, actionMenuEntry{menuDiff, "View diff"})
 	if gitItem.prNumber != 0 {
-		entries = append(entries, actionMenuEntry{menuPR, "Open PR"})
+		entries = append(entries, actionMenuEntry{menuPR, "Open pull request"})
 	}
 	if gitItem.prURL != "" {
 		entries = append(entries, actionMenuEntry{menuCopyPRURL, "Copy PR URL"})
 	}
-	if m.tab == tabWorktrees && selected.prunable && !selected.locked && !selected.current {
-		entries = append(entries, actionMenuEntry{menuCleanup, "Clean up stale record"})
-	}
-	if m.tab == tabWorktrees && !selected.current && (len(m.worktrees) == 0 || !samePath(selected.cwd, m.worktrees[0].cwd)) {
-		entries = append(entries, actionMenuEntry{menuRemove, "Remove"})
+	if m.tab == tabWorktrees {
+		primary := len(m.worktrees) > 0 && samePath(selected.cwd, m.worktrees[0].cwd)
+		if !primary && !selected.prunable && selected.branch != "" && selected.branch != "detached" {
+			base := gitItem.baseBranch
+			if base == "" {
+				base = "default branch"
+			}
+			entries = append(entries, actionMenuEntry{menuRebase, "Rebase onto " + base}, actionMenuEntry{menuMerge, "Merge into " + base})
+		}
+		if selected.prunable && !selected.locked && !selected.current {
+			entries = append(entries, actionMenuEntry{menuCleanup, "Clean up stale record"})
+		}
+		if !selected.current && !primary {
+			entries = append(entries, actionMenuEntry{menuRemove, "Remove worktree"})
+		}
 	}
 	return entries
 }
@@ -421,6 +425,19 @@ func (m *dashboardModel) beginCleanup(selected item) {
 		return
 	}
 	m.action, m.actionTarget, m.err = actionCleanupWorktree, selected, nil
+}
+
+func (m *dashboardModel) beginWorktreeOperation(selected item, action dashboardAction) {
+	if m.tab != tabWorktrees || selected.prunable || selected.branch == "" || selected.branch == "detached" || (len(m.worktrees) > 0 && samePath(selected.cwd, m.worktrees[0].cwd)) {
+		m.err = errors.New("the selected worktree cannot be rebased or merged")
+		return
+	}
+	backend, err := actionWorktreeBackend(backendAuto)
+	if err != nil {
+		m.err = err
+		return
+	}
+	m.action, m.actionTarget, m.actionBackend, m.err = action, selected, backend, nil
 }
 
 func (m *dashboardModel) beginRemove(selected item) {
@@ -530,6 +547,10 @@ func nextClock() tea.Cmd {
 	if reducedMotion() {
 		interval = time.Second
 	}
+	return nextClockAfter(interval)
+}
+
+func nextClockAfter(interval time.Duration) tea.Cmd {
 	return tea.Tick(interval, func(t time.Time) tea.Msg { return clockMsg(t) })
 }
 
@@ -560,6 +581,16 @@ func refreshWorktreeList(cwd string, generation uint64) tea.Cmd {
 		items, err := listWorktreeItems(cwd)
 		return worktreeDataMsg{stage: worktreeListStage, generation: generation, worktrees: items, err: err}
 	}
+}
+
+func (m dashboardModel) refreshPaused() bool { return m.actionMenu || m.action != actionNone }
+
+func (m *dashboardModel) resumeRefreshes() tea.Cmd {
+	commands := m.queueRefreshes()
+	if selected, ok := m.selected(); ok && !m.diff {
+		commands = append(commands, m.requestPreview(selected))
+	}
+	return tea.Batch(commands...)
 }
 
 func (m *dashboardModel) queueRefreshes() []tea.Cmd {
@@ -813,7 +844,7 @@ func loadDiff(item item, request uint64) tea.Cmd {
 }
 
 func (m *dashboardModel) requestPreview(item item) tea.Cmd {
-	if !m.focused {
+	if !m.focused || m.refreshPaused() {
 		return nil
 	}
 	if !m.previewShown() {
@@ -872,28 +903,30 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.FocusMsg:
 		m.focused = true
-		commands := m.queueRefreshes()
-		if selected, ok := m.selected(); ok && !m.diff {
-			commands = append(commands, m.requestPreview(selected))
+		if m.refreshPaused() {
+			return m, nil
 		}
-		return m, tea.Batch(commands...)
+		return m, m.resumeRefreshes()
 	case tea.BlurMsg:
 		m.focused = false
 		return m, nil
 	case tickMsg:
 		commands := []tea.Cmd{nextTick()}
-		if m.focused {
+		if m.focused && !m.refreshPaused() {
 			commands = append(commands, m.queueRefreshes()...)
 		}
 		return m, tea.Batch(commands...)
 	case clockMsg:
+		if m.refreshPaused() {
+			return m, nextClockAfter(time.Second)
+		}
 		m.now = time.Time(msg)
 		if !m.noticeUntil.IsZero() && !m.now.Before(m.noticeUntil) {
 			m.notice, m.noticeUntil = "", time.Time{}
 		}
 		return m, nextClock()
 	case previewTickMsg:
-		if !m.focused || uint64(msg) != m.previewRequest || m.diff {
+		if !m.focused || m.refreshPaused() || uint64(msg) != m.previewRequest || m.diff {
 			return m, nil
 		}
 		if selected, ok := m.selected(); ok && (selected.kind == "session" || (selected.kind == "tmux-session" && selected.muxSessionID != "")) {
@@ -902,6 +935,10 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case sessionDataMsg:
 		if msg.generation != m.sessionGeneration {
+			return m, nil
+		}
+		if m.refreshPaused() {
+			m.sessionsInFlight = false
 			return m, nil
 		}
 		m.sessionsInFlight, m.sessionsLoaded, m.sessionsErr = false, true, msg.err
@@ -923,7 +960,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.index = min(index, max(0, len(m.rows())-1))
 		}
 		after, hasAfter := m.selected()
-		if hasAfter && after.kind == "tmux-session" && !m.diff {
+		if hasAfter && after.kind == "tmux-session" && !m.diff && !m.refreshPaused() {
 			if !hadBefore || before.target != after.target || before.kind != after.kind || m.preview.target != after.target || m.preview.kind != after.kind {
 				return m, m.requestPreview(after)
 			}
@@ -932,6 +969,10 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case dashboardDataMsg:
+		if m.refreshPaused() {
+			m.agentsInFlight = false
+			return m, nil
+		}
 		m.agentsInFlight, m.agentsLoaded, m.agentErr = false, true, msg.err
 		if msg.err == nil {
 			m.lastRefresh[tabAgents] = m.now
@@ -954,12 +995,12 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		commands := []tea.Cmd{}
-		if m.focused && len(m.allAgents) > 0 && !m.agentGitInFlight && time.Since(m.agentGitRefreshed) >= gitRefreshPeriod {
+		if m.focused && !m.refreshPaused() && len(m.allAgents) > 0 && !m.agentGitInFlight && time.Since(m.agentGitRefreshed) >= gitRefreshPeriod {
 			m.agentGitInFlight = true
 			m.agentGitRefreshed = time.Now()
 			commands = append(commands, refreshAgentGit(m.allAgents))
 		}
-		if selected, ok := m.selected(); ok && selected.kind == "session" && !m.diff {
+		if selected, ok := m.selected(); ok && selected.kind == "session" && !m.diff && !m.refreshPaused() {
 			if m.preview.target != selected.target || !m.preview.updated.Equal(selected.updated) {
 				commands = append(commands, m.requestPreview(selected))
 			}
@@ -969,6 +1010,9 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(commands...)
 	case agentGitMsg:
 		m.agentGitInFlight = false
+		if m.refreshPaused() {
+			return m, nil
+		}
 		if m.agentGit == nil {
 			m.agentGit = map[string]item{}
 		}
@@ -1007,12 +1051,16 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		if selectedAgentUpdated && !m.diff {
+		if selectedAgentUpdated && !m.diff && !m.refreshPaused() {
 			return m, m.requestPreview(selected)
 		}
 		return m, nil
 	case worktreeDataMsg:
 		if msg.generation != m.worktreeGeneration {
+			return m, nil
+		}
+		if m.refreshPaused() {
+			m.worktreesInFlight, m.worktreePending = false, 0
 			return m, nil
 		}
 		if msg.stage == worktreeListStage {
@@ -1042,7 +1090,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.worktrees = mergeWorktreeData(m.worktrees, cached, worktreePRStage)
 			m.restoreSelection(target)
 			attachAgentsToWorktrees(m.worktrees, m.allAgents)
-			if !m.focused {
+			if !m.focused || m.refreshPaused() {
 				m.worktreesInFlight = false
 				return m, nil
 			}
@@ -1104,11 +1152,14 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		selectedGitUpdated := hasAfter && msg.stage == worktreeGitStage && slices.ContainsFunc(msg.worktrees, func(item item) bool { return item.target == after.target })
 		selectedPRUpdated := hasAfter && msg.stage == worktreePRStage && slices.ContainsFunc(msg.worktrees, func(item item) bool { return item.target == after.target })
 		refreshPreview := selectedGitUpdated || selectedPRUpdated || (msg.stage == worktreeMuxStage && changed)
-		if msg.err == nil && !m.diff && hasAfter && after.kind == "worktree" && refreshPreview {
+		if msg.err == nil && !m.diff && !m.refreshPaused() && hasAfter && after.kind == "worktree" && refreshPreview {
 			return m, m.requestPreview(after)
 		}
 		return m, nil
 	case previewMsg:
+		if m.refreshPaused() {
+			return m, nil
+		}
 		if !m.diff && msg.request == m.previewRequest && msg.scheme == m.scheme {
 			if selected, ok := m.selected(); ok && (msg.kind == "" || selected.kind == msg.kind) && selected.target == msg.target {
 				reset := m.preview.target != msg.target
@@ -1131,6 +1182,9 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case worktreeStatusMsg:
+		if m.refreshPaused() {
+			return m, nil
+		}
 		if !m.diff && msg.request == m.previewRequest && msg.scheme == m.scheme && m.preview.target == msg.target && m.preview.kind == "worktree" {
 			if selected, ok := m.selected(); ok && selected.kind == "worktree" && selected.target == msg.target {
 				m.preview.lines = m.preview.lines[:min(worktreeMetadataRows, len(m.preview.lines))]
@@ -1147,6 +1201,9 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case worktreeLogMsg:
+		if m.refreshPaused() {
+			return m, nil
+		}
 		if !m.diff && msg.request == m.previewRequest && msg.scheme == m.scheme && m.preview.target == msg.target && m.preview.kind == "worktree" {
 			if selected, ok := m.selected(); ok && selected.kind == "worktree" && selected.target == msg.target {
 				switch {
@@ -1187,7 +1244,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil && msg.notice != "" {
 			m.setNotice(msg.notice)
 		}
-		if msg.err == nil && (msg.action == actionRemoveWorktree || msg.action == actionCleanupWorktree) {
+		if (msg.err == nil && (msg.action == actionRemoveWorktree || msg.action == actionCleanupWorktree)) || msg.action == actionRebaseWorktree || msg.action == actionMergeWorktree {
 			m.worktreesInFlight = true
 			m.worktreeGeneration++
 			return m, refreshWorktreeList(m.cwd, m.worktreeGeneration)
@@ -1732,7 +1789,7 @@ func (m dashboardModel) handleActionMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 	switch key {
 	case "esc":
 		m.actionMenu = false
-		return m, nil
+		return m, m.resumeRefreshes()
 	case "j", "down":
 		if len(entries) > 0 {
 			m.actionMenuIndex = (m.actionMenuIndex + 1) % len(entries)
@@ -1769,17 +1826,10 @@ func (m dashboardModel) handleActionMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 					return worktreeActionMsg{notice: fmt.Sprintf("Opened PR #%d", pr.prNumber), err: openPullRequest(selected.cwd, pr.prNumber)}
 				}
 			}
-		case menuCopyPath, menuCopyName, menuCopyPRURL:
+		case menuCopySessionName, menuCopyPRURL:
 			if selected, ok := m.selected(); ok {
-				value, label := selected.cwd, "path"
-				switch entry.action {
-				case menuCopyName:
-					if m.tab == tabSessions {
-						value, label = selected.title, "session name"
-					} else {
-						value, label = m.gitItem(selected).branch, "branch"
-					}
-				case menuCopyPRURL:
+				value, label := selected.title, "session name"
+				if entry.action == menuCopyPRURL {
 					value, label = m.gitItem(selected).prURL, "PR URL"
 				}
 				return m, func() tea.Msg {
@@ -1793,6 +1843,14 @@ func (m dashboardModel) handleActionMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		case menuCleanup:
 			if selected, ok := m.selected(); ok {
 				m.beginCleanup(selected)
+			}
+		case menuRebase, menuMerge:
+			if selected, ok := m.selected(); ok {
+				action := actionRebaseWorktree
+				if entry.action == menuMerge {
+					action = actionMergeWorktree
+				}
+				m.beginWorktreeOperation(selected, action)
 			}
 		case menuRemove:
 			if selected, ok := m.selected(); ok {
@@ -1814,6 +1872,7 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.action = actionNone
 			m.actionTextInput.SetValue("")
 			m.actionTextInput.Blur()
+			return m, m.resumeRefreshes()
 		case "enter":
 			value := strings.TrimSpace(m.actionTextInput.Value())
 			if value == "" {
@@ -1834,7 +1893,7 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.actionTextInput, command = m.actionTextInput.Update(msg)
 			return m, command
 		}
-	case actionRemoveWorktree, actionRemoveSession, actionCleanupWorktree:
+	case actionRemoveWorktree, actionRemoveSession, actionCleanupWorktree, actionRebaseWorktree, actionMergeWorktree:
 		switch key {
 		case "enter":
 			action, target, backend := m.action, m.actionTarget, m.actionBackend
@@ -1846,6 +1905,13 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if action == actionCleanupWorktree {
 					return worktreeActionMsg{action: action, notice: "Cleaned up stale worktree record", err: cleanupPrunableWorktree(m.cwd, target)}
 				}
+				if action == actionRebaseWorktree || action == actionMergeWorktree {
+					operation, notice := "rebase", "Rebased "+target.branch
+					if action == actionMergeWorktree {
+						operation, notice = "merge", "Merged "+target.branch
+					}
+					return worktreeActionMsg{action: action, notice: notice, err: updateWorktree(target.cwd, target.branch, operation, backend)}
+				}
 				return worktreeActionMsg{action: action, notice: "Removed worktree " + m.displayWorktree(target), err: removeWorktree(m.cwd, target.cwd, backend)}
 			}
 		case "esc":
@@ -1853,6 +1919,7 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.sessionSelectionAfterRemove = ""
 			}
 			m.action, m.actionTarget, m.actionBackend = actionNone, item{}, ""
+			return m, m.resumeRefreshes()
 		}
 	}
 	return m, nil
@@ -2222,10 +2289,17 @@ func (m dashboardModel) wideLayout() bool {
 	return !m.diff && !m.help && !m.themePicker && !m.actionMenu && m.width >= 140 && m.previewShown()
 }
 
+func (m dashboardModel) actionSidebar() bool { return m.actionMenu && m.width >= 100 }
+
+func (m dashboardModel) actionSidebarWidth() int { return min(42, max(32, m.width/3)) }
+
 func (m dashboardModel) wideTableWidth() int { return max(60, m.width*11/20) }
 
 func (m dashboardModel) tableHeight() int {
 	content := m.contentHeight()
+	if m.actionSidebar() {
+		return content + 1
+	}
 	if !m.previewShown() || m.wideLayout() {
 		return content
 	}
@@ -2234,6 +2308,9 @@ func (m dashboardModel) tableHeight() int {
 func (m dashboardModel) previewHeight() int {
 	if !m.previewShown() {
 		return 0
+	}
+	if m.actionSidebar() {
+		return m.contentHeight() + 1
 	}
 	if m.wideLayout() {
 		return m.contentHeight()

@@ -30,7 +30,10 @@ func (m dashboardModel) View() string {
 		return paintDashboardBackground(m.renderDiff(width))
 	}
 	parts := []string{m.renderHeader(width)}
-	if m.wideLayout() {
+	if m.actionSidebar() {
+		sidebarWidth := m.actionSidebarWidth()
+		parts = append(parts, lipgloss.JoinHorizontal(lipgloss.Top, m.renderTable(width-sidebarWidth), m.renderActionMenu(sidebarWidth, m.contentHeight()+1)))
+	} else if m.wideLayout() {
 		leftWidth := m.wideTableWidth()
 		parts = append(parts, lipgloss.JoinHorizontal(lipgloss.Top, m.renderTable(leftWidth), m.renderPreview(width-leftWidth)))
 	} else {
@@ -39,7 +42,9 @@ func (m dashboardModel) View() string {
 			parts = append(parts, m.renderPreview(width))
 		}
 	}
-	parts = append(parts, m.renderFooter(width))
+	if !m.actionSidebar() {
+		parts = append(parts, m.renderFooter(width))
+	}
 	return paintDashboardBackground(strings.Join(parts, "\n"))
 }
 
@@ -68,6 +73,9 @@ func (m dashboardModel) renderHeader(width int) string {
 }
 
 func (m dashboardModel) refreshState() string {
+	if m.refreshPaused() {
+		return ""
+	}
 	inFlight := [...]bool{m.agentsInFlight, m.worktreesInFlight, m.sessionsInFlight}[m.tab]
 	if inFlight {
 		return "refreshing"
@@ -94,7 +102,7 @@ func (m dashboardModel) modeLabel() string {
 	case m.themePicker:
 		return "THEME"
 	case m.actionMenu:
-		return "CONFIRM"
+		return "ACTIONS"
 	case m.action != actionNone:
 		if m.action == actionRunning {
 			return "WORKING"
@@ -292,10 +300,8 @@ func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) st
 	}
 	worktreeStyle := textStyle
 	prefix := renderCell(textStyle, "  ", 2, background)
-	if index == m.index {
-		prefix = renderCell(infoStyle, "▌ ", 2, background)
-	} else if item.current {
-		prefix = renderCell(textStyle, "▏ ", 2, background)
+	if index != m.index && item.current {
+		prefix = renderCell(textStyle, "▌ ", 2, background)
 	}
 
 	line := prefix
@@ -376,13 +382,17 @@ func (m dashboardModel) renderPreview(width int) string {
 	if m.actionMenu {
 		return m.renderActionMenu(width, height)
 	}
-	if m.action == actionRemoveWorktree || m.action == actionRemoveSession || m.action == actionCleanupWorktree {
+	if m.action == actionRemoveWorktree || m.action == actionRemoveSession || m.action == actionCleanupWorktree || m.action == actionRebaseWorktree || m.action == actionMergeWorktree {
 		title := "Remove worktree"
 		switch m.action {
 		case actionRemoveSession:
 			title = "Remove session"
 		case actionCleanupWorktree:
 			title = "Clean up stale record"
+		case actionRebaseWorktree:
+			title = "Rebase worktree"
+		case actionMergeWorktree:
+			title = "Merge worktree"
 		}
 		return renderPanel(title, m.removePreviewLines(), width, height, 0, 0, false, true)
 	}
@@ -466,26 +476,132 @@ func (m dashboardModel) previewTitle(selected item, title string) string {
 
 func (m dashboardModel) renderActionMenu(width, height int) string {
 	entries := m.actionMenuEntries()
-	lines := make([]string, 0, len(entries))
 	selected := 0
 	if len(entries) > 0 {
 		selected = m.actionMenuIndex % len(entries)
 	}
-	for index, entry := range entries {
-		prefix, style := "  ", mutedStyle
-		if index == selected {
-			prefix, style = "▌ ", infoStyle
+	if !m.actionSidebar() {
+		lines := make([]string, 0, len(entries))
+		for index, entry := range entries {
+			style := textStyle
+			if index == selected {
+				style = selectedStyle.Inherit(textStyle)
+			}
+			lines = append(lines, style.Render("  "+entry.label))
 		}
-		lines = append(lines, style.Render(prefix+entry.label))
+		if len(lines) == 0 {
+			lines = []string{mutedStyle.Render("No actions available.")}
+		}
+		offset := max(0, selected-max(1, height-2)+1)
+		return renderPanel("Actions", lines, width, height, offset, 0, false, true)
 	}
-	if len(lines) == 0 {
-		lines = []string{mutedStyle.Render("No actions available.")}
+	lines := make([]string, 0, len(entries)+8)
+	selectedItem, _ := m.selected()
+	identity := selectedItem.title
+	if m.tab != tabSessions {
+		identity = m.displayWorktree(selectedItem)
 	}
-	offset := max(0, selected-max(1, height-2)+1)
-	return renderPanel("Actions", lines, width, height, offset, 0, false, true)
+	lines = append(lines, headerStyle.Render(truncate(safeText(identity), max(1, width-6))))
+	if selectedItem.cwd != "" {
+		lines = append(lines, mutedStyle.Render(truncate(safeText(compactHome(selectedItem.cwd)), max(1, width-6))))
+	}
+	lines = append(lines, "")
+	lastGroup, selectedLine := "", 0
+	for index, entry := range entries {
+		group := actionMenuGroup(entry.action)
+		if group != lastGroup {
+			if lastGroup != "" {
+				lines = append(lines, "")
+			}
+			lines = append(lines, mutedStyle.Render(strings.ToUpper(group)))
+			lastGroup = group
+		}
+		line := "  " + entry.label
+		if index == selected {
+			selectedLine = len(lines)
+			line = selectedStyle.Inherit(textStyle).Width(width - 2).Render("  " + entry.label)
+		} else if entry.action == menuRemove {
+			line = dangerStyle.Render(line)
+		} else {
+			line = textStyle.Render(line)
+		}
+		lines = append(lines, line)
+	}
+	if len(entries) == 0 {
+		lines = append(lines, mutedStyle.Render("No actions available."))
+	}
+	offset := max(0, selectedLine-max(1, height-2)+1)
+	title := [...]string{"AGENT ACTIONS", "WORKTREE ACTIONS", "SESSION ACTIONS"}[m.tab]
+	return renderActionSidebar(title, lines, width, height, offset)
+}
+
+func renderActionSidebar(title string, lines []string, width, height, offset int) string {
+	width, height = max(20, width), max(6, height)
+	innerWidth, innerHeight := width-2, height-2
+	offset = min(max(0, offset), max(0, len(lines)-innerHeight))
+	titleView := headerStyle.Render(" " + title + " ")
+	top := activeBorderStyle.Render("┌") + titleView + activeBorderStyle.Render(strings.Repeat("─", max(0, width-ansi.StringWidth(titleView)-2))+"┐")
+	out := []string{top}
+	for index := 0; index < innerHeight; index++ {
+		line := ""
+		if lineIndex := offset + index; lineIndex < len(lines) {
+			line = clipLine(lines[lineIndex], innerWidth, 0)
+		}
+		out = append(out, activeBorderStyle.Render("│")+padANSI(line, innerWidth)+activeBorderStyle.Render("│"))
+	}
+	hint := mutedStyle.Render(" ↑↓ Navigate · ↵ Run · Esc ")
+	out = append(out, activeBorderStyle.Render("└")+hint+activeBorderStyle.Render(strings.Repeat("─", max(0, innerWidth-ansi.StringWidth(hint)))+"┘"))
+	return strings.Join(out, "\n")
+}
+
+func actionMenuGroup(action menuAction) string {
+	switch action {
+	case menuOpen, menuDiff, menuPR:
+		return "Open"
+	case menuCopySessionName, menuCopyPRURL:
+		return "Copy"
+	case menuRename, menuRebase, menuMerge, menuCleanup:
+		return "Manage"
+	case menuRemove:
+		return "Danger"
+	default:
+		return "Actions"
+	}
 }
 
 func (m dashboardModel) removePreviewLines() []string {
+	if m.action == actionRebaseWorktree {
+		behavior := "Native Git requires clean worktrees and rebases onto the local default branch."
+		if m.actionBackend == backendWT {
+			behavior = "Worktrunk rebases the branch onto the local default branch."
+		}
+		return []string{
+			"Branch: " + safeText(m.actionTarget.branch),
+			"Path:   " + safeText(compactHome(m.actionTarget.cwd)),
+			"",
+			behavior,
+			"Commits may be rewritten. Conflicts leave the rebase open.",
+			"This does not fetch or remove the worktree.",
+			"",
+			"Enter Rebase    Esc Cancel",
+		}
+	}
+	if m.action == actionMergeWorktree {
+		behavior := "Native Git requires clean worktrees and fast-forwards the default branch."
+		if m.actionBackend == backendWT {
+			behavior = "Worktrunk squashes, rebases, runs approved hooks, then merges."
+		}
+		return []string{
+			"Branch: " + safeText(m.actionTarget.branch),
+			"Path:   " + safeText(compactHome(m.actionTarget.cwd)),
+			"",
+			behavior,
+			"Worktrunk may stage and commit uncommitted changes.",
+			"This uses the local default branch and keeps the worktree.",
+			"",
+			"Enter Merge    Esc Cancel",
+		}
+	}
 	if m.action == actionCleanupWorktree {
 		return []string{
 			"Selected: " + safeText(compactHome(m.actionTarget.cwd)),
@@ -544,13 +660,18 @@ func (m dashboardModel) renderFooter(width int) string {
 		input.Width = max(0, width-ansi.StringWidth(prefix)-ansi.StringWidth(suffix)-1)
 		input.SetCursor(input.Position())
 		return padANSI(prefix+input.View()+suffix, width)
-	case actionRemoveWorktree, actionRemoveSession, actionCleanupWorktree:
+	case actionRemoveWorktree, actionRemoveSession, actionCleanupWorktree, actionRebaseWorktree, actionMergeWorktree:
 		name, verb := m.displayWorktree(m.actionTarget), "Remove"
 		if m.action == actionRemoveSession {
 			name = m.actionTarget.title
 		}
-		if m.action == actionCleanupWorktree {
+		switch m.action {
+		case actionCleanupWorktree:
 			name, verb = "stale record", "Clean up"
+		case actionRebaseWorktree:
+			verb = "Rebase"
+		case actionMergeWorktree:
+			verb = "Merge"
 		}
 		return padANSI("  "+warningStyle.Render(verb+" "+safeText(name)+"?")+"  "+footerCommand("Enter", verb)+" "+footerCommand("Esc", "Cancel"), width)
 	case actionRunning:
@@ -706,7 +827,7 @@ func (m dashboardModel) themePickerLines() ([]string, int) {
 	for index, scheme := range themes {
 		if index == m.themePickerIndex {
 			selectedLine = len(lines)
-			lines = append(lines, infoStyle.Render("▌ ")+textStyle.Render(scheme.slug()))
+			lines = append(lines, selectedStyle.Inherit(textStyle).Render("  "+scheme.slug()))
 			continue
 		}
 		lines = append(lines, "  "+mutedStyle.Render(scheme.slug()))

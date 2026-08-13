@@ -114,7 +114,7 @@ func TestThemePickerFiltersAndCancels(t *testing.T) {
 		t.Fatalf("filtered picker = %#v", model)
 	}
 	picker := ansi.Strip(model.View())
-	if !strings.Contains(picker, "[Agents") || !strings.Contains(picker, "catppuccin-latte") || strings.Contains(picker, "Built-in") || strings.Contains(picker, "Catppuccin\n") || !strings.Contains(picker, "Apply") || !strings.Contains(picker, "Cancel") || len(strings.Split(picker, "\n")) != model.height {
+	if !strings.Contains(picker, "[Agents") || !strings.Contains(picker, "catppuccin-latte") || strings.Contains(picker, "Built-in") || strings.Contains(picker, "Catppuccin\n") || strings.Contains(picker, "▌") || !strings.Contains(picker, "Apply") || !strings.Contains(picker, "Cancel") || len(strings.Split(picker, "\n")) != model.height {
 		t.Fatalf("picker view = %q", picker)
 	}
 

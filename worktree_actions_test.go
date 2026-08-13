@@ -282,6 +282,68 @@ func TestWorktrunkActionCommands(t *testing.T) {
 	}
 }
 
+func TestWorktrunkRebaseAndMergeActions(t *testing.T) {
+	parent := t.TempDir()
+	repo, worktree := filepath.Join(parent, "repo"), filepath.Join(parent, "feature")
+	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "feature", worktree}} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	bin, log := t.TempDir(), filepath.Join(t.TempDir(), "wt.log")
+	if err := os.WriteFile(filepath.Join(bin, "wt"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$WT_LOG\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WT_LOG", log)
+	if err := updateWorktree(worktree, "feature", "rebase", backendWT); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateWorktree(worktree, "feature", "merge", backendWT); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := string(data)
+	for _, expected := range []string{"-C " + worktree + " step rebase --format=json", "-C " + worktree + " merge --no-remove --format=json"} {
+		if !strings.Contains(commands, expected) {
+			t.Fatalf("Worktrunk log missing %q:\n%s", expected, commands)
+		}
+	}
+}
+
+func TestNativeGitRebaseAndMergeActions(t *testing.T) {
+	parent := t.TempDir()
+	repo, worktree := filepath.Join(parent, "repo"), filepath.Join(parent, "feature")
+	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "feature", worktree}, {"-C", worktree, "commit", "--allow-empty", "-qm", "feature"}} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	if err := updateWorktree(worktree, "feature", "rebase", backendGit); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateWorktree(worktree, "feature", "merge", backendGit); err != nil {
+		t.Fatal(err)
+	}
+	mainHead, err := exec.Command("git", "-C", repo, "rev-parse", "main").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	featureHead, err := exec.Command("git", "-C", worktree, "rev-parse", "feature").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(mainHead) != string(featureHead) {
+		t.Fatalf("main %q did not fast-forward to feature %q", mainHead, featureHead)
+	}
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("native merge removed worktree: %v", err)
+	}
+}
+
 func TestOpenPullRequestCommand(t *testing.T) {
 	repo, bin, log := t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "gh.log")
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >\"$GH_LOG\"\n"
@@ -385,6 +447,34 @@ func TestCreatedWorktreeExitsToOpenSelection(t *testing.T) {
 	}
 	if _, ok := command().(tea.QuitMsg); !ok {
 		t.Fatalf("created worktree command = %#v, want tea.QuitMsg", command())
+	}
+}
+
+func TestWorktreeRebaseAndMergeMenuActions(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height, model.tab = 100, 20, tabWorktrees
+	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main"}, {kind: "worktree", target: "/feature", cwd: "/feature", branch: "feature"}}
+	model.index = 1
+	entries := model.actionMenuEntries()
+	labels := make([]string, len(entries))
+	for index := range entries {
+		labels[index] = entries[index].label
+	}
+	joined := strings.Join(labels, ",")
+	for _, expected := range []string{"Rebase onto default branch", "Merge into default branch"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("worktree actions missing %q: %s", expected, joined)
+		}
+	}
+	model.beginWorktreeOperation(model.worktrees[1], actionRebaseWorktree)
+	if model.action != actionRebaseWorktree || !strings.Contains(ansi.Strip(model.renderPreview(100)), "Conflicts leave the rebase open") {
+		t.Fatalf("rebase confirmation = action %v\n%s", model.action, ansi.Strip(model.renderPreview(100)))
+	}
+	model.action = actionNone
+	model.beginWorktreeOperation(model.worktrees[1], actionMergeWorktree)
+	preview := ansi.Strip(model.renderPreview(100))
+	if model.action != actionMergeWorktree || !strings.Contains(preview, "keeps the worktree") || !strings.Contains(preview, "may stage and commit uncommitted changes") {
+		t.Fatalf("merge confirmation = action %v\n%s", model.action, preview)
 	}
 }
 

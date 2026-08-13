@@ -219,8 +219,8 @@ func TestDashboardLayout(t *testing.T) {
 	}
 	lines := strings.Split(view, "\n")
 	for _, line := range lines {
-		if strings.Contains(ansi.Strip(line), "Current project") && !strings.Contains(ansi.Strip(line), "▏") {
-			t.Fatalf("current project row is missing its subtle marker: %q", line)
+		if strings.Contains(ansi.Strip(line), "Current project") && !strings.Contains(ansi.Strip(line), "▌") {
+			t.Fatalf("current project row is missing its marker: %q", line)
 		}
 	}
 	if len(lines) != model.height {
@@ -233,7 +233,7 @@ func TestDashboardLayout(t *testing.T) {
 	}
 }
 
-func TestCurrentRowsUseOnlySubtleMarker(t *testing.T) {
+func TestCurrentRowsUseMarkerUnlessSelected(t *testing.T) {
 	for _, tab := range []int{tabAgents, tabWorktrees, tabSessions} {
 		model := newDashboard("/repo")
 		model.tab, model.width, model.height, model.index = tab, 100, 20, 1
@@ -253,13 +253,13 @@ func TestCurrentRowsUseOnlySubtleMarker(t *testing.T) {
 		ordinary := model.tableRow(base, 0, model.width, columns)
 		base.current = true
 		current := model.tableRow(base, 0, model.width, columns)
-		if !strings.Contains(ansi.Strip(current), "▏") || ansi.Strip(current)[len("▏ "):] != ansi.Strip(ordinary)[len("  "):] {
+		if !strings.Contains(ansi.Strip(current), "▌") || ansi.Strip(current)[len("▌ "):] != ansi.Strip(ordinary)[len("  "):] {
 			t.Fatalf("tab %d current row changed beyond its marker: ordinary=%q current=%q", tab, ordinary, current)
 		}
 		model.index = 0
 		selected := model.tableRow(base, 0, model.width, columns)
-		if !strings.Contains(ansi.Strip(selected), "▌") || strings.Contains(ansi.Strip(selected), "▏") {
-			t.Fatalf("tab %d selected current row did not prefer selection marker: %q", tab, selected)
+		if strings.Contains(ansi.Strip(selected), "▌") || !strings.HasPrefix(ansi.Strip(selected), "  ") {
+			t.Fatalf("tab %d selected current row retained a marker: %q", tab, selected)
 		}
 	}
 }
@@ -921,9 +921,14 @@ func TestDashboardNavigationPreviewModesAndWideLayout(t *testing.T) {
 	if !model.actionMenu || model.filter {
 		t.Fatalf("Space did not open actions before session search: %#v", model)
 	}
-	actions := ansi.Strip(model.View())
-	if !strings.Contains(actions, "Open") || !strings.Contains(actions, "Remove") || strings.Contains(actions, "Diff") {
-		t.Fatalf("invalid session action menu:\n%s", actions)
+	actions := model.actionMenuEntries()
+	labels := make([]string, len(actions))
+	for index := range actions {
+		labels[index] = actions[index].label
+	}
+	actionLabels := strings.Join(labels, ",")
+	if !strings.Contains(actionLabels, "Open") || !strings.Contains(actionLabels, "Remove") || strings.Contains(actionLabels, "Diff") {
+		t.Fatalf("invalid session action menu: %s", actionLabels)
 	}
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	model = updated.(dashboardModel)

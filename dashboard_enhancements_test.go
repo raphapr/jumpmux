@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -109,11 +110,88 @@ func TestPreviewFailedChecksAndWorktreeIndicators(t *testing.T) {
 
 func TestActionMenuKeepsSelectionVisible(t *testing.T) {
 	model := newDashboard("/repo")
-	model.tab, model.actionMenu, model.actionMenuIndex = tabWorktrees, true, 6
+	model.tab, model.actionMenu = tabWorktrees, true
 	model.worktrees = []item{{kind: "worktree", cwd: "/repo", branch: "feature", prNumber: 42, prURL: "https://example.test/pr/42", prunable: true}}
+	model.actionMenuIndex = slices.IndexFunc(model.actionMenuEntries(), func(entry actionMenuEntry) bool { return entry.action == menuCleanup })
 	view := ansi.Strip(model.renderActionMenu(40, 5))
-	if !strings.Contains(view, "▌ Clean up stale record") {
-		t.Fatalf("selected action is not visible:\n%s", view)
+	if !strings.Contains(view, "  Clean up stale record") || strings.Contains(view, "▌") {
+		t.Fatalf("selected action is not visible without a marker:\n%s", view)
+	}
+}
+
+func TestActionMenuUsesSidebarAndOmitsWorktreeCopyActions(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height, model.tab, model.actionMenu = 120, 24, tabWorktrees, true
+	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main"}, {kind: "worktree", target: "/feature", cwd: "/feature", branch: "feature", baseBranch: "main", prNumber: 42, prURL: "https://example.test/pr/42"}}
+	model.index = 1
+	model.worktreesInFlight = true
+	view := ansi.Strip(model.View())
+	for _, expected := range []string{"WORKTREE ACTIONS", "feature", "/feature", "OPEN", "MANAGE", "DANGER", "Rebase onto main", "Merge into main", "Navigate · ↵ Run · Esc"} {
+		if !strings.Contains(view, expected) {
+			t.Fatalf("action sidebar missing %q:\n%s", expected, view)
+		}
+	}
+	if strings.Contains(view, "refreshing") {
+		t.Fatalf("action sidebar still shows refresh activity:\n%s", view)
+	}
+	if strings.Contains(view, "▌") {
+		t.Fatalf("action sidebar uses a selection marker:\n%s", view)
+	}
+	for _, removed := range []string{"Copy path", "Copy branch"} {
+		if strings.Contains(view, removed) {
+			t.Fatalf("action sidebar still contains %q:\n%s", removed, view)
+		}
+	}
+	if model.tableHeight() != model.contentHeight()+1 || !model.actionSidebar() {
+		t.Fatalf("action sidebar geometry = table %d content %d sidebar %v", model.tableHeight(), model.contentHeight(), model.actionSidebar())
+	}
+	model.width = 80
+	if model.actionSidebar() {
+		t.Fatal("narrow action menu did not fall back to stacked layout")
+	}
+}
+
+func TestActionMenuPausesAndResumesRefreshes(t *testing.T) {
+	model := newDashboard("/repo")
+	model.tab, model.actionMenu = tabWorktrees, true
+	model.agentsInFlight, model.worktreesInFlight, model.sessionsInFlight = false, false, false
+	model.agents = []item{{target: "old-agent"}}
+	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main"}}
+	model.sessions = []item{{target: "old-session"}}
+	model.preview = previewData{request: 1, target: "/repo", kind: "worktree", lines: []string{"old preview"}}
+	model.previewRequest = 1
+
+	updated, command := model.Update(tickMsg(time.Now()))
+	model = updated.(dashboardModel)
+	if command == nil || model.agentsInFlight || model.worktreesInFlight || model.sessionsInFlight {
+		t.Fatalf("paused tick launched refreshes: agents=%v worktrees=%v sessions=%v", model.agentsInFlight, model.worktreesInFlight, model.sessionsInFlight)
+	}
+	if _, command = model.Update(previewTickMsg(model.previewRequest)); command != nil {
+		t.Fatal("paused action menu scheduled a live preview capture")
+	}
+	before := model.now
+	updated, command = model.Update(clockMsg(before.Add(time.Second)))
+	model = updated.(dashboardModel)
+	if command == nil || !model.now.Equal(before) {
+		t.Fatalf("paused action menu advanced the dashboard clock: before=%v after=%v", before, model.now)
+	}
+
+	updated, _ = model.Update(dashboardDataMsg(dashboardData{agents: []item{{target: "new-agent"}}}))
+	model = updated.(dashboardModel)
+	updated, _ = model.Update(sessionDataMsg{generation: model.sessionGeneration, sessions: []item{{target: "new-session"}}})
+	model = updated.(dashboardModel)
+	updated, _ = model.Update(worktreeDataMsg{stage: worktreeListStage, generation: model.worktreeGeneration, worktrees: []item{{target: "/new"}}})
+	model = updated.(dashboardModel)
+	updated, _ = model.Update(previewMsg(previewData{request: 1, target: "/repo", kind: "worktree", lines: []string{"new preview"}}))
+	model = updated.(dashboardModel)
+	if model.agents[0].target != "old-agent" || model.sessions[0].target != "old-session" || model.worktrees[0].target != "/repo" || model.preview.lines[0] != "old preview" {
+		t.Fatalf("paused refresh mutated dashboard data: %#v", model)
+	}
+
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(dashboardModel)
+	if command == nil || model.actionMenu || !model.agentsInFlight || !model.worktreesInFlight || !model.sessionsInFlight || model.previewRequest == 1 {
+		t.Fatalf("closing actions did not resume refreshes: menu=%v agents=%v worktrees=%v sessions=%v preview=%d", model.actionMenu, model.agentsInFlight, model.worktreesInFlight, model.sessionsInFlight, model.previewRequest)
 	}
 }
 
