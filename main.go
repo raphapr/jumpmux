@@ -20,8 +20,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+var version = "0.23.0"
+
 const (
-	version          = "0.23.0"
 	workingIcon      = ""
 	doneIcon         = ""
 	staleAgentIcon   = "󰔛"

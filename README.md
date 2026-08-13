@@ -22,6 +22,14 @@ It is inspired by [Workmux](https://github.com/raine/workmux), but takes a more 
 
 ## Install
 
+Download the Linux or macOS archive for your amd64 or arm64 system from [GitHub Releases](https://github.com/raphapr/jumpmux/releases), extract `jumpmux` into your `PATH`, then run:
+
+```console
+jumpmux setup
+```
+
+To install from source instead:
+
 ```console
 go install github.com/raphapr/jumpmux@latest
 jumpmux setup
