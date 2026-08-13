@@ -11,9 +11,11 @@ import (
 )
 
 const (
-	checkSuccess = "success"
-	checkFailure = "failure"
-	checkPending = "pending"
+	checkSuccess            = "success"
+	checkFailure            = "failure"
+	checkPending            = "pending"
+	pullRequestRetryPeriod  = 30 * time.Second
+	pullRequestQueryTimeout = 3 * time.Second
 )
 
 type pullRequest struct {
@@ -62,35 +64,40 @@ func listPullRequests(repo string) (map[string][]pullRequest, bool) {
 	entry, ok := pullRequestMemory.values[repo]
 	pullRequestMemory.Unlock()
 	if ok && time.Now().Before(entry.expires) {
-		return entry.values, true
+		return entry.values, entry.values != nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	run := func(fields string) ([]byte, error, bool) {
+		ctx, cancel := context.WithTimeout(context.Background(), pullRequestQueryTimeout)
+		defer cancel()
+		cmd := boundedCommand(ctx, "gh", "pr", "list", "--state", "all", "--limit", "100", "--json", fields)
+		cmd.Dir = repo
+		output, err := cmd.Output()
+		return output, err, ctx.Err() == context.DeadlineExceeded
+	}
 	// ponytail: cap PR lookup; add pagination if repositories with 100+ PRs miss active branches.
 	baseFields := "number,state,isDraft,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository"
 	fields := baseFields + ",url,statusCheckRollup"
-	cmd := boundedCommand(ctx, "gh", "pr", "list", "--state", "all", "--limit", "100", "--json", fields)
-	cmd.Dir = repo
-	output, err := cmd.Output()
+	output, err, timedOut := run(fields)
 	identityAvailable := true
-	if err != nil {
-		cmd = boundedCommand(ctx, "gh", "pr", "list", "--state", "all", "--limit", "100", "--json", baseFields+",statusCheckRollup")
-		cmd.Dir = repo
-		output, err = cmd.Output()
+	if err != nil && !timedOut {
+		output, err, _ = run(baseFields + ",statusCheckRollup")
 	}
 	if err != nil {
-		cmd = boundedCommand(ctx, "gh", "pr", "list", "--state", "all", "--limit", "100", "--json", baseFields)
-		cmd.Dir = repo
-		output, err = cmd.Output()
+		output, err, _ = run(baseFields)
 	}
 	if err != nil {
 		identityAvailable = false
-		cmd = boundedCommand(ctx, "gh", "pr", "list", "--state", "all", "--limit", "100", "--json", "number,state,isDraft,headRefName")
-		cmd.Dir = repo
-		output, err = cmd.Output()
+		output, err, _ = run("number,state,isDraft,headRefName")
+	}
+
+	pullRequestMemory.Lock()
+	if pullRequestMemory.values == nil {
+		pullRequestMemory.values = map[string]pullRequestMemoryEntry{}
 	}
 	if err != nil {
+		pullRequestMemory.values[repo] = pullRequestMemoryEntry{expires: time.Now().Add(pullRequestRetryPeriod)}
+		pullRequestMemory.Unlock()
 		return nil, false
 	}
 
@@ -99,10 +106,6 @@ func listPullRequests(repo string) (map[string][]pullRequest, bool) {
 		for index := range values[branch] {
 			values[branch][index].IdentityAvailable = identityAvailable
 		}
-	}
-	pullRequestMemory.Lock()
-	if pullRequestMemory.values == nil {
-		pullRequestMemory.values = map[string]pullRequestMemoryEntry{}
 	}
 	pullRequestMemory.values[repo] = pullRequestMemoryEntry{expires: time.Now().Add(time.Minute), values: values}
 	pullRequestMemory.Unlock()

@@ -121,6 +121,71 @@ printf '%s\n' '[{"number":7,"state":"OPEN","isDraft":false,"headRefName":"featur
 	}
 }
 
+func TestPullRequestFallbackGetsFreshTimeout(t *testing.T) {
+	bin := t.TempDir()
+	log := filepath.Join(t.TempDir(), "gh.log")
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(`#!/bin/sh
+if [ ! -s "$GH_LOG" ]; then
+  echo "$*" >>"$GH_LOG"
+  sleep 4
+  exit 1
+fi
+echo "$*" >>"$GH_LOG"
+printf '%s\n' '[{"number":7,"state":"OPEN","isDraft":false,"headRefName":"feature"}]'
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GH_LOG", log)
+	pullRequestMemory.Lock()
+	pullRequestMemory.values = nil
+	pullRequestMemory.Unlock()
+
+	listed, loaded := listPullRequests(t.TempDir())
+	if !loaded || len(listed["feature"]) != 1 {
+		t.Fatalf("fallback PR lookup = %#v, loaded=%v", listed, loaded)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(calls) != 2 {
+		t.Fatalf("gh calls = %d, want 2:\n%s", len(calls), data)
+	}
+	if strings.Contains(calls[1], "statusCheckRollup") {
+		t.Fatalf("timed-out check rollup was retried:\n%s", data)
+	}
+}
+
+func TestPullRequestFailureIsCached(t *testing.T) {
+	bin := t.TempDir()
+	log := filepath.Join(t.TempDir(), "gh.log")
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\necho \"$*\" >>\"$GH_LOG\"\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GH_LOG", log)
+	pullRequestMemory.Lock()
+	pullRequestMemory.values = nil
+	pullRequestMemory.Unlock()
+	repo := t.TempDir()
+
+	if _, loaded := listPullRequests(repo); loaded {
+		t.Fatal("failed PR lookup reported loaded")
+	}
+	if _, loaded := listPullRequests(repo); loaded {
+		t.Fatal("cached failed PR lookup reported loaded")
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(strings.TrimSpace(string(data)), "\n") + 1; got != 4 {
+		t.Fatalf("gh calls = %d, want 4:\n%s", got, data)
+	}
+}
+
 func TestAgentPRStatusOutsideLaunchRepo(t *testing.T) {
 	repo := t.TempDir()
 	for _, args := range [][]string{{"init", "-q", "-b", "feature"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.com"}, {"commit", "--allow-empty", "-qm", "base"}} {
