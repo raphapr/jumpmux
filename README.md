@@ -65,7 +65,7 @@ The extension reports the current pane's agent state.
 | `Enter` while filtering                   | Accept an Agents/Worktrees filter or open a Session                    |
 | `Esc` while filtering                     | Clear and close the filter                                             |
 | `d`                                       | Open the selected Git diff from Agents or Worktrees                    |
-| `a`                                       | Add a worktree from the Worktrees tab                                  |
+| `a`                                       | Add a worktree and open it in a new tmux window                        |
 | `r`                                       | Remove a worktree after confirmation                                   |
 | `Ctrl+d`                                  | Remove a live tmux session after confirmation (Sessions only)          |
 | `o`                                       | Open the selected PR from Agents or Worktrees                          |

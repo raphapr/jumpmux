@@ -186,10 +186,14 @@ func TestNativeGitWorktreeActionsKeepBranch(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, output)
 		}
 	}
-	if err := addWorktree(repo, "feature/test", backendGit); err != nil {
+	created, err := addWorktree(repo, "feature/test", backendGit)
+	if err != nil {
 		t.Fatal(err)
 	}
 	worktree := filepath.Join(parent, "repo__worktrees", "feature", "test")
+	if created.cwd != worktree || created.branch != "feature/test" {
+		t.Fatalf("created worktree = %#v", created)
+	}
 	if _, err := os.Stat(worktree); err != nil {
 		t.Fatalf("created worktree: %v", err)
 	}
@@ -258,8 +262,12 @@ func TestWorktrunkActionCommands(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WT_LOG", log)
-	if err := addWorktree(repo, "feature", backendWT); err != nil {
+	created, err := addWorktree(repo, "feature", backendWT)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if created.cwd != worktree || created.branch != "feature" {
+		t.Fatalf("created worktree = %#v", created)
 	}
 	if err := removeWorktree(repo, worktree, backendWT); err != nil {
 		t.Fatal(err)
@@ -364,6 +372,19 @@ func TestDashboardMutationReloadsConfig(t *testing.T) {
 	}
 	if err := command().(worktreeActionMsg).err; err == nil || !strings.Contains(err.Error(), "must be a quoted TOML string") {
 		t.Fatalf("invalid config silently selected a backend: %v", err)
+	}
+}
+
+func TestCreatedWorktreeExitsToOpenSelection(t *testing.T) {
+	created := item{kind: "worktree", target: "/repo__worktrees/feature", cwd: "/repo__worktrees/feature", branch: "feature", title: "feature"}
+	model := newDashboard("/repo")
+	updated, command := model.Update(worktreeActionMsg{action: actionAddWorktree, notice: "Created worktree feature", created: created})
+	model = updated.(dashboardModel)
+	if command == nil || model.err != nil || !model.chosen || model.selection.target != created.target {
+		t.Fatalf("created worktree selection = chosen %v selection %#v error %v", model.chosen, model.selection, model.err)
+	}
+	if _, ok := command().(tea.QuitMsg); !ok {
+		t.Fatalf("created worktree command = %#v, want tea.QuitMsg", command())
 	}
 }
 

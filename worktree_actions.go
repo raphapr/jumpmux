@@ -36,38 +36,47 @@ func resolvedWorktreeBackend(backend worktreeBackend) (worktreeBackend, error) {
 	return backendGit, nil
 }
 
-func addWorktree(repo, branch string, backend worktreeBackend) error {
+func addWorktree(repo, branch string, backend worktreeBackend) (item, error) {
 	root, err := primaryWorktree(repo)
 	if err != nil {
-		return err
+		return item{}, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), worktreeActionTimeout)
 	defer cancel()
 	if output, err := runActionCommand(ctx, root, "git", "check-ref-format", "--branch", branch); err != nil {
-		return actionError("invalid branch name", output, err)
+		return item{}, actionError("invalid branch name", output, err)
 	}
 	backend, err = actionWorktreeBackend(backend)
 	if err != nil {
-		return err
+		return item{}, err
 	}
 	if backend == backendWT {
 		output, err := runActionCommand(ctx, root, "wt", "-C", root, "switch", "--create", branch, "--no-cd", "--format=json")
 		if err != nil {
-			return actionError("add worktree", output, err)
+			return item{}, actionError("add worktree", output, err)
 		}
-		return nil
+		items, err := listWorktreeItems(root)
+		if err != nil {
+			return item{}, err
+		}
+		for _, worktree := range items {
+			if worktree.branch == branch {
+				return worktree, nil
+			}
+		}
+		return item{}, fmt.Errorf("created worktree %q was not found", branch)
 	}
 
 	target := filepath.Join(filepath.Dir(root), filepath.Base(root)+"__worktrees", filepath.FromSlash(branch))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
+		return item{}, err
 	}
 	base := gitDefaultBranch(root)
 	output, err := runActionCommand(ctx, root, "git", "worktree", "add", "-b", branch, target, base)
 	if err != nil {
-		return actionError("add worktree", output, err)
+		return item{}, actionError("add worktree", output, err)
 	}
-	return nil
+	return item{kind: "worktree", target: target, cwd: target, branch: branch, title: branch}, nil
 }
 
 func removeWorktree(repo, path string, backend worktreeBackend) error {

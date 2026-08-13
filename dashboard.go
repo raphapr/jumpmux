@@ -176,6 +176,7 @@ type worktreeActionMsg struct {
 	action       dashboardAction
 	notice       string
 	selectTarget string
+	created      item
 	err          error
 }
 
@@ -1170,6 +1171,10 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case worktreeActionMsg:
 		m.action, m.actionTarget, m.actionBackend, m.err = actionNone, item{}, "", msg.err
+		if msg.action == actionAddWorktree && msg.err == nil {
+			m.chosen, m.selection = true, msg.created
+			return m, tea.Quit
+		}
 		if msg.action == actionRemoveSession || msg.action == actionRenameSession {
 			m.restoreSessionSelection = msg.err == nil
 			if msg.action == actionRenameSession && msg.err == nil {
@@ -1182,7 +1187,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil && msg.notice != "" {
 			m.setNotice(msg.notice)
 		}
-		if msg.err == nil && (msg.action == actionAddWorktree || msg.action == actionRemoveWorktree || msg.action == actionCleanupWorktree) {
+		if msg.err == nil && (msg.action == actionRemoveWorktree || msg.action == actionCleanupWorktree) {
 			m.worktreesInFlight = true
 			m.worktreeGeneration++
 			return m, refreshWorktreeList(m.cwd, m.worktreeGeneration)
@@ -1821,7 +1826,8 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if action == actionRenameSession {
 					return worktreeActionMsg{action: action, notice: "Renamed session to " + value, selectTarget: value, err: renameTmuxSession(target, value)}
 				}
-				return worktreeActionMsg{action: action, notice: "Created worktree " + value, err: addWorktree(m.cwd, value, backendAuto)}
+				created, err := addWorktree(m.cwd, value, backendAuto)
+				return worktreeActionMsg{action: action, notice: "Created worktree " + value, created: created, err: err}
 			}
 		default:
 			var command tea.Cmd
