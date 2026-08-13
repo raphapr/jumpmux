@@ -1,8 +1,8 @@
 # jumpmux
 
-Jumpmux is a terminal dashboard for navigating Git worktrees and AI agents, with built-in tmux session management.
+jumpmux is a terminal dashboard for Git worktrees, Pi agents, and tmux sessions.
 
-Inspired by [Workmux](https://github.com/raine/workmux) and [sesh](https://github.com/joshmedeski/sesh).
+It is inspired by [Workmux](https://github.com/raine/workmux), but takes a more opinionated approach.
 
 ## Tabs
 
@@ -18,7 +18,7 @@ Selecting an agent focuses its tmux pane. Selecting a worktree focuses its agent
 - git
 - tmux
 - [Pi](https://pi.dev)
-- Optionals: [Nerd Font](https://www.nerdfonts.com/), [Worktrunk](https://worktrunk.dev/), [GitHub CLI](https://cli.github.com/)
+- Optional: [Nerd Font](https://www.nerdfonts.com/), [Worktrunk](https://worktrunk.dev/), [GitHub CLI](https://cli.github.com/)
 
 ## Install
 
@@ -77,15 +77,15 @@ The extension reports the current pane's agent state.
 
 ### Agents
 
-The Pi extension writes agent status records. jumpmux checks each record against `tmux list-panes` before displaying it. Set `JUMPMUX_STATE_DIR` to override the status directory. `jumpmux setup` honors `PI_CODING_AGENT_DIR`.
+The Pi extension writes agent status records. Before displaying a record, jumpmux checks its pane with `tmux list-panes`. Set `JUMPMUX_STATE_DIR` to change the status directory. `jumpmux setup` honors `PI_CODING_AGENT_DIR`.
 
-The preview captures the last 200 lines from the selected pane every 500 ms while the terminal is focused. It keeps SGR colors and removes Pi's prompt and footer using tmux cursor geometry. Scrolling away from the bottom shows `PAUSED line/total`; `G` or `End` resumes following and hides the indicator. Focus returns trigger an immediate data and selected-preview refresh; background terminals keep only the lightweight clock.
+The preview captures up to 200 lines from the selected pane every 500 ms while the terminal has focus. It preserves SGR colors and strips Pi's prompt and footer. Scrolling up shows `PAUSED line/total`. Press `G` or `End` to follow new output again. When focus returns, jumpmux refreshes the data and selected preview.
 
-Working agents show a Braille spinner. A status older than one hour shows `󰔛`. The Time column uses the success color below five minutes, warning below one hour, and a dim accent after one hour. The dashboard redraws time and animation every 250 ms. Set `JUMPMUX_REDUCED_MOTION=1` for a static loader and a one-second clock tick; data and preview refreshes continue.
+Working agents show a Braille spinner. Statuses older than one hour show `󰔛`. The Time column changes color after five minutes and one hour. Set `JUMPMUX_REDUCED_MOTION=1` to replace animation with a static loader and reduce clock updates to once per second.
 
 ### Sessions
 
-Session locations live in `$XDG_CONFIG_HOME/jumpmux/config.toml`, falling back to `~/.config/jumpmux/config.toml`. Entries have a unique name and an existing path. Paths expand environment variables and a leading `~`.
+Configure session locations in `$XDG_CONFIG_HOME/jumpmux/config.toml` or `~/.config/jumpmux/config.toml`. Each entry needs a unique name and an existing path. Paths support environment variables and a leading `~`.
 
 ```toml
 [sessions]
@@ -97,11 +97,22 @@ name = "api"
 path = "~/src/api"
 ```
 
-`sessions.exclude` uses regular expressions; use `^name$` for an exact match. `sessions.discover` runs an executable with the remaining array values as arguments. It must print one absolute, existing directory per line. The executable path expands a leading `~`; jumpmux does not invoke a shell. Other keys under `sessions` and session behavior settings are rejected.
+`sessions.exclude` accepts regular expressions. Use `^name$` for an exact match. `sessions.discover` runs the first array value as an executable and passes the rest as arguments. The command must print one absolute, existing directory per line. jumpmux expands a leading `~` in the executable path and runs the command without a shell. Unknown session keys cause an error.
 
-Press `Ctrl+f` to cycle the Sessions table through All, Live, Inactive, Configured, and Discovered. The filter lasts until jumpmux exits.
+Press `Ctrl+f` to cycle through All, Live, Inactive, Configured, and Discovered. The filter resets when jumpmux exits.
 
-The Sessions table uses one icon per row: `` for a live session, `` for an inactive configured entry, and `` for a discovered repository. Plain mode uses `L`, `C`, and `R`. The current session uses the existing row highlight. Live-session previews capture the active pane's current screen immediately, including alternate-screen applications such as `btop`, and refresh every 500 ms while focused. Inactive configured entries show a creation hint. The table merges configured, discovered, and live entries by exact name. Its `Last` column comes from tmux's last-attached time. Without a filter, it sorts live sessions first, configured entries second, and discovered directories last, alphabetically within each group. `Ctrl+r` switches to most-recently-attached order for this launch only. Active fuzzy searches sort by relevance. Configured paths win for merged entries; live-only entries use the active pane path. `Space` offers copy actions for paths, branch or session names, and available PR URLs, plus live-session rename and removal after the applicable flow; configured entries remain unchanged in the file. `Ctrl+d` only removes a live tmux session after confirmation.
+Session icons:
+
+- ``: live
+- ``: configured and inactive
+- ``: discovered
+- Plain mode: `L`, `C`, and `R`
+
+The current session has a highlighted row. Live previews capture the active pane every 500 ms, including alternate-screen programs such as `btop`. Inactive configured entries show a creation hint.
+
+jumpmux merges rows with the same name. Configured paths take precedence; live-only rows use the active pane path. Rows appear in three groups: live, configured, and discovered. Each group sorts by name. Press `Ctrl+r` to sort by the `Last` column until jumpmux exits. Searches sort by fuzzy match score.
+
+Press `Space` for copy, rename, PR, cleanup, and removal actions available on the selected row. `Ctrl+d` removes a live session after confirmation. Removing a live session does not delete its configured entry.
 
 ### Git
 
@@ -115,15 +126,15 @@ Git cells show:
 - Rebase or conflict state
 - Upstream ahead and behind counts
 
-jumpmux reads the default branch from `wt list --format=json` schema 2 when `wt` is present. Git metadata provides the fallback.
+When `wt` is available, jumpmux reads the default branch from `wt list --format=json` schema 2. Otherwise, it uses Git metadata.
 
-The dashboard loads `git_status_cache.json` from the user cache directory before the first render. It refreshes Git data in the background and saves new values on exit.
+jumpmux loads `git_status_cache.json` before the first render, refreshes Git data in the background, and saves the cache on exit.
 
 ### Pull requests
 
-PR cells use `#number state-icon check-icon`. Check states use `󰄴` for success, `󰅙` for failure, and a spinner for pending checks. Fresh PR data includes up to three failed check names in agent and worktree previews.
+PR cells show `#number state-icon check-icon`. Checks use `󰄴` for success, `󰅙` for failure, and a spinner while pending. Agent and worktree previews list up to three failed checks.
 
-jumpmux queries each agent repository with `gh pr list`. It matches fork PRs against the branch's upstream repository and prefers an open PR over old merged or closed PRs. The dashboard loads `pr_status_cache.json` before the first render and keeps cached data when GitHub is unavailable.
+jumpmux calls `gh pr list` for each agent repository. It matches fork PRs against the branch's upstream repository and prefers an open PR. It loads `pr_status_cache.json` before the first render and keeps cached data when GitHub is unavailable.
 
 ### Themes and fonts
 
@@ -131,7 +142,7 @@ Press `t` to open the theme picker and browse these color schemes:
 
 `default`, `emberforge`, `glacier-signal`, `obsidian-pop`, `slate-garden`, `phosphor-arcade`, `lasergrid`, `mossfire`, `night-sorbet`, `graphite-code`, `festival-circuit`, `teal-drift`, `catppuccin-latte`, `catppuccin-frappe`, `catppuccin-macchiato`, `catppuccin-mocha`
 
-Built-in themes follow the terminal profile. Catppuccin flavours use their fixed palette. jumpmux saves the selected scheme in the user configuration directory.
+Built-in themes adapt to the terminal profile. Catppuccin themes use fixed palettes. jumpmux saves the selected theme in its configuration file.
 
 Set `nerdfont = false` in the configuration to replace Nerd Font Git, PR, check, and stale icons with text symbols. `JUMPMUX_PLAIN=1` overrides the setting for one launch.
 
@@ -160,7 +171,7 @@ go run .
 
 ## Development
 
-The Go command stays at the module root, which keeps `go install github.com/raphapr/jumpmux@latest` working. Source and test files use feature names. The Pi extension lives in `extension/`.
+The Go command stays at the module root so `go install github.com/raphapr/jumpmux@latest` works. Source and test filenames follow their features. The Pi extension lives in `extension/`.
 
 ## Configuration
 
@@ -192,12 +203,12 @@ path = "~/src/api"
 - `nerdfont` accepts `true` or `false` and defaults to `true`.
 - `[preview]` controls the preview panel independently for `agents`, `worktrees`, and `sessions`. Each defaults to `true`.
 
-`auto` uses Worktrunk when `wt` exists on `PATH`; otherwise it uses `git worktree`. `wt` uses `wt switch --create` and `wt remove`. `git` creates branches from the detected default branch under `<repo>__worktrees/` and keeps the branch after removal.
+`auto` uses Worktrunk when `wt` is on `PATH`, then falls back to `git worktree`. The Worktrunk backend calls `wt switch --create` and `wt remove`. The Git backend creates branches under `<repo>__worktrees/` from the default branch and keeps branches after worktree removal.
 
-The `t` and `s` keys update `theme` and `default_scope`. jumpmux validates the configuration before each mutation flow. Removal requires confirmation. jumpmux rejects the primary worktree and any worktree used by a tmux pane. Locked and prunable Git worktrees show explicit indicators. The action menu offers confirmed Git-native cleanup only for an unlocked prunable record.
+The `t` and `s` keys save `theme` and `default_scope`. jumpmux validates the configuration before mutations and asks for confirmation before removal. It rejects the primary worktree and worktrees used by tmux panes. Locked and prunable worktrees have separate indicators. You can prune an unlocked stale record from the action menu.
 
 ## Scope
 
-jumpmux reads agent, Git, PR, configured session locations, and tmux session state. It switches tmux panes and sessions, creates reusable tmux windows and configured tmux sessions, adds or removes worktrees, and opens PRs in a browser.
+jumpmux reads agent, Git, PR, session, and tmux state. It switches panes and sessions, creates tmux windows and configured sessions, manages worktrees, and opens PRs.
 
-It does not stage patches, run a daemon, provide a command palette, or support a non-tmux backend.
+jumpmux does not stage changes, run a daemon, provide a command palette, or support another multiplexer.
