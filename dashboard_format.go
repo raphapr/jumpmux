@@ -238,12 +238,19 @@ type gitStatusSpan struct {
 }
 
 func gitStatusSpans(item item, now time.Time) []gitStatusSpan {
-	if !item.gitLoaded {
-		return []gitStatusSpan{{text: spinnerFrame(now), style: mutedStyle}}
-	}
 	var spans []gitStatusSpan
 	add := func(text string, style lipgloss.Style) {
 		spans = append(spans, gitStatusSpan{text: text, style: style})
+	}
+	if item.locked {
+		add(dashboardIcon("󰌾", "LOCK"), warningStyle)
+	}
+	if item.prunable {
+		add(dashboardIcon("󰆴", "PRUNE"), dangerStyle)
+	}
+	if !item.gitLoaded {
+		add(spinnerFrame(now), mutedStyle)
+		return spans
 	}
 	if item.isRebasing {
 		add(dashboardIcon(gitRebaseIcon, "R"), warningStyle)

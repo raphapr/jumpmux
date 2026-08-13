@@ -36,12 +36,14 @@ type sessionsConfig struct {
 }
 
 type tmuxSession struct {
-	id      string
-	name    string
-	windows int
-	path    string
-	pane    string
-	current bool
+	id           string
+	name         string
+	windows      int
+	attached     int
+	lastAttached time.Time
+	path         string
+	pane         string
+	current      bool
 }
 
 type sessionsFile struct {
@@ -167,7 +169,7 @@ func listLiveTmuxSessions(includeServer bool) ([]tmuxSession, error) {
 		return nil, nil
 	}
 	format := strings.Join([]string{
-		"#{session_id}", "#{session_name}", "#{session_windows}",
+		"#{session_id}", "#{session_name}", "#{session_windows}", "#{session_attached}", "#{session_last_attached}",
 		"#{window_active}", "#{pane_active}", "#{pane_id}", "#{pane_current_path}",
 	}, tmuxFieldSeparator) + tmuxRecordSeparator
 	output, err := tmuxOutput("list-panes", "-a", "-F", format)
@@ -184,7 +186,26 @@ func listLiveTmuxSessions(includeServer bool) ([]tmuxSession, error) {
 	sessionsByID := map[string]tmuxSession{}
 	for _, record := range tmuxRecords(output) {
 		parts := strings.Split(record, tmuxFieldSeparator)
-		if len(parts) != 7 || !validTmuxSessionID(parts[0]) || parts[1] == "" || (parts[3] != "0" && parts[3] != "1") || (parts[4] != "0" && parts[4] != "1") || !validTmuxPaneID(parts[5]) {
+		if len(parts) != 7 && len(parts) != 9 {
+			return nil, errors.New("tmux returned a malformed pane record")
+		}
+		attached, lastAttached, offset := 0, time.Time{}, 0
+		if len(parts) == 9 {
+			var err error
+			attached, err = strconv.Atoi(parts[3])
+			if err != nil || attached < 0 {
+				return nil, errors.New("tmux returned a malformed pane record")
+			}
+			if parts[4] != "" && parts[4] != "0" {
+				seconds, err := strconv.ParseInt(parts[4], 10, 64)
+				if err != nil || seconds < 0 {
+					return nil, errors.New("tmux returned a malformed pane record")
+				}
+				lastAttached = time.Unix(seconds, 0)
+			}
+			offset = 2
+		}
+		if !validTmuxSessionID(parts[0]) || parts[1] == "" || (parts[3+offset] != "0" && parts[3+offset] != "1") || (parts[4+offset] != "0" && parts[4+offset] != "1") || !validTmuxPaneID(parts[5+offset]) {
 			return nil, errors.New("tmux returned a malformed pane record")
 		}
 		windows, err := strconv.Atoi(parts[2])
@@ -192,17 +213,17 @@ func listLiveTmuxSessions(includeServer bool) ([]tmuxSession, error) {
 			return nil, errors.New("tmux returned a malformed pane record")
 		}
 		session, exists := sessionsByID[parts[0]]
-		if exists && (session.name != parts[1] || session.windows != windows) {
+		if exists && (session.name != parts[1] || session.windows != windows || session.attached != attached || !session.lastAttached.Equal(lastAttached)) {
 			return nil, errors.New("tmux returned inconsistent session metadata")
 		}
 		if !exists {
-			session = tmuxSession{id: parts[0], name: parts[1], windows: windows, current: parts[1] == current}
+			session = tmuxSession{id: parts[0], name: parts[1], windows: windows, attached: attached, lastAttached: lastAttached, current: parts[1] == current}
 		}
-		if parts[3] == "1" && parts[4] == "1" {
+		if parts[3+offset] == "1" && parts[4+offset] == "1" {
 			if session.pane != "" {
 				return nil, errors.New("tmux returned multiple active panes for a session")
 			}
-			session.pane, session.path = parts[5], parts[6]
+			session.pane, session.path = parts[5+offset], parts[6+offset]
 		}
 		sessionsByID[parts[0]] = session
 	}
@@ -320,6 +341,7 @@ func listSessions(includeServer bool) ([]item, error) {
 		}
 		entry.muxSessionID, entry.muxSessionName, entry.pane = session.id, session.name, session.pane
 		entry.current, entry.tmuxWindows = session.current, session.windows
+		entry.tmuxAttached, entry.lastAttached = session.attached, session.lastAttached
 		items[session.name] = entry
 	}
 	result := make([]item, 0, len(items))
@@ -371,6 +393,11 @@ func sessionExcluded(patterns []*regexp.Regexp, name string) bool {
 
 func validTmuxSessionID(id string) bool {
 	return len(id) > 1 && id[0] == '$' && strings.Trim(id[1:], "0123456789") == ""
+}
+
+func validTmuxSessionName(name string) bool {
+	name = strings.TrimSpace(name)
+	return name != "" && !strings.ContainsAny(name, ":"+tmuxFieldSeparator+tmuxRecordSeparator) && !strings.ContainsFunc(name, unicode.IsControl)
 }
 
 func validTmuxPaneID(id string) bool {
@@ -485,6 +512,42 @@ func switchLastTmuxSession() error {
 		return errors.New("no last session found")
 	}
 	return switchTmuxSession(sessions[1].id)
+}
+
+func renameTmuxSession(selected item, name string) error {
+	name = strings.TrimSpace(name)
+	if !validTmuxSessionName(name) {
+		return errors.New("session name must be non-empty and contain no colons or control characters")
+	}
+	if !validTmuxSessionID(selected.muxSessionID) {
+		return fmt.Errorf("invalid tmux session ID %q", selected.muxSessionID)
+	}
+	if name == selected.target {
+		return errors.New("session name is unchanged")
+	}
+	live, exists, err := sessionByName(selected.target)
+	if err != nil {
+		return err
+	}
+	if !exists || live.id != selected.muxSessionID {
+		return errors.New("the selected tmux session changed; refresh and try again")
+	}
+	if _, exists, err = sessionByName(name); err != nil {
+		return err
+	} else if exists {
+		return errors.New("a tmux session already uses that name")
+	}
+	if _, err := tmuxOutput("rename-session", "-t", live.id, name); err != nil {
+		return err
+	}
+	renamed, exists, err := sessionByName(name)
+	if err != nil {
+		return err
+	}
+	if !exists || renamed.id != live.id {
+		return errors.New("tmux renamed a different session; refresh and try again")
+	}
+	return nil
 }
 
 func removeTmuxSession(selected item) error {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -200,16 +201,16 @@ func (m dashboardModel) renderTable(width int) string {
 
 type tableColumns struct {
 	project, worktree, git, pr, status, elapsed, tail int
-	name, path, windows                               int
+	name, path, windows, last                         int
 }
 
 func (m dashboardModel) columns(width int, rows []item) tableColumns {
 	if m.tab == tabSessions {
-		name, windows := 9, 5
+		name, windows, last := 9, 5, 11
 		for _, item := range rows {
-			name = min(22, max(name, ansi.StringWidth(item.title)+3))
+			name = min(28, max(name, ansi.StringWidth(item.title)+8))
 		}
-		return tableColumns{name: name, path: max(1, width-2-name-windows), windows: windows}
+		return tableColumns{name: name, path: max(1, width-2-name-windows-last), windows: windows, last: last}
 	}
 	project, worktree, git, pr := 8, 9, 5, 4
 	for _, item := range rows {
@@ -262,7 +263,7 @@ func (m dashboardModel) columns(width int, rows []item) tableColumns {
 func (m dashboardModel) tableHeader(width int, c tableColumns) string {
 	cells := []string{}
 	if m.tab == tabSessions {
-		cells = append(cells, cell("Session", c.name), cell("Path", c.path), cell("Win", c.windows))
+		cells = append(cells, cell("Session", c.name), cell("Path", c.path), cell("Win", c.windows), cell("Last", c.last))
 		return headerStyle.Render("  " + ansi.Truncate(strings.Join(cells, ""), width-2, ""))
 	}
 	cells = append(cells, cell("#", 2), cell("Project", c.project), cell("Worktree", c.worktree), cell("Git", c.git), cell("PR", c.pr))
@@ -283,8 +284,10 @@ func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) st
 	} else if isCurrent {
 		background = &currentRowColor
 	}
-	worktreeStyle := textStyle
-	if isCurrent {
+	worktreeStyle := semanticRowStyle(item, gitItem, m.now)
+	if index == m.index {
+		worktreeStyle = textStyle
+	} else if isCurrent {
 		worktreeStyle = currentWorktreeStyle
 	}
 	prefix := renderCell(textStyle, "  ", 2, background)
@@ -297,20 +300,24 @@ func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) st
 	line := prefix
 	if m.tab == tabSessions {
 		icon, style := sessionIcon(item)
-		windows := "-"
+		windows, last := "-", "-"
 		if item.muxSessionID != "" {
 			windows = strconv.Itoa(item.tmuxWindows)
 		}
-		line += renderCell(style, icon+" "+item.title, c.name, background) + renderCell(textStyle, compactHome(item.cwd), c.path, background) + renderCell(mutedStyle, windows, c.windows, background)
+		if !item.lastAttached.IsZero() {
+			last = relativeAge(item.lastAttached)
+		}
+		name := icon + " " + sessionActivityMarker(item) + " " + item.title
+		line += renderCell(style, name, c.name, background) + renderCell(textStyle, compactHome(item.cwd), c.path, background) + renderCell(mutedStyle, windows, c.windows, background) + renderCell(mutedStyle, last, c.last, background)
 		return padANSIBackground(line, width, background)
 	}
 	jumpKey := ""
 	if index < 9 {
 		jumpKey = strconv.Itoa(index + 1)
 	}
-	line += renderCell(keycapStyle, jumpKey, 2, background) + renderCell(textStyle, projectName(item.cwd), c.project, background) + renderCell(worktreeStyle, m.displayWorktree(item), c.worktree, background) + gitStatusCell(gitItem, c.git, m.now, background) + prCell(gitItem, c.pr, m.now, background)
+	line += renderCell(keycapStyle, jumpKey, 2, background) + renderCell(worktreeStyle, projectName(item.cwd), c.project, background) + renderCell(worktreeStyle, m.displayWorktree(item), c.worktree, background) + gitStatusCell(gitItem, c.git, m.now, background) + prCell(gitItem, c.pr, m.now, background)
 	if m.tab == tabAgents {
-		line += statusCell(item, c.status, m.now, background) + elapsedCell(item.updated, c.elapsed, m.now, background) + renderCell(textStyle, item.title, c.tail, background)
+		line += statusCell(item, c.status, m.now, background) + elapsedCell(item.updated, c.elapsed, m.now, background) + renderCell(worktreeStyle, item.title, c.tail, background)
 	} else {
 		age := "-"
 		if !item.updated.IsZero() {
@@ -366,12 +373,18 @@ func (m dashboardModel) renderPreview(width int) string {
 	if m.actionMenu {
 		return m.renderActionMenu(width, height)
 	}
-	if m.action == actionRemoveWorktree || m.action == actionRemoveSession {
+	if m.action == actionRemoveWorktree || m.action == actionRemoveSession || m.action == actionCleanupWorktree {
 		title := "Remove worktree"
-		if m.action == actionRemoveSession {
+		switch m.action {
+		case actionRemoveSession:
 			title = "Remove session"
+		case actionCleanupWorktree:
+			title = "Clean up stale record"
 		}
 		return renderPanel(title, m.removePreviewLines(), width, height, 0, 0, false, true)
+	}
+	if m.action == actionRenameSession {
+		return renderPanel("Rename session", []string{"Session: " + safeText(m.actionTarget.title), "", "Enter a new live tmux session name."}, width, height, 0, 0, false, true)
 	}
 	selected, hasSelection := m.selected()
 	if !hasSelection {
@@ -428,26 +441,46 @@ func (m dashboardModel) previewTitle(selected item, title string) string {
 			}
 		}
 	}
+	feedback := m.previewFollowLabel()
+	if feedback != "" {
+		return title + " · " + safeText(identity) + " · " + state + " · " + feedback
+	}
 	return title + " · " + safeText(identity) + " · " + state
 }
 
 func (m dashboardModel) renderActionMenu(width, height int) string {
 	entries := m.actionMenuEntries()
 	lines := make([]string, 0, len(entries))
+	selected := 0
+	if len(entries) > 0 {
+		selected = m.actionMenuIndex % len(entries)
+	}
 	for index, entry := range entries {
 		prefix, style := "  ", mutedStyle
-		if index == m.actionMenuIndex {
+		if index == selected {
 			prefix, style = "▌ ", infoStyle
 		}
 		lines = append(lines, style.Render(prefix+entry.label))
 	}
 	if len(lines) == 0 {
-		lines = []string{mutedStyle.Render("No actions match.")}
+		lines = []string{mutedStyle.Render("No actions available.")}
 	}
-	return renderPanel("Actions", lines, width, height, 0, 0, false, true)
+	offset := max(0, selected-max(1, height-2)+1)
+	return renderPanel("Actions", lines, width, height, offset, 0, false, true)
 }
 
 func (m dashboardModel) removePreviewLines() []string {
+	if m.action == actionCleanupWorktree {
+		return []string{
+			"Selected: " + safeText(compactHome(m.actionTarget.cwd)),
+			"",
+			"This runs git worktree prune --expire now.",
+			"Git removes all stale unlocked worktree records.",
+			"It does not remove a live worktree or unlock a locked one.",
+			"",
+			"Enter Prune    Esc Cancel",
+		}
+	}
 	if m.action == actionRemoveSession {
 		return []string{
 			"Session: " + safeText(m.actionTarget.title),
@@ -479,24 +512,31 @@ func (m dashboardModel) renderFooter(width int) string {
 		return padANSI("  "+footerCommand("j/k", "Move")+" "+footerCommand("Enter", "Run")+" "+footerCommand("Esc", "Cancel"), width)
 	}
 	switch m.action {
-	case actionAddWorktree:
+	case actionAddWorktree, actionRenameSession:
 		input := m.actionTextInput
 		styleTextInput(&input)
-		prefix := "  " + textStyle.Render("branch: ")
-		create := footerCommand("Enter", "Create")
+		label, actionLabel := "branch: ", "Create"
+		if m.action == actionRenameSession {
+			label, actionLabel = "name: ", "Rename"
+		}
+		prefix := "  " + textStyle.Render(label)
+		create := footerCommand("Enter", actionLabel)
 		if width < 60 {
-			create = footerCommand("↵", "Create")
+			create = footerCommand("↵", actionLabel)
 		}
 		suffix := "  " + create + " " + footerCommand("Esc", "Cancel")
 		input.Width = max(0, width-ansi.StringWidth(prefix)-ansi.StringWidth(suffix)-1)
 		input.SetCursor(input.Position())
 		return padANSI(prefix+input.View()+suffix, width)
-	case actionRemoveWorktree, actionRemoveSession:
-		name := m.displayWorktree(m.actionTarget)
+	case actionRemoveWorktree, actionRemoveSession, actionCleanupWorktree:
+		name, verb := m.displayWorktree(m.actionTarget), "Remove"
 		if m.action == actionRemoveSession {
 			name = m.actionTarget.title
 		}
-		return padANSI("  "+warningStyle.Render("Remove "+safeText(name)+"?")+"  "+footerCommand("Enter", "Remove")+" "+footerCommand("Esc", "Cancel"), width)
+		if m.action == actionCleanupWorktree {
+			name, verb = "stale record", "Clean up"
+		}
+		return padANSI("  "+warningStyle.Render(verb+" "+safeText(name)+"?")+"  "+footerCommand("Enter", verb)+" "+footerCommand("Esc", "Cancel"), width)
 	case actionRunning:
 		return padANSI("  "+infoStyle.Render("Working…"), width)
 	}
@@ -515,7 +555,7 @@ func (m dashboardModel) renderFooter(width int) string {
 		return m.renderFooterError(width, viewErr)
 	}
 	if m.notice != "" && m.now.Before(m.noticeUntil) {
-		return padANSI("  "+successStyle.Render(safeText(m.notice)), width)
+		return padANSI("  "+successStyle.Render(dashboardIcon("󰄬", "OK")+" "+safeText(m.notice)), width)
 	}
 	if m.filter {
 		input := m.filterInputs[m.tab]
@@ -551,7 +591,11 @@ func (m dashboardModel) renderFooter(width int) string {
 	}
 	nextTab := [...]string{"Worktrees", "Sessions", "Agents"}[m.tab]
 	if m.tab == tabSessions {
-		candidates := []string{footerCommand("^j/k/n/p", "Move"), footerCommand("↵", "Open"), footerCommand("^f", m.sessionFilter.label())}
+		sortLabel := "Grouped"
+		if m.sessionSortRecent {
+			sortLabel = "Recent"
+		}
+		candidates := []string{footerCommand("^j/k/n/p", "Move"), footerCommand("↵", "Open"), footerCommand("^f", m.sessionFilter.label()), footerCommand("^r", sortLabel)}
 		if m.query == "" {
 			candidates = append(candidates, footerCommand("type", "Search"))
 		} else {
@@ -597,13 +641,14 @@ func (m dashboardModel) prioritizedFooterWithBase(width int, candidates, base []
 }
 
 func (m dashboardModel) renderFooterError(width int, err error) string {
-	helpQuit := []string{footerCommand("?", "Help"), footerCommand("q", "Quit")}
+	helpQuit := []string{footerCommand("Esc", "Dismiss"), footerCommand("?", "Help"), footerCommand("q", "Quit")}
 	if m.tab == tabSessions {
-		helpQuit = []string{footerCommand("^c", "Quit")}
+		helpQuit = []string{footerCommand("Esc", "Dismiss"), footerCommand("^c", "Quit")}
 	}
 	separator := borderStyle.Render(" │ ")
 	available := max(1, width-2-ansi.StringWidth(strings.Join(helpQuit, separator))-ansi.StringWidth(separator))
-	message := dangerStyle.Render("Error: " + ansi.Truncate(safeText(err.Error()), max(0, available-7), "…"))
+	prefix := dashboardIcon("󰅙", "!") + " Error: "
+	message := dangerStyle.Render(ansi.Truncate(prefix+safeText(err.Error()), available, "…"))
 	return padANSI("  "+strings.Join(append([]string{message}, helpQuit...), separator), width)
 }
 
@@ -615,13 +660,39 @@ func dashboardIcon(nerd, plain string) string {
 }
 
 func sessionIcon(session item) (string, lipgloss.Style) {
-	if session.muxSessionID != "" {
-		return dashboardIcon("", "L"), infoStyle
-	}
 	if session.sessionSource == "config" {
 		return dashboardIcon("", "C"), mutedStyle
 	}
-	return dashboardIcon("", "R"), mutedStyle
+	if session.sessionSource == "discovered" {
+		return dashboardIcon("", "R"), mutedStyle
+	}
+	return dashboardIcon("", "L"), infoStyle
+}
+
+func sessionActivityMarker(session item) string {
+	switch {
+	case session.current:
+		return dashboardIcon("󰌽", "SELF")
+	case session.tmuxAttached > 0:
+		return dashboardIcon("󰘴", "ATT")
+	case session.muxSessionID != "":
+		return dashboardIcon("󰖲", "LIVE")
+	default:
+		return ""
+	}
+}
+
+func semanticRowStyle(item, git item, now time.Time) lipgloss.Style {
+	switch {
+	case git.prCheck == checkFailure:
+		return dangerStyle
+	case isStale(item, now):
+		return mutedStyle
+	case item.status == "done":
+		return successStyle
+	default:
+		return textStyle
+	}
 }
 
 func footerCommand(key, label string) string {

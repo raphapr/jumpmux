@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -188,6 +189,20 @@ esac
 	}
 }
 
+func TestLiveTmuxSessionsReadAttachmentMetadata(t *testing.T) {
+	writeFakeTmux(t, `
+case "$1" in
+  display-message) printf 'dev\n' ;;
+  list-panes) printf '$1\037dev\0372\0373\037100\0371\0371\037%%7\037/tmp/dev\036\n' ;;
+esac
+`)
+	t.Setenv("TMUX", "/tmp/tmux,1,0")
+	sessions, err := listLiveTmuxSessions(false)
+	if err != nil || len(sessions) != 1 || sessions[0].attached != 3 || !sessions[0].lastAttached.Equal(time.Unix(100, 0)) {
+		t.Fatalf("attachment metadata = %#v, %v", sessions, err)
+	}
+}
+
 func TestLiveTmuxSessionsUseOneSnapshot(t *testing.T) {
 	log := writeFakeTmux(t, `
 printf '%s\n' "$*" >> "$TMUX_LOG"
@@ -360,6 +375,32 @@ esac
 	}
 }
 
+func TestRenameTmuxSessionRevalidatesIdentity(t *testing.T) {
+	log := writeFakeTmux(t, `
+printf '%s\n' "$*" >> "$TMUX_LOG"
+case "$1" in
+  display-message)
+    case "$4" in
+      =dev:) printf '$1\n' ;;
+      =renamed:) if [ -f "$RENAMED" ]; then printf '$1\n'; else printf "can't find session\n" >&2; exit 1; fi ;;
+    esac ;;
+  rename-session) touch "$RENAMED" ;;
+esac
+`)
+	t.Setenv("TMUX_LOG", log)
+	t.Setenv("RENAMED", filepath.Join(t.TempDir(), "renamed"))
+	if err := renameTmuxSession(item{target: "dev", muxSessionID: "$1"}, "renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := renameTmuxSession(item{target: "dev", muxSessionID: "$1"}, "bad:name"); err == nil || !strings.Contains(err.Error(), "colons") {
+		t.Fatalf("unsafe rename = %v", err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil || !strings.Contains(string(data), "rename-session -t $1 renamed") || !strings.Contains(string(data), "display-message -p -t =renamed:") {
+		t.Fatalf("rename command = %s, %v", data, err)
+	}
+}
+
 func TestRemoveTmuxSessionRevalidatesIdentity(t *testing.T) {
 	log := writeFakeTmux(t, `
 printf '%s\n' "$*" >> "$TMUX_LOG"
@@ -424,7 +465,7 @@ func TestSessionIconsAndColumns(t *testing.T) {
 		{title: "repo", cwd: "/repo", sessionSource: "discovered"},
 	}
 	view := ansi.Strip(model.renderTable(100))
-	for _, want := range []string{"Session", "Path", "Win", " live", " pinned", " repo", "3"} {
+	for _, want := range []string{"Session", "Path", "Win", "Last", " 󰖲 live", " pinned", " repo", "3"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("sessions table missing %q:\n%s", want, view)
 		}
@@ -434,7 +475,7 @@ func TestSessionIconsAndColumns(t *testing.T) {
 	}
 	nerdFontEnabled = false
 	plain := ansi.Strip(model.renderTable(100))
-	for _, want := range []string{"L live", "C pinned", "R repo"} {
+	for _, want := range []string{"L LIVE live", "C pinned", "R repo"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("plain sessions table missing %q:\n%s", want, plain)
 		}

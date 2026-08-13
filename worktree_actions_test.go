@@ -79,6 +79,47 @@ printf '%%7\0374321\037%s\037Pi\037$1\037dev\037@2\037feature\037pi\037%s\036\n'
 	}
 }
 
+func TestCleanupPrunableWorktreeRevalidatesAndPrunes(t *testing.T) {
+	parent := t.TempDir()
+	repo, stale := filepath.Join(parent, "repo"), filepath.Join(parent, "stale")
+	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "stale", stale}} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	if err := os.RemoveAll(stale); err != nil {
+		t.Fatal(err)
+	}
+	items, err := listWorktreeItems(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var selected item
+	for _, candidate := range items {
+		if samePath(candidate.cwd, stale) {
+			selected = candidate
+		}
+	}
+	if !selected.prunable {
+		t.Fatalf("stale worktree not marked prunable: %#v", items)
+	}
+	if err := cleanupPrunableWorktree(repo, selected); err != nil {
+		t.Fatal(err)
+	}
+	items, err = listWorktreeItems(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range items {
+		if samePath(candidate.cwd, stale) {
+			t.Fatalf("stale worktree record remained: %#v", candidate)
+		}
+	}
+	if err := cleanupPrunableWorktree(repo, selected); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("stale cleanup was not revalidated: %v", err)
+	}
+}
+
 func TestRemovalUsesConfirmedBackend(t *testing.T) {
 	parent := t.TempDir()
 	repo, worktree := filepath.Join(parent, "repo"), filepath.Join(parent, "feature")

@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -46,7 +48,7 @@ const (
 	clockInterval        = 250 * time.Millisecond
 	staleThreshold       = time.Hour
 	maxDiffOutput        = 1 << 20
-	worktreeMetadataRows = 6
+	worktreeMetadataRows = 7
 )
 
 var spinnerFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -86,6 +88,7 @@ type dashboardModel struct {
 	query                                                                 string
 	queries, tabTargets                                                   [tabCount]string
 	filterInputs                                                          [tabCount]textinput.Model
+	sessionSortRecent                                                     bool
 	themePickerInput                                                      textinput.Model
 	themePickerIndex, themePickerOffset                                   int
 	themePickerPrevious                                                   colorScheme
@@ -147,6 +150,8 @@ const (
 	actionAddWorktree
 	actionRemoveWorktree
 	actionRemoveSession
+	actionRenameSession
+	actionCleanupWorktree
 	actionRunning
 )
 
@@ -154,6 +159,11 @@ const (
 	menuOpen menuAction = iota
 	menuDiff
 	menuPR
+	menuCopyPath
+	menuCopyName
+	menuCopyPRURL
+	menuRename
+	menuCleanup
 	menuRemove
 )
 
@@ -163,9 +173,10 @@ type actionMenuEntry struct {
 }
 
 type worktreeActionMsg struct {
-	action dashboardAction
-	notice string
-	err    error
+	action       dashboardAction
+	notice       string
+	selectTarget string
+	err          error
 }
 
 type worktreeStage uint8
@@ -326,6 +337,8 @@ func (m *dashboardModel) setNotice(value string) {
 	m.notice, m.noticeUntil = value, m.now.Add(2*time.Second)
 }
 
+func (m *dashboardModel) clearActionError() { m.err = nil }
+
 func (m *dashboardModel) togglePreview() tea.Cmd {
 	if m.previewShown() {
 		m.previewOverride[m.tab] = -1
@@ -347,13 +360,34 @@ func (m dashboardModel) actionMenuEntries() []actionMenuEntry {
 		return nil
 	}
 	entries := []actionMenuEntry{{menuOpen, "Open"}}
-	if m.tab != tabSessions {
-		entries = append(entries, actionMenuEntry{menuDiff, "Diff"})
-		if m.gitItem(selected).prNumber != 0 {
-			entries = append(entries, actionMenuEntry{menuPR, "Open PR"})
-		}
+	if selected.cwd != "" && m.tab != tabSessions {
+		entries = append(entries, actionMenuEntry{menuCopyPath, "Copy path"})
 	}
-	if (m.tab == tabSessions && selected.muxSessionID != "") || (m.tab == tabWorktrees && !selected.current && (len(m.worktrees) == 0 || !samePath(selected.cwd, m.worktrees[0].cwd))) {
+	if m.tab == tabSessions {
+		if selected.muxSessionID != "" {
+			entries = append(entries, actionMenuEntry{menuRename, "Rename session"}, actionMenuEntry{menuRemove, "Remove"})
+		}
+		if selected.cwd != "" {
+			entries = append(entries, actionMenuEntry{menuCopyPath, "Copy path"})
+		}
+		entries = append(entries, actionMenuEntry{menuCopyName, "Copy session name"})
+		return entries
+	}
+	gitItem := m.gitItem(selected)
+	if gitItem.branch != "" {
+		entries = append(entries, actionMenuEntry{menuCopyName, "Copy branch"})
+	}
+	entries = append(entries, actionMenuEntry{menuDiff, "Diff"})
+	if gitItem.prNumber != 0 {
+		entries = append(entries, actionMenuEntry{menuPR, "Open PR"})
+	}
+	if gitItem.prURL != "" {
+		entries = append(entries, actionMenuEntry{menuCopyPRURL, "Copy PR URL"})
+	}
+	if m.tab == tabWorktrees && selected.prunable && !selected.locked && !selected.current {
+		entries = append(entries, actionMenuEntry{menuCleanup, "Clean up stale record"})
+	}
+	if m.tab == tabWorktrees && !selected.current && (len(m.worktrees) == 0 || !samePath(selected.cwd, m.worktrees[0].cwd)) {
 		entries = append(entries, actionMenuEntry{menuRemove, "Remove"})
 	}
 	return entries
@@ -363,9 +397,29 @@ func (m *dashboardModel) openActionMenu() tea.Cmd {
 	if _, ok := m.selected(); !ok {
 		return nil
 	}
+	m.clearActionError()
 	m.actionMenu, m.actionMenuIndex = true, 0
 	m.lastClickTarget, m.lastClickAt = "", time.Time{}
 	return nil
+}
+
+func (m *dashboardModel) beginRename(selected item) tea.Cmd {
+	if selected.muxSessionID == "" {
+		m.err = errors.New("the selected session is not running")
+		return nil
+	}
+	m.action, m.actionTarget, m.err = actionRenameSession, selected, nil
+	m.actionTextInput.SetValue(selected.title)
+	m.lastClickTarget, m.lastClickAt = "", time.Time{}
+	return m.actionTextInput.Focus()
+}
+
+func (m *dashboardModel) beginCleanup(selected item) {
+	if !selected.prunable || selected.locked || selected.current {
+		m.err = errors.New("the selected worktree is not safe to clean up")
+		return
+	}
+	m.action, m.actionTarget, m.err = actionCleanupWorktree, selected, nil
 }
 
 func (m *dashboardModel) beginRemove(selected item) {
@@ -563,17 +617,20 @@ func refreshWorktreeMux(items []item, generation uint64) tea.Cmd {
 func loadAgentPreview(item item, scheme colorScheme, request uint64) tea.Cmd {
 	return func() tea.Msg {
 		preview := previewData{request: request, scheme: scheme, target: item.target, kind: item.kind, updated: item.updated, title: "Preview: " + worktreeName(item.cwd), followBottom: true}
+		if item.prCheck == checkFailure {
+			preview.lines = append(preview.lines, failedChecksPreview(item.prFailedChecks))
+		}
 		output, err := tmuxOutput(
 			"display-message", "-p", "-t", item.pane, "#{cursor_y}\t#{pane_height}",
 			";", "capture-pane", "-p", "-e", "-S", "-200", "-t", item.pane,
 		)
 		if err != nil {
-			preview.lines = []string{"(pane not available)"}
+			preview.lines = append(preview.lines, "(pane not available)")
 			return previewMsg(preview)
 		}
 		lines := paneHistoryLines(output)
 		if len(lines) == 0 {
-			preview.lines = []string{"(empty output)"}
+			preview.lines = append(preview.lines, "(empty output)")
 			return previewMsg(preview)
 		}
 		for _, line := range lines {
@@ -587,6 +644,16 @@ func loadAgentPreview(item item, scheme colorScheme, request uint64) tea.Cmd {
 }
 
 func worktreePreview(item item, scheme colorScheme, request uint64) previewData {
+	state := "-"
+	if item.locked || item.prunable {
+		state = ""
+	}
+	if item.locked {
+		state += dashboardIcon("󰌾", "LOCK") + " "
+	}
+	if item.prunable {
+		state += dashboardIcon("󰆴", "PRUNE")
+	}
 	return previewData{
 		request: request,
 		scheme:  scheme,
@@ -600,10 +667,23 @@ func worktreePreview(item item, scheme colorScheme, request uint64) previewData 
 			mutedStyle.Render("Diff    ") + gitStatusView(item),
 			mutedStyle.Render("Agent   ") + agentSummary(item, time.Now()),
 			mutedStyle.Render("Mux     ") + muxView(item),
-			"",
+			mutedStyle.Render("State   ") + textStyle.Render(state),
+			failedChecksPreview(item.prFailedChecks),
 		},
 		rightTitle: "Git Log",
 	}
+}
+
+func failedChecksPreview(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	limit := min(3, len(names))
+	value := strings.Join(names[:limit], ", ")
+	if len(names) > limit {
+		value += fmt.Sprintf(" +%d", len(names)-limit)
+	}
+	return dangerStyle.Render("Failed checks: ") + textStyle.Render(safeText(value))
 }
 
 func sessionPreview(item item, scheme colorScheme, request uint64) previewData {
@@ -736,6 +816,8 @@ func (m *dashboardModel) requestPreview(item item) tea.Cmd {
 	}
 	if item.kind == "session" {
 		m.loading = changed
+		details := m.gitItem(item)
+		item.prCheck, item.prFailedChecks = details.prCheck, details.prFailedChecks
 		return loadAgentPreview(item, scheme, request)
 	}
 	if item.kind == "tmux-session" {
@@ -830,7 +912,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		after, hasAfter := m.selected()
 		if hasAfter && after.kind == "tmux-session" && !m.diff {
-			if !hadBefore || before != after || m.preview.target != after.target || m.preview.kind != after.kind {
+			if !hadBefore || before.target != after.target || before.kind != after.kind || m.preview.target != after.target || m.preview.kind != after.kind {
 				return m, m.requestPreview(after)
 			}
 		} else if !m.diff && !hasAfter {
@@ -888,7 +970,12 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, agent := range m.allAgents {
 			activePaths[agent.cwd] = true
 		}
+		selectedAgentUpdated := false
+		selected, hasSelected := m.selected()
 		for _, detail := range msg {
+			if hasSelected && selected.kind == "session" && detail.cwd == selected.cwd {
+				selectedAgentUpdated = true
+			}
 			if !activePaths[detail.cwd] {
 				continue
 			}
@@ -907,6 +994,9 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.prCache[detail.cwd] = detail
 				}
 			}
+		}
+		if selectedAgentUpdated && !m.diff {
+			return m, m.requestPreview(selected)
 		}
 		return m, nil
 	case worktreeDataMsg:
@@ -994,9 +1084,10 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.worktreesInFlight = false
 		}
 		after, hasAfter := m.selected()
-		changed := !hadBefore || before != after
+		changed := !hadBefore || before.target != after.target || before.kind != after.kind
 		selectedGitUpdated := hasAfter && msg.stage == worktreeGitStage && slices.ContainsFunc(msg.worktrees, func(item item) bool { return item.target == after.target })
-		refreshPreview := selectedGitUpdated || (msg.stage == worktreeMuxStage && changed)
+		selectedPRUpdated := hasAfter && msg.stage == worktreePRStage && slices.ContainsFunc(msg.worktrees, func(item item) bool { return item.target == after.target })
+		refreshPreview := selectedGitUpdated || selectedPRUpdated || (msg.stage == worktreeMuxStage && changed)
 		if msg.err == nil && !m.diff && hasAfter && after.kind == "worktree" && refreshPreview {
 			return m, m.requestPreview(after)
 		}
@@ -1064,8 +1155,11 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case worktreeActionMsg:
 		m.action, m.actionTarget, m.actionBackend, m.err = actionNone, item{}, "", msg.err
-		if msg.action == actionRemoveSession {
+		if msg.action == actionRemoveSession || msg.action == actionRenameSession {
 			m.restoreSessionSelection = msg.err == nil
+			if msg.action == actionRenameSession && msg.err == nil {
+				m.sessionSelectionAfterRemove = msg.selectTarget
+			}
 			if msg.err != nil {
 				m.sessionSelectionAfterRemove = ""
 			}
@@ -1073,12 +1167,12 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil && msg.notice != "" {
 			m.setNotice(msg.notice)
 		}
-		if msg.err == nil && (msg.action == actionAddWorktree || msg.action == actionRemoveWorktree) {
+		if msg.err == nil && (msg.action == actionAddWorktree || msg.action == actionRemoveWorktree || msg.action == actionCleanupWorktree) {
 			m.worktreesInFlight = true
 			m.worktreeGeneration++
 			return m, refreshWorktreeList(m.cwd, m.worktreeGeneration)
 		}
-		if msg.err == nil && msg.action == actionRemoveSession {
+		if msg.err == nil && (msg.action == actionRemoveSession || msg.action == actionRenameSession) {
 			m.sessionsInFlight = true
 			m.sessionGeneration++
 			return m, refreshSessions(m.sessionGeneration)
@@ -1248,11 +1342,26 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleActionKey(msg)
 	}
 	if key == "?" {
+		m.clearActionError()
 		m.help, m.helpOffset = true, 0
 		return m, nil
 	}
 	if key == " " {
 		return m, m.openActionMenu()
+	}
+	if m.livePreviewPaused() && (key == "G" || key == "end") {
+		m.clearActionError()
+		m.previewOffset = m.previewBottomOffset(m.preview.lines)
+		m.previewFocused = true
+		return m, nil
+	}
+	if m.tab == tabSessions && key == "ctrl+r" {
+		m.clearActionError()
+		target := m.selectedTarget()
+		m.sessionSortRecent = !m.sessionSortRecent
+		m.setNotice("Sessions: " + map[bool]string{true: "Recent", false: "Grouped"}[m.sessionSortRecent])
+		m.restoreSelection(target)
+		return m, nil
 	}
 	if m.tab == tabSessions && (key == "ctrl+j" || key == "ctrl+k" || key == "ctrl+n" || key == "ctrl+p") {
 		delta := 1
@@ -1266,6 +1375,7 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.tab == tabSessions && key == "ctrl+d" {
+		m.clearActionError()
 		if selected, ok := m.selected(); ok {
 			m.beginRemove(selected)
 		} else {
@@ -1408,7 +1518,6 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.err = nil
 	if m.tab == tabSessions && msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
 		m.filter = true
 		m.filterInputs[m.tab].SetValue(m.query)
@@ -1437,6 +1546,10 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q":
 		return m, tea.Quit
 	case "esc":
+		if m.err != nil {
+			m.err = nil
+			return m, nil
+		}
 		if m.query != "" {
 			m.query, m.queries[m.tab], m.index = "", "", 0
 			m.filterInputs[m.tab].SetValue("")
@@ -1447,21 +1560,27 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	case "tab":
+		m.clearActionError()
 		return m.switchTab((m.tab + 1) % tabCount)
 	case "shift+tab":
+		m.clearActionError()
 		return m.switchTab((m.tab - 1 + tabCount) % tabCount)
 	case "ctrl+v":
+		m.clearActionError()
 		return m, m.togglePreview()
 	case "t":
+		m.clearActionError()
 		return m, m.openThemePicker()
 	case "ctrl+f":
 		if m.tab == tabSessions {
+			m.clearActionError()
 			return m, m.cycleSessionFilter()
 		}
 	case "s":
 		if m.tab != tabAgents {
 			return m, nil
 		}
+		m.clearActionError()
 		target := m.selectedTarget()
 		m.scope = m.scope.toggle()
 		m.err = saveScopeMode(m.scope)
@@ -1475,23 +1594,27 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.preview, m.loading = previewData{}, false
 	case "/":
+		m.clearActionError()
 		m.filter = true
 		m.filterInputs[m.tab].SetValue(m.query)
 		return m, m.filterInputs[m.tab].Focus()
 	case "a":
 		if m.tab == tabWorktrees {
-			m.action, m.err = actionAddWorktree, nil
+			m.clearActionError()
+			m.action = actionAddWorktree
 			m.actionTextInput.SetValue("")
 			m.lastClickTarget, m.lastClickAt = "", time.Time{}
 			return m, m.actionTextInput.Focus()
 		}
 	case "r":
+		m.clearActionError()
 		if selected, ok := m.selected(); ok {
 			m.beginRemove(selected)
 		}
 		m.lastClickTarget, m.lastClickAt = "", time.Time{}
 	case "o":
 		if m.tab != tabSessions {
+			m.clearActionError()
 			if selected, ok := m.selected(); ok {
 				pr := m.gitItem(selected)
 				m.err = nil
@@ -1502,6 +1625,7 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "d":
 		if m.tab != tabSessions {
+			m.clearActionError()
 			if selected, ok := m.selected(); ok {
 				m.diff, m.loading, m.panelFocus = true, true, panelLeft
 				m.diffRequest++
@@ -1510,6 +1634,7 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		if selected, ok := m.selected(); ok {
+			m.clearActionError()
 			m.selection, m.chosen = selected, true
 			return m, tea.Quit
 		}
@@ -1596,6 +1721,7 @@ func (m dashboardModel) handleActionMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		}
 		entry := entries[m.actionMenuIndex%len(entries)]
 		m.actionMenu = false
+		m.clearActionError()
 		switch entry.action {
 		case menuOpen:
 			if selected, ok := m.selected(); ok {
@@ -1615,6 +1741,31 @@ func (m dashboardModel) handleActionMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 					return worktreeActionMsg{notice: fmt.Sprintf("Opened PR #%d", pr.prNumber), err: openPullRequest(selected.cwd, pr.prNumber)}
 				}
 			}
+		case menuCopyPath, menuCopyName, menuCopyPRURL:
+			if selected, ok := m.selected(); ok {
+				value, label := selected.cwd, "path"
+				switch entry.action {
+				case menuCopyName:
+					if m.tab == tabSessions {
+						value, label = selected.title, "session name"
+					} else {
+						value, label = m.gitItem(selected).branch, "branch"
+					}
+				case menuCopyPRURL:
+					value, label = m.gitItem(selected).prURL, "PR URL"
+				}
+				return m, func() tea.Msg {
+					return worktreeActionMsg{notice: "Copied " + label, err: clipboard.WriteAll(value)}
+				}
+			}
+		case menuRename:
+			if selected, ok := m.selected(); ok {
+				return m, m.beginRename(selected)
+			}
+		case menuCleanup:
+			if selected, ok := m.selected(); ok {
+				m.beginCleanup(selected)
+			}
 		case menuRemove:
 			if selected, ok := m.selected(); ok {
 				m.beginRemove(selected)
@@ -1629,28 +1780,32 @@ func (m dashboardModel) handleActionMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	switch m.action {
-	case actionAddWorktree:
+	case actionAddWorktree, actionRenameSession:
 		switch key {
 		case "esc":
 			m.action = actionNone
 			m.actionTextInput.SetValue("")
 			m.actionTextInput.Blur()
 		case "enter":
-			branch := strings.TrimSpace(m.actionTextInput.Value())
-			if branch == "" {
+			value := strings.TrimSpace(m.actionTextInput.Value())
+			if value == "" {
 				return m, nil
 			}
+			action, target := m.action, m.actionTarget
 			m.action, m.err = actionRunning, nil
 			m.actionTextInput.Blur()
 			return m, func() tea.Msg {
-				return worktreeActionMsg{action: actionAddWorktree, notice: "Created worktree " + branch, err: addWorktree(m.cwd, branch, backendAuto)}
+				if action == actionRenameSession {
+					return worktreeActionMsg{action: action, notice: "Renamed session to " + value, selectTarget: value, err: renameTmuxSession(target, value)}
+				}
+				return worktreeActionMsg{action: action, notice: "Created worktree " + value, err: addWorktree(m.cwd, value, backendAuto)}
 			}
 		default:
 			var command tea.Cmd
 			m.actionTextInput, command = m.actionTextInput.Update(msg)
 			return m, command
 		}
-	case actionRemoveWorktree, actionRemoveSession:
+	case actionRemoveWorktree, actionRemoveSession, actionCleanupWorktree:
 		switch key {
 		case "enter":
 			action, target, backend := m.action, m.actionTarget, m.actionBackend
@@ -1658,6 +1813,9 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg {
 				if action == actionRemoveSession {
 					return worktreeActionMsg{action: action, notice: "Removed session " + target.title, err: removeTmuxSession(target)}
+				}
+				if action == actionCleanupWorktree {
+					return worktreeActionMsg{action: action, notice: "Cleaned up stale worktree record", err: cleanupPrunableWorktree(m.cwd, target)}
 				}
 				return worktreeActionMsg{action: action, notice: "Removed worktree " + m.displayWorktree(target), err: removeWorktree(m.cwd, target.cwd, backend)}
 			}
@@ -1699,6 +1857,28 @@ func (m dashboardModel) clampPreviewOffset(offset int, lines []string) int {
 }
 func (m dashboardModel) previewBottomOffset(lines []string) int {
 	return clampLineOffset(len(lines), lines, m.previewVisibleHeight())
+}
+
+func (m dashboardModel) livePreviewPaused() bool {
+	if !m.preview.followBottom || m.preview.target == "" || m.previewOffset == m.previewBottomOffset(m.preview.lines) {
+		return false
+	}
+	selected, ok := m.selected()
+	return ok && (selected.kind == "session" || (selected.kind == "tmux-session" && selected.muxSessionID != ""))
+}
+
+func (m dashboardModel) previewFollowLabel() string {
+	if !m.preview.followBottom {
+		return ""
+	}
+	selected, ok := m.selected()
+	if !ok || (selected.kind != "session" && (selected.kind != "tmux-session" || selected.muxSessionID == "")) {
+		return ""
+	}
+	if !m.livePreviewPaused() {
+		return "FOLLOW"
+	}
+	return fmt.Sprintf("PAUSED %d/%d", min(len(m.preview.lines), m.previewOffset+m.previewVisibleHeight()), len(m.preview.lines))
 }
 func (m dashboardModel) clampDiffOffset(offset int, lines []string) int {
 	return clampLineOffset(offset, lines, m.diffVisibleHeight())
@@ -1767,7 +1947,8 @@ func (m dashboardModel) helpLines() []string {
 		"g/Home, G/End First/last (Agents/Worktrees)",
 		"Ctrl+j/k/n/p  Move (Sessions)",
 		"Home/End      First/last (Sessions)",
-		"Session icons " + dashboardIcon(" live,  configured,  discovered", "L live, C configured, R discovered") + " (live > configured > discovered)",
+		"Session source " + dashboardIcon(" live,  configured,  discovered", "L live, C configured, R discovered"),
+		"Session activity " + dashboardIcon("󰌽 self, 󰘴 attached, 󰖲 detached", "SELF, ATT, LIVE"),
 		"Enter         Open selected row",
 		"1–9           Open row (Agents/Worktrees)",
 		"Click         Select row",
@@ -1778,6 +1959,7 @@ func (m dashboardModel) helpLines() []string {
 		"Type          Search Sessions (g/G stay searchable)",
 		"Space         Selected-item actions",
 		"Ctrl+f        Cycle Session filter",
+		"Ctrl+r        Toggle grouped/recent Session order",
 		"Enter / Esc   Open / clear session search",
 		"d             Open Git diff (Agents/Worktrees)",
 		"Shift+←/→     Focus split panel",
@@ -1788,6 +1970,7 @@ func (m dashboardModel) helpLines() []string {
 		"PgUp/PgDn     Page diff/help; preview in Sessions",
 		"Ctrl+u/d      Page preview, diff, or help",
 		"              (Ctrl+d only removes in Sessions)",
+		"G/End         Resume FOLLOW in a paused live preview",
 		"g/G, Home/End Top/bottom in diff or help",
 		"h/l           Pan long lines",
 		"Ctrl+v        Toggle this tab's runtime preview",
@@ -1853,6 +2036,15 @@ func (m dashboardModel) rows() []item {
 		})
 	}
 	if m.query == "" {
+		if m.tab == tabSessions && m.sessionSortRecent {
+			sort.SliceStable(rows, func(i, j int) bool {
+				if !rows[i].lastAttached.Equal(rows[j].lastAttached) {
+					return rows[i].lastAttached.After(rows[j].lastAttached)
+				}
+				left, right := sessionSortRank(rows[i]), sessionSortRank(rows[j])
+				return left < right || (left == right && rows[i].title < rows[j].title)
+			})
+		}
 		return rows
 	}
 	if m.tab == tabSessions {
@@ -1923,7 +2115,7 @@ func mergeWorktreeData(current, incoming []item, stage worktreeStage) []item {
 			if old, ok := existing[fresh.target]; ok {
 				branchChanged := old.branch != fresh.branch
 				old.kind, old.cwd, old.branch, old.title = fresh.kind, fresh.cwd, fresh.branch, fresh.title
-				old.current = old.current || fresh.current
+				old.current, old.locked, old.prunable = old.current || fresh.current, fresh.locked, fresh.prunable
 				if branchChanged {
 					old.prNumber, old.prState, old.prDraft, old.prCheck, old.prLoaded = 0, "", false, "", false
 					old.dirty, old.gitLoaded = false, false
@@ -1982,7 +2174,7 @@ func mergeWorktreeData(current, incoming []item, stage worktreeStage) []item {
 }
 
 func copyPRStatus(dst *item, src item) {
-	dst.prNumber, dst.prState, dst.prDraft, dst.prCheck, dst.prLoaded = src.prNumber, src.prState, src.prDraft, src.prCheck, src.prLoaded
+	dst.prNumber, dst.prState, dst.prDraft, dst.prCheck, dst.prFailedChecks, dst.prURL, dst.prLoaded = src.prNumber, src.prState, src.prDraft, src.prCheck, src.prFailedChecks, src.prURL, src.prLoaded
 }
 
 func (m dashboardModel) contentHeight() int { return max(0, m.height-3) }

@@ -67,17 +67,25 @@ type item struct {
 	prState          string
 	prDraft          bool
 	prCheck          string
+	prFailedChecks   []string
+	prURL            string
 	prLoaded         bool
 	sessionSource    string
 	tmuxWindows      int
+	tmuxAttached     int
+	lastAttached     time.Time
+	locked           bool
+	prunable         bool
 	added            int
 	removed          int
 	untracked        int
 }
 
 type worktree struct {
-	path   string
-	branch string
+	path     string
+	branch   string
+	locked   bool
+	prunable bool
 }
 
 type contextItem struct {
@@ -327,12 +335,14 @@ func listWorktreeItems(cwd string) ([]item, error) {
 	items := make([]item, 0, len(worktrees))
 	for _, wt := range worktrees {
 		items = append(items, item{
-			kind:    "worktree",
-			target:  wt.path,
-			cwd:     wt.path,
-			branch:  wt.branch,
-			title:   wt.branch,
-			current: samePath(wt.path, current),
+			kind:     "worktree",
+			target:   wt.path,
+			cwd:      wt.path,
+			branch:   wt.branch,
+			title:    wt.branch,
+			current:  samePath(wt.path, current),
+			locked:   wt.locked,
+			prunable: wt.prunable,
 		})
 	}
 	return items, nil
@@ -372,6 +382,7 @@ func agentGitDetails(agents []item) []item {
 		item.prLoaded = loaded
 		if pr, ok := pullRequestForBranch(item.cwd, item.branch, pullRequests[item.branch]); ok {
 			item.prNumber, item.prState, item.prDraft, item.prCheck = pr.Number, pr.State, pr.Draft, pr.Check
+			item.prFailedChecks, item.prURL = pr.FailedChecks, pr.URL
 		}
 		return item
 	})
@@ -606,6 +617,8 @@ func worktreePRDetails(repo string, items []item) []item {
 			items[index].prState = pr.State
 			items[index].prDraft = pr.Draft
 			items[index].prCheck = pr.Check
+			items[index].prFailedChecks = pr.FailedChecks
+			items[index].prURL = pr.URL
 		}
 	}
 	return items
@@ -683,6 +696,10 @@ func parseWorktrees(output []byte) []worktree {
 			current.path = strings.TrimPrefix(value, "worktree ")
 		case strings.HasPrefix(value, "branch refs/heads/"):
 			current.branch = strings.TrimPrefix(value, "branch refs/heads/")
+		case strings.HasPrefix(value, "locked"):
+			current.locked = true
+		case strings.HasPrefix(value, "prunable"):
+			current.prunable = true
 		}
 	}
 	appendCurrent()

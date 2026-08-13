@@ -28,7 +28,9 @@ type pullRequest struct {
 	} `json:"headRepositoryOwner"`
 	IsCrossRepository *bool             `json:"isCrossRepository"`
 	StatusCheckRollup []checkRollupItem `json:"statusCheckRollup"`
+	URL               string            `json:"url"`
 	Check             string            `json:"-"`
+	FailedChecks      []string          `json:"-"`
 	IdentityAvailable bool              `json:"-"`
 }
 
@@ -38,6 +40,8 @@ type pullRequestRepository struct {
 }
 
 type checkRollupItem struct {
+	Name       string `json:"name"`
+	Context    string `json:"context"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	State      string `json:"state"`
@@ -65,11 +69,16 @@ func listPullRequests(repo string) (map[string][]pullRequest, bool) {
 	defer cancel()
 	// ponytail: cap PR lookup; add pagination if repositories with 100+ PRs miss active branches.
 	baseFields := "number,state,isDraft,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository"
-	fields := baseFields + ",statusCheckRollup"
+	fields := baseFields + ",url,statusCheckRollup"
 	cmd := boundedCommand(ctx, "gh", "pr", "list", "--state", "all", "--limit", "100", "--json", fields)
 	cmd.Dir = repo
 	output, err := cmd.Output()
 	identityAvailable := true
+	if err != nil {
+		cmd = boundedCommand(ctx, "gh", "pr", "list", "--state", "all", "--limit", "100", "--json", baseFields+",statusCheckRollup")
+		cmd.Dir = repo
+		output, err = cmd.Output()
+	}
 	if err != nil {
 		cmd = boundedCommand(ctx, "gh", "pr", "list", "--state", "all", "--limit", "100", "--json", baseFields)
 		cmd.Dir = repo
@@ -111,6 +120,7 @@ func parsePullRequests(output []byte) map[string][]pullRequest {
 			continue
 		}
 		pr.Check = aggregateCheckState(pr.StatusCheckRollup)
+		pr.FailedChecks = failedCheckNames(pr.StatusCheckRollup)
 		result[pr.HeadRefName] = append(result[pr.HeadRefName], pr)
 	}
 	return result
@@ -214,14 +224,15 @@ func githubRepository(remote string) string {
 func aggregateCheckState(checks []checkRollupItem) string {
 	result := ""
 	for _, check := range checks {
+		if failedCheck(check) {
+			return checkFailure
+		}
 		status := strings.ToUpper(check.Status)
 		if check.State != "" {
 			status = strings.ToUpper(check.State)
 		}
 		conclusion := strings.ToUpper(check.Conclusion)
 		switch {
-		case conclusion == "FAILURE" || conclusion == "CANCELLED" || conclusion == "TIMED_OUT" || conclusion == "STARTUP_FAILURE" || conclusion == "ACTION_REQUIRED" || status == "FAILURE" || status == "ERROR":
-			return checkFailure
 		case status == "IN_PROGRESS" || status == "QUEUED" || status == "PENDING" || status == "REQUESTED" || status == "WAITING":
 			result = checkPending
 		case result == "" && (conclusion == "SUCCESS" || conclusion == "NEUTRAL" || conclusion == "SKIPPED" || status == "SUCCESS"):
@@ -229,6 +240,32 @@ func aggregateCheckState(checks []checkRollupItem) string {
 		}
 	}
 	return result
+}
+
+func failedCheck(check checkRollupItem) bool {
+	status := strings.ToUpper(check.Status)
+	if check.State != "" {
+		status = strings.ToUpper(check.State)
+	}
+	switch strings.ToUpper(check.Conclusion) {
+	case "FAILURE", "CANCELLED", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED":
+		return true
+	}
+	return status == "FAILURE" || status == "ERROR"
+}
+
+func failedCheckNames(checks []checkRollupItem) []string {
+	failed := make([]string, 0, len(checks))
+	for _, check := range checks {
+		name := strings.TrimSpace(check.Name)
+		if name == "" {
+			name = strings.TrimSpace(check.Context)
+		}
+		if failedCheck(check) && name != "" {
+			failed = append(failed, name)
+		}
+	}
+	return failed
 }
 
 type cachedPRStatus struct {

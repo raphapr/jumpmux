@@ -101,6 +101,37 @@ func removeWorktree(repo, path string, backend worktreeBackend) error {
 	return nil
 }
 
+func cleanupPrunableWorktree(repo string, selected item) error {
+	if !selected.prunable || selected.locked || selected.current {
+		return errors.New("the selected worktree is not safe to clean up")
+	}
+	root, err := primaryWorktree(repo)
+	if err != nil {
+		return err
+	}
+	worktrees, _, err := listWorktrees(root)
+	if err != nil {
+		return err
+	}
+	stillPrunable := false
+	for _, worktree := range worktrees {
+		if samePath(worktree.path, selected.cwd) && worktree.prunable && !worktree.locked {
+			stillPrunable = true
+			break
+		}
+	}
+	if !stillPrunable {
+		return errors.New("the selected worktree changed; refresh and try again")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), worktreeActionTimeout)
+	defer cancel()
+	output, err := runActionCommand(ctx, root, "git", "worktree", "prune", "--expire", "now")
+	if err != nil {
+		return actionError("clean up worktrees", output, err)
+	}
+	return nil
+}
+
 func actionWorktreeBackend(backend worktreeBackend) (worktreeBackend, error) {
 	if backend == backendAuto {
 		configured, err := loadWorktreeBackend()
