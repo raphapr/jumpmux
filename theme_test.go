@@ -127,7 +127,7 @@ func TestThemePickerFiltersAndCancels(t *testing.T) {
 
 func TestGitAndPRIcons(t *testing.T) {
 	now := time.Unix(0, 0)
-	if got := gitStatusText(item{}, now); got != spinnerFrames[0] {
+	if got := gitStatusText(item{}, now); got != spinnerFrame(now) {
 		t.Fatalf("loading Git status = %q", got)
 	}
 	if got := gitStatusText(item{gitLoaded: true, dirty: true, untracked: 1}, now); got != dashboardIcon(gitDiffIcon, "*") {
@@ -151,7 +151,7 @@ func TestGitAndPRIcons(t *testing.T) {
 		{item{prNumber: 4, prState: "CLOSED"}, "#4 " + dashboardIcon(prClosedIcon, "X")},
 		{item{prNumber: 5, prState: "OPEN", prCheck: checkSuccess}, "#5 " + dashboardIcon(prOpenIcon, "O") + " " + dashboardIcon(checkSuccessIcon, "+")},
 		{item{prNumber: 6, prState: "OPEN", prCheck: checkFailure}, "#6 " + dashboardIcon(prOpenIcon, "O") + " " + dashboardIcon(checkFailureIcon, "x")},
-		{item{prNumber: 7, prState: "OPEN", prCheck: checkPending}, "#7 " + dashboardIcon(prOpenIcon, "O") + " " + spinnerFrames[0]},
+		{item{prNumber: 7, prState: "OPEN", prCheck: checkPending}, "#7 " + dashboardIcon(prOpenIcon, "O") + " " + spinnerFrame(now)},
 	}
 	for _, test := range cases {
 		if got := prText(test.item, now); got != test.want {

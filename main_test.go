@@ -51,6 +51,23 @@ func TestContextJSON(t *testing.T) {
 	}
 }
 
+func TestSessionIconPrecedenceAcrossContext(t *testing.T) {
+	defer func() { nerdFontEnabled = true }()
+	nerdFontEnabled = false
+	items := []item{
+		{kind: "tmux-session", title: "live", sessionSource: "config", muxSessionID: "$1"},
+		{kind: "tmux-session", title: "configured", sessionSource: "config"},
+		{kind: "tmux-session", title: "discovered", sessionSource: "discovered"},
+	}
+	want := []string{"L", "C", "R"}
+	for index, session := range items {
+		icon, _ := sessionIcon(session)
+		if icon != want[index] || contextJSON([]item{session})[0].Icon != want[index] {
+			t.Fatalf("session %q icon = %q / %#v, want %q", session.title, icon, contextJSON([]item{session})[0], want[index])
+		}
+	}
+}
+
 func TestContextCommandValidation(t *testing.T) {
 	for _, args := range [][]string{{"sessions"}, {"sessions", "list", "--yaml"}, {"agents", "connect", "%1"}, {"sessions", "connect", "dev"}, {"sessions", "last", "extra"}, {"worktrees", "other", "x"}} {
 		if handled, err := contextCommand(args); !handled || err == nil {

@@ -8,7 +8,7 @@ jumpmux is a terminal dashboard for moving between Git worktrees, live agents, a
 - **Worktrees:** Worktrees from the current repository with Project, Worktree, Git, PR, Mux, Age, and Agent columns.
 - **Sessions:** Configured locations, discovered repositories, and live tmux sessions with Session, Path, and Windows columns.
 
-Selecting an agent focuses its tmux pane. Selecting a worktree focuses its agent pane or its jumpmux tmux window. The first jump creates a window in that worktree. Later jumps reuse it. Selecting a live session switches the current tmux client. Selecting an inactive configured session creates it detached at its configured path, then switches to it.
+Selecting an agent focuses its tmux pane. Selecting a worktree focuses its agent pane or its jumpmux tmux window. The first jump creates a window in that worktree. Later jumps reuse it. Inside tmux, selecting a live session switches the current client; selecting an inactive configured session creates it detached at its configured path, then switches to it. Outside tmux, selecting either attaches to the named session, creating a configured session when needed.
 
 ## Requirements
 
@@ -34,54 +34,59 @@ The extension reports the current pane's agent state.
 
 ## Keys
 
-| Key                          | Action                                                                 |
-| ---------------------------- | ---------------------------------------------------------------------- |
-| Mouse click / double-click   | Select / focus an agent, worktree, or tmux session                     |
-| Mouse wheel                  | Scroll the table, focused panel, or Help                               |
-| `j`/`k`, arrows              | Move in Agents/Worktrees, browse themes, or scroll a diff panel        |
-| `Ctrl+j` / `Ctrl+k`          | Move the selection in Sessions                                         |
-| `1`–`9`                      | Open that numbered row in Agents or Worktrees                          |
-| `Tab`                        | Switch tabs                                                            |
-| `Enter`                      | Focus the selected agent/worktree or switch/create a tmux session      |
-| `/`                          | Filter Agents or Worktrees                                             |
-| Type                         | Search Sessions immediately                                            |
-| `Ctrl+f`                     | Cycle Sessions through All, Live, Inactive, Configured, and Discovered |
-| `Shift+Left` / `Shift+Right` | Focus the left or right preview/diff panel                             |
-| `s`                          | Toggle agent scope between all and current tmux session                |
-| `t`                          | Open the theme picker                                                  |
-| `Enter` in the theme picker  | Apply the selected theme                                               |
-| `Esc` in the theme picker    | Restore the previous theme and close                                   |
-| Type in the theme picker     | Filter theme names                                                     |
-| `Enter` while filtering      | Accept an Agents/Worktrees filter or open a Session                    |
-| `Esc` while filtering        | Clear and close the filter                                             |
-| `d`                          | Open the selected Git diff from Agents or Worktrees                    |
-| `a`                          | Add a worktree from the Worktrees tab                                  |
-| `r`                          | Remove a worktree after confirmation                                   |
-| `Ctrl+d`                     | Remove a live tmux session after confirmation                          |
-| `o`                          | Open the selected PR from Agents or Worktrees                          |
-| `Ctrl+u` / `Ctrl+d`          | Page the focused preview, diff panel, or Help                          |
-| `h` / `l`, left/right        | Pan long preview or diff lines                                         |
-| `+` / `-`                    | Change preview height by 10%                                           |
-| `?`                          | Open Help                                                              |
-| `Esc`                        | Close a view, cancel an action, clear a filter, or quit the dashboard  |
-| `q`                          | Quit the dashboard or Help; close the diff view                        |
-| `Ctrl+C`                     | Quit from any state                                                    |
+| Key                                       | Action                                                                 |
+| ----------------------------------------- | ---------------------------------------------------------------------- |
+| Mouse click / double-click                | Select / focus an agent, worktree, or tmux session                     |
+| Mouse wheel                               | Scroll the table, focused panel, or Help                               |
+| `j`/`k`, arrows                           | Move in Agents/Worktrees, browse themes, or scroll a diff/help panel   |
+| `g`/`Home`, `G`/`End`                     | First/last row in Agents and Worktrees; top/bottom in diff or Help     |
+| `Ctrl+j` / `Ctrl+k` / `Ctrl+n` / `Ctrl+p` | Move the selection in Sessions                                         |
+| `Home` / `End`                            | First/last Session row                                                 |
+| `1`–`9`                                   | Open that numbered row in Agents or Worktrees                          |
+| `Tab` / `Shift+Tab`                       | Next / previous tab                                                    |
+| `Enter`                                   | Focus the selected agent/worktree or switch/create a tmux session      |
+| `/`                                       | Filter Agents or Worktrees                                             |
+| Type                                      | Search Sessions immediately                                            |
+| `Ctrl+f`                                  | Cycle Sessions through All, Live, Inactive, Configured, and Discovered |
+| `Shift+Left` / `Shift+Right`              | Focus the left or right preview/diff panel                             |
+| `Space`                                   | Open valid actions for the selected row                                |
+| `s`                                       | Toggle agent scope between all and current tmux session                |
+| `t`                                       | Open the theme picker                                                  |
+| `Enter` in the theme picker               | Apply the selected theme                                               |
+| `Esc` in the theme picker                 | Restore the previous theme and close                                   |
+| Type in the theme picker                  | Filter theme names                                                     |
+| `Enter` while filtering                   | Accept an Agents/Worktrees filter or open a Session                    |
+| `Esc` while filtering                     | Clear and close the filter                                             |
+| `d`                                       | Open the selected Git diff from Agents or Worktrees                    |
+| `a`                                       | Add a worktree from the Worktrees tab                                  |
+| `r`                                       | Remove a worktree after confirmation                                   |
+| `Ctrl+d`                                  | Remove a live tmux session after confirmation (Sessions only)          |
+| `o`                                       | Open the selected PR from Agents or Worktrees                          |
+| `PgUp` / `PgDn`                           | Page diff/Help, or the Session preview                                 |
+| `Ctrl+u` / `Ctrl+d`                       | Page the focused preview, diff panel, or Help (except Sessions)        |
+| `h` / `l`, left/right                     | Pan long preview or diff lines                                         |
+| `Ctrl+v`                                  | Toggle the current tab's runtime preview without saving configuration  |
+| `+` / `-`                                 | Change preview height by 10%                                           |
+| `?`                                       | Open Help                                                              |
+| `Esc`                                     | Close a view, cancel an action, clear a filter, or quit the dashboard  |
+| `q`                                       | Quit the dashboard or Help; close the diff view                        |
+| `Ctrl+C`                                  | Quit from any state                                                    |
 
 ## Dashboard behavior
 
 ### Layout
 
-The dashboard starts with an even table and preview split. `+` and `-` change the preview from 10% to 90%. jumpmux stores the value as `preview_size` in `$XDG_STATE_HOME/jumpmux/settings.json`, or `~/.local/state/jumpmux/settings.json` when `XDG_STATE_HOME` is unset.
+Below 60 columns, jumpmux starts table-only. `Ctrl+v` can force a preview for this launch without changing `[preview]` configuration. At 140 columns and wider, the table and preview sit side by side. Other sizes use the vertical split. `+` and `-` change the vertical preview from 10% to 90%. jumpmux stores that value as `preview_size` in `$XDG_STATE_HOME/jumpmux/settings.json`, or `~/.local/state/jumpmux/settings.json` when `XDG_STATE_HOME` is unset.
 
-The Worktrees preview splits into status and Git log panels on terminals at least 60 columns wide. The diff view splits into diff and file panels when space permits. `Shift+Left` and `Shift+Right` choose which panel receives scroll input.
+The Worktrees preview splits into status and Git log panels on terminals at least 60 columns wide. The diff view splits into diff and file panels when space permits. Click a preview or diff panel, or use `Shift+Left` and `Shift+Right`, to choose which panel receives scroll input. The header shows non-default modes such as SEARCH, PREVIEW, CONFIRM, THEME, or WORKING beside refresh status. Normal browsing has no mode label.
 
 ### Agents
 
 The Pi extension writes agent status records. jumpmux checks each record against `tmux list-panes` before displaying it. Set `JUMPMUX_STATE_DIR` to override the status directory. `jumpmux setup` honors `PI_CODING_AGENT_DIR`.
 
-The preview captures the last 200 lines from the selected pane every 500 ms. It keeps SGR colors and removes Pi's prompt and footer using tmux cursor geometry. New output keeps the preview at the bottom until you scroll away.
+The preview captures the last 200 lines from the selected pane every 500 ms while the terminal is focused. It keeps SGR colors and removes Pi's prompt and footer using tmux cursor geometry. New output keeps the preview at the bottom until you scroll away. Focus returns trigger an immediate data and selected-preview refresh; background terminals keep only the lightweight clock.
 
-Working agents show a Braille spinner. A status older than one hour shows `󰔛`. The Time column uses the success color below five minutes, warning below one hour, and a dim accent after one hour. The dashboard redraws time and animation every 250 ms.
+Working agents show a Braille spinner. A status older than one hour shows `󰔛`. The Time column uses the success color below five minutes, warning below one hour, and a dim accent after one hour. The dashboard redraws time and animation every 250 ms. Set `JUMPMUX_REDUCED_MOTION=1` for a static loader and a one-second clock tick; data and preview refreshes continue.
 
 ### Sessions
 
@@ -101,7 +106,7 @@ path = "~/src/api"
 
 Press `Ctrl+f` to cycle the Sessions table through All, Live, Inactive, Configured, and Discovered. The filter lasts until jumpmux exits.
 
-The Sessions table uses `` for live tmux sessions, `` for configured entries, and `` for discovered repositories. Plain mode uses `L`, `C`, and `R`. Live-session previews capture the active pane's current screen immediately, including alternate-screen applications such as `btop`, and refresh every 500 ms. Inactive configured entries show a creation hint. The table merges configured, discovered, and live entries by exact name. Without a filter, it sorts live sessions first, configured entries second, and discovered directories last, alphabetically within each group. Active fuzzy searches sort by relevance. Configured paths win for merged entries; live-only entries use the active pane path. `Ctrl+d` kills a live tmux session after confirmation; configured entries remain in the file.
+The Sessions table uses `` for live tmux sessions, `` for configured entries, and `` for discovered repositories. Plain mode uses `L`, `C`, and `R`. Icon precedence is live, then configured, then discovered when entries merge. Live-session previews capture the active pane's current screen immediately, including alternate-screen applications such as `btop`, and refresh every 500 ms while focused. Inactive configured entries show a creation hint. The table merges configured, discovered, and live entries by exact name. Without a filter, it sorts live sessions first, configured entries second, and discovered directories last, alphabetically within each group. Active fuzzy searches sort by relevance. Configured paths win for merged entries; live-only entries use the active pane path. `Ctrl+d` only removes a live tmux session after confirmation; configured entries remain in the file.
 
 ### Git
 

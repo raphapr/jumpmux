@@ -176,13 +176,17 @@ func listLiveAgents() ([]item, error) {
 		if cwd == "" {
 			cwd = pane.Path
 		}
-		title := cmp.Or(
-			strings.TrimSpace(state.Title),
-			strings.TrimSpace(pane.Title),
-			strings.TrimSpace(pane.WindowName),
-			strings.TrimSpace(state.SessionID),
-			"Pi",
-		)
+		title := strings.TrimSpace(state.Title)
+		if title != "" {
+			title = "π - " + title
+		} else {
+			title = cmp.Or(
+				strings.TrimSpace(pane.Title),
+				strings.TrimSpace(pane.WindowName),
+				strings.TrimSpace(state.SessionID),
+				"Pi",
+			)
+		}
 		agents = append(agents, item{
 			kind:           "session",
 			target:         pane.ID,

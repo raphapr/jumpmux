@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -425,7 +426,12 @@ func isStale(item item, now time.Time) bool {
 	return !item.updated.IsZero() && now.Sub(item.updated) > staleThreshold
 }
 
+func reducedMotion() bool { return os.Getenv("JUMPMUX_REDUCED_MOTION") == "1" }
+
 func spinnerFrame(now time.Time) string {
+	if reducedMotion() {
+		return "·"
+	}
 	index := int(now.UnixNano()/int64(clockInterval)) % len(spinnerFrames)
 	if index < 0 {
 		index += len(spinnerFrames)

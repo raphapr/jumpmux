@@ -386,6 +386,9 @@ func sessionByName(name string) (tmuxSession, bool, error) {
 		return tmuxSession{}, false, err
 	}
 	id := strings.TrimSpace(output)
+	if id == "" {
+		return tmuxSession{}, false, nil
+	}
 	if !validTmuxSessionID(id) {
 		return tmuxSession{}, false, errors.New("tmux returned an invalid session ID")
 	}

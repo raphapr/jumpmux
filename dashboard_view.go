@@ -29,9 +29,15 @@ func (m dashboardModel) View() string {
 	if m.diff {
 		return paintDashboardBackground(m.renderDiff(width))
 	}
-	parts := []string{m.renderHeader(width), m.renderTable(width)}
-	if m.previewShown() {
-		parts = append(parts, m.renderPreview(width))
+	parts := []string{m.renderHeader(width)}
+	if m.wideLayout() {
+		leftWidth := m.wideTableWidth()
+		parts = append(parts, lipgloss.JoinHorizontal(lipgloss.Top, m.renderTable(leftWidth), m.renderPreview(width-leftWidth)))
+	} else {
+		parts = append(parts, m.renderTable(width))
+		if m.previewShown() {
+			parts = append(parts, m.renderPreview(width))
+		}
 	}
 	parts = append(parts, m.renderFooter(width))
 	return paintDashboardBackground(strings.Join(parts, "\n"))
@@ -43,7 +49,64 @@ func (m dashboardModel) renderHeader(width int) string {
 	for tab, label := range labels {
 		parts[tab] = tabView(label, m.tab == tab)
 	}
-	return padANSI("  "+strings.Join(parts, borderStyle.Render(" │ ")), width) + "\n" + borderStyle.Render(strings.Repeat("─", width))
+	header := "  " + strings.Join(parts, borderStyle.Render(" │ "))
+	mode, state := m.modeLabel(), m.refreshState()
+	if mode != "" {
+		status := infoStyle.Render(mode)
+		if state != "" {
+			fullStatus := status + mutedStyle.Render(" · "+state)
+			if ansi.StringWidth(header+"  "+fullStatus) <= width {
+				status = fullStatus
+			}
+		}
+		header = ansi.Truncate(header, max(0, width-ansi.StringWidth(status)-2), "")
+		header += strings.Repeat(" ", max(2, width-ansi.StringWidth(header)-ansi.StringWidth(status))) + status
+	} else if state != "" && ansi.StringWidth(header+"  "+state) <= width {
+		header += strings.Repeat(" ", max(2, width-ansi.StringWidth(header)-ansi.StringWidth(state))) + mutedStyle.Render(state)
+	}
+	return padANSI(header, width) + "\n" + borderStyle.Render(strings.Repeat("─", width))
+}
+
+func (m dashboardModel) refreshState() string {
+	inFlight := [...]bool{m.agentsInFlight, m.worktreesInFlight, m.sessionsInFlight}[m.tab]
+	if inFlight {
+		return "refreshing"
+	}
+	viewErr := [...]error{m.agentErr, m.worktreeErr, m.sessionsErr}[m.tab]
+	updated := m.lastRefresh[m.tab]
+	if viewErr != nil {
+		return "stale"
+	}
+	if updated.IsZero() {
+		if (m.tab == tabAgents || m.tab == tabWorktrees) && len(m.gitCache) > 0 {
+			return "cached"
+		}
+		return "waiting"
+	}
+	if m.now.Sub(updated) > staleThreshold {
+		return "stale"
+	}
+	return ""
+}
+
+func (m dashboardModel) modeLabel() string {
+	switch {
+	case m.themePicker:
+		return "THEME"
+	case m.actionMenu:
+		return "CONFIRM"
+	case m.action != actionNone:
+		if m.action == actionRunning {
+			return "WORKING"
+		}
+		return "CONFIRM"
+	case m.filter:
+		return "SEARCH"
+	case m.previewFocused:
+		return "PREVIEW"
+	default:
+		return ""
+	}
 }
 
 func (m dashboardModel) tabLabels() [tabCount]string {
@@ -114,9 +177,18 @@ func (m dashboardModel) renderTable(width int) string {
 		if !loaded {
 			message = "Loading " + label + "…"
 		} else if m.query != "" {
-			message = "No matches for /" + safeText(m.query)
+			message = "No matches for /" + safeText(m.query) + ". Esc clears search."
 		} else if m.tab == tabSessions && m.sessionFilter != sessionFilterAll {
-			message = "No " + strings.ToLower(m.sessionFilter.label()) + " sessions."
+			message = "No " + strings.ToLower(m.sessionFilter.label()) + " sessions. Ctrl+f changes filter."
+		} else {
+			switch m.tab {
+			case tabSessions:
+				message += " Add [sessions.entries] or start tmux."
+			case tabWorktrees:
+				message += " Press a to add one."
+			default:
+				message += " Start Pi in tmux."
+			}
 		}
 		lines = append(lines, mutedStyle.Render("  "+message))
 	}
@@ -291,6 +363,9 @@ func (m dashboardModel) renderPreview(width int) string {
 	if m.themePicker {
 		return m.renderThemePicker(width, height)
 	}
+	if m.actionMenu {
+		return m.renderActionMenu(width, height)
+	}
 	if m.action == actionRemoveWorktree || m.action == actionRemoveSession {
 		title := "Remove worktree"
 		if m.action == actionRemoveSession {
@@ -314,15 +389,62 @@ func (m dashboardModel) renderPreview(width int) string {
 		return renderPanel("Preview", []string{message}, width, height, 0, 0, false, true)
 	}
 	if m.loading || m.preview.target == "" || m.preview.target != selected.target {
-		return renderPanel("Preview: "+m.displayWorktree(selected), []string{"Loading…"}, width, height, 0, 0, false, true)
+		return renderPanel(m.previewTitle(selected, "Preview: "+m.displayWorktree(selected)), []string{"Loading…"}, width, height, 0, 0, false, true)
 	}
+	title := m.previewTitle(selected, m.preview.title)
 	if m.tab != tabWorktrees || m.preview.rightTitle == "" || width < 60 {
-		return renderPanel(m.preview.title, m.preview.lines, width, height, m.previewOffset, m.xOffset, false, true)
+		return renderPanel(title, m.preview.lines, width, height, m.previewOffset, m.xOffset, false, true)
 	}
 	leftWidth := min(40, width/2)
-	left := renderPanel(m.preview.title, m.preview.lines, leftWidth, height, m.previewOffset, m.xOffset, false, m.panelFocus == panelLeft)
+	left := renderPanel(title, m.preview.lines, leftWidth, height, m.previewOffset, m.xOffset, false, m.panelFocus == panelLeft)
 	right := renderPanel(m.preview.rightTitle, styleGitLog(m.preview.rightLines), width-leftWidth, height, m.rightOffset, m.xOffset, false, m.panelFocus == panelRight)
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+}
+
+func (m dashboardModel) previewTitle(selected item, title string) string {
+	identity := selected.title
+	if identity == "" {
+		identity = m.displayWorktree(selected)
+	}
+	state := "cached"
+	switch selected.kind {
+	case "tmux-session":
+		if selected.muxSessionID != "" {
+			state = "live"
+		} else if selected.sessionSource == "config" {
+			state = "configured"
+		} else {
+			state = "discovered"
+		}
+	case "session":
+		if selected.status != "" {
+			state = selected.status
+		}
+	case "worktree":
+		if selected.gitLoaded {
+			state = "clean"
+			if selected.dirty {
+				state = "dirty"
+			}
+		}
+	}
+	return title + " · " + safeText(identity) + " · " + state
+}
+
+func (m dashboardModel) renderActionMenu(width, height int) string {
+	entries := m.actionMenuEntries()
+	lines := make([]string, 0, len(entries))
+	for index, entry := range entries {
+		prefix, style := "  ", mutedStyle
+		if index == m.actionMenuIndex {
+			prefix, style = "▌ ", infoStyle
+		}
+		lines = append(lines, style.Render(prefix+entry.label))
+	}
+	if len(lines) == 0 {
+		lines = []string{mutedStyle.Render("No actions match.")}
+	}
+	return renderPanel("Actions", lines, width, height, 0, 0, false, true)
 }
 
 func (m dashboardModel) removePreviewLines() []string {
@@ -332,7 +454,7 @@ func (m dashboardModel) removePreviewLines() []string {
 			"",
 			"This kills the live tmux session. Configured entries stay in config.toml.",
 			"",
-			"y Remove    n or Esc Cancel",
+			"Enter Remove    Esc Cancel",
 		}
 	}
 	behavior := "Native Git removes the worktree and keeps its branch."
@@ -345,13 +467,16 @@ func (m dashboardModel) removePreviewLines() []string {
 		"",
 		behavior,
 		"",
-		"y Remove    n or Esc Cancel",
+		"Enter Remove    Esc Cancel",
 	}
 }
 
 func (m dashboardModel) renderFooter(width int) string {
 	if m.themePicker {
 		return m.renderThemePickerFooter(width)
+	}
+	if m.actionMenu {
+		return padANSI("  "+footerCommand("j/k", "Move")+" "+footerCommand("Enter", "Run")+" "+footerCommand("Esc", "Cancel"), width)
 	}
 	switch m.action {
 	case actionAddWorktree:
@@ -363,7 +488,7 @@ func (m dashboardModel) renderFooter(width int) string {
 			create = footerCommand("↵", "Create")
 		}
 		suffix := "  " + create + " " + footerCommand("Esc", "Cancel")
-		input.Width = max(1, width-ansi.StringWidth(prefix)-ansi.StringWidth(suffix)-1)
+		input.Width = max(0, width-ansi.StringWidth(prefix)-ansi.StringWidth(suffix)-1)
 		input.SetCursor(input.Position())
 		return padANSI(prefix+input.View()+suffix, width)
 	case actionRemoveWorktree, actionRemoveSession:
@@ -371,7 +496,7 @@ func (m dashboardModel) renderFooter(width int) string {
 		if m.action == actionRemoveSession {
 			name = m.actionTarget.title
 		}
-		return padANSI("  "+warningStyle.Render("Remove "+safeText(name)+"?")+"  "+footerCommand("y", "Remove")+" "+footerCommand("n/Esc", "Cancel"), width)
+		return padANSI("  "+warningStyle.Render("Remove "+safeText(name)+"?")+"  "+footerCommand("Enter", "Remove")+" "+footerCommand("Esc", "Cancel"), width)
 	case actionRunning:
 		return padANSI("  "+infoStyle.Render("Working…"), width)
 	}
@@ -388,6 +513,9 @@ func (m dashboardModel) renderFooter(width int) string {
 	}
 	if viewErr != nil {
 		return m.renderFooterError(width, viewErr)
+	}
+	if m.notice != "" && m.now.Before(m.noticeUntil) {
+		return padANSI("  "+successStyle.Render(safeText(m.notice)), width)
 	}
 	if m.filter {
 		input := m.filterInputs[m.tab]
@@ -423,32 +551,31 @@ func (m dashboardModel) renderFooter(width int) string {
 	}
 	nextTab := [...]string{"Worktrees", "Sessions", "Agents"}[m.tab]
 	if m.tab == tabSessions {
-		candidates := []string{footerCommand("^j/k", "Move"), footerCommand("↵", "Open")}
-		if selected, ok := m.selected(); ok && selected.muxSessionID != "" {
-			candidates = append(candidates, footerCommand("^d", "Remove"))
-		}
-		candidates = append(candidates, footerCommand("^f", m.sessionFilter.label()))
+		candidates := []string{footerCommand("^j/k/n/p", "Move"), footerCommand("↵", "Open"), footerCommand("^f", m.sessionFilter.label())}
 		if m.query == "" {
 			candidates = append(candidates, footerCommand("type", "Search"))
 		} else {
 			candidates = append(candidates, footerCommand("Esc", "Clear"))
 		}
-		candidates = append(candidates, footerCommand("Tab", "Next"))
+		candidates = append(candidates, footerCommand("?", "Help"), footerCommand("Tab", "Next"))
+		if selected, ok := m.selected(); ok && selected.muxSessionID != "" {
+			candidates = append(candidates, footerCommand("^d", "Remove"))
+		}
+		candidates = append(candidates, footerCommand("Space", "Actions"))
 		return m.prioritizedFooterWithBase(width, candidates, []string{footerCommand("^c", "Quit")})
 	}
-	candidates := []string{footerCommand("↵", "Open")}
+	candidates := []string{footerCommand("↵", "Open"), footerCommand("d", "Diff")}
 	switch m.tab {
 	case tabWorktrees:
 		candidates = append(candidates, footerCommand("a", "Add"), footerCommand("r", "Remove"))
 	}
-	candidates = append(candidates, footerCommand("d", "Diff"))
 	if selected, ok := m.selected(); ok && m.gitItem(selected).prNumber != 0 {
 		candidates = append(candidates, footerCommand("o", "PR"))
 	}
 	if m.tab == tabAgents {
 		candidates = append(candidates, footerToggle("s", "Scope ("+m.scope.label()+")", m.scope == scopeSession))
 	}
-	candidates = append(candidates, footerCommand("/", filterLabel), footerCommand("Tab", nextTab), footerCommand("t", "Theme"))
+	candidates = append(candidates, footerCommand("/", filterLabel), footerCommand("Tab", nextTab), footerCommand("t", "Theme"), footerCommand("Space", "Actions"))
 	return m.prioritizedFooter(width, candidates)
 }
 
@@ -543,7 +670,7 @@ func (m dashboardModel) renderThemePickerFooter(width int) string {
 		apply = footerCommand("↵", "Apply")
 	}
 	suffix := "  " + apply + " " + footerCommand("Esc", "Cancel")
-	input.Width = max(1, width-3-ansi.StringWidth(input.Prompt)-ansi.StringWidth(suffix))
+	input.Width = max(0, width-3-ansi.StringWidth(input.Prompt)-ansi.StringWidth(suffix))
 	input.SetCursor(input.Position())
 	return padANSI("  "+input.View()+suffix, width)
 }
@@ -574,8 +701,11 @@ func (m dashboardModel) renderDiff(width int) string {
 	if rightWidth > 0 {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, body, renderPanel(fmt.Sprintf("Files (%d)", len(files)), files, rightWidth, height, m.rightOffset, m.xOffset, false, m.panelFocus == panelRight))
 	}
-	footer := "  " + keycapStyle.Render("[j/k]") + textStyle.Render(" scroll focused  ") + keycapStyle.Render("[Shift+←/→]") + textStyle.Render(" focus  ") + keycapStyle.Render("[q]") + textStyle.Render(" close")
-	return body + "\n" + padANSI(footer, width)
+	footer := m.prioritizedFooterWithBase(width,
+		[]string{footerCommand("j/k", "Scroll"), footerCommand("PgUp/Dn", "Page"), footerCommand("g/G", "Ends"), footerCommand("Shift+←/→", "Focus")},
+		[]string{footerCommand("q/Esc", "Close")},
+	)
+	return body + "\n" + footer
 }
 
 func renderPanel(title string, lines []string, width, height, offset, xOffset int, diff, focused bool) string {

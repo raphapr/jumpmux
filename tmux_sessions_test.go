@@ -284,6 +284,30 @@ func TestSessionOpenOutsideTmux(t *testing.T) {
 	}
 }
 
+func TestInactiveSessionCreatesWhenMissingLookupIsEmpty(t *testing.T) {
+	log := writeFakeTmux(t, `
+printf '%s\n' "$*" >> "$TMUX_LOG"
+case "$1" in
+  display-message) exit 0 ;;
+  new-session) printf '$2\037dev\037%%8\n' ;;
+esac
+`)
+	t.Setenv("TMUX", "/tmp/tmux,1,0")
+	t.Setenv("TMUX_LOG", log)
+	if err := jumpTmuxSession(item{kind: "tmux-session", target: "dev", cwd: t.TempDir(), sessionSource: "config"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"display-message -p -t =dev: #{session_id}", "new-session -d -P -F", "switch-client -t $2"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("inactive session log missing %q:\n%s", want, data)
+		}
+	}
+}
+
 func TestConfiguredSessionReusesLiveName(t *testing.T) {
 	log := writeFakeTmux(t, `
 printf '%s\n' "$*" >> "$TMUX_LOG"
@@ -478,7 +502,7 @@ func TestSessionRemoveShortcutConfirms(t *testing.T) {
 	if model.action != actionRemoveSession || model.actionTarget.target != "dev" {
 		t.Fatalf("remove session mode = %#v target=%#v", model.action, model.actionTarget)
 	}
-	if view := ansi.Strip(model.View()); !strings.Contains(view, "Remove session") || !strings.Contains(view, "kills the live tmux session") || !strings.Contains(view, "Remove dev?") {
+	if view := ansi.Strip(model.View()); !strings.Contains(view, "Remove session") || !strings.Contains(view, "kills the live tmux session") || !strings.Contains(view, "Remove dev?") || !strings.Contains(view, "Enter Remove") || !strings.Contains(view, "Esc Cancel") {
 		t.Fatalf("remove confirmation missing:\n%s", view)
 	}
 }
@@ -544,6 +568,39 @@ func TestSessionPreviewRefreshKeepsHistoryUntilCapture(t *testing.T) {
 	}
 }
 
+func TestSessionRemovalSelectsPreRemovalNeighbor(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		index      int
+		remaining  []item
+		wantTarget string
+	}{
+		{
+			name:       "middle selects successor even when configured row remains",
+			index:      1,
+			remaining:  []item{{target: "one"}, {target: "two", sessionSource: "config"}, {target: "three"}},
+			wantTarget: "three",
+		},
+		{name: "last selects predecessor", index: 2, remaining: []item{{target: "one"}, {target: "two"}}, wantTarget: "two"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := newDashboard("/repo")
+			model.tab, model.sessionsLoaded, model.index = tabSessions, true, test.index
+			model.sessions = []item{{target: "one", muxSessionID: "$1"}, {target: "two", muxSessionID: "$2", sessionSource: "config"}, {target: "three", muxSessionID: "$3"}}
+			selected, _ := model.selected()
+			model.beginRemove(selected)
+			updated, _ := model.Update(worktreeActionMsg{action: actionRemoveSession, notice: "removed"})
+			model = updated.(dashboardModel)
+			updated, _ = model.Update(sessionDataMsg{generation: model.sessionGeneration, sessions: test.remaining})
+			model = updated.(dashboardModel)
+			selected, ok := model.selected()
+			if !ok || selected.target != test.wantTarget {
+				t.Fatalf("selection = index %d, %#v", model.index, selected)
+			}
+		})
+	}
+}
+
 func TestSessionRefreshIgnoresSupersededResult(t *testing.T) {
 	model := newDashboard("/repo")
 	model.tab, model.sessionsLoaded, model.sessionGeneration = tabSessions, true, 2
@@ -601,12 +658,12 @@ func TestSessionsDashboardTab(t *testing.T) {
 	}
 	model.query = "dev"
 	footer := ansi.Strip(model.renderFooter(80))
-	for _, want := range []string{"^j/k Move", "↵ Open", "^f All", "Tab Next", "Esc Clear", "^c Quit"} {
+	for _, want := range []string{"^j/k/n/p Move", "↵ Open", "^f All", "? Help", "Esc Clear", "^c Quit"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("sessions footer missing %q: %s", want, footer)
 		}
 	}
-	if strings.Contains(footer, "Diff") || strings.Contains(footer, "PR") || strings.Contains(footer, "Scope") || strings.Contains(footer, "Add") || strings.Contains(footer, "? Help") || strings.Contains(footer, "q Quit") {
+	if strings.Contains(footer, "Diff") || strings.Contains(footer, "PR") || strings.Contains(footer, "Scope") || strings.Contains(footer, "Add") || strings.Contains(footer, "q Quit") {
 		t.Fatalf("sessions footer exposes unreachable or unrelated actions: %s", footer)
 	}
 }

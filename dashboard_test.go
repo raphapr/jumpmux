@@ -535,6 +535,191 @@ func TestSessionSearchFooterFits(t *testing.T) {
 	}
 }
 
+func TestDashboardNavigationPreviewModesAndWideLayout(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height = 80, 20
+	model.agents = []item{{kind: "session", target: "one", cwd: "/repo"}, {kind: "session", target: "two", cwd: "/two"}}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	model = updated.(dashboardModel)
+	if model.index != 1 {
+		t.Fatalf("G index = %d", model.index)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	model = updated.(dashboardModel)
+	if model.index != 0 {
+		t.Fatalf("g index = %d", model.index)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	if got := updated.(dashboardModel).tab; got != tabSessions {
+		t.Fatalf("Shift+Tab tab = %d", got)
+	}
+
+	model = newDashboard("/repo")
+	model.width, model.height, model.tab = 40, 12, tabSessions
+	model.sessions = []item{{kind: "tmux-session", target: "dev", title: "dev", muxSessionID: "$1"}}
+	if strings.Contains(ansi.Strip(model.View()), "Preview") {
+		t.Fatal("narrow dashboard showed the default preview")
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlV})
+	model = updated.(dashboardModel)
+	if model.previewOverride[tabSessions] != 1 || !strings.Contains(ansi.Strip(model.View()), "Preview") {
+		t.Fatalf("Ctrl+V did not force a narrow preview: %#v", model.previewOverride)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	model = updated.(dashboardModel)
+	if !model.actionMenu || model.filter {
+		t.Fatalf("Space did not open actions before session search: %#v", model)
+	}
+	actions := ansi.Strip(model.View())
+	if !strings.Contains(actions, "Open") || !strings.Contains(actions, "Remove") || strings.Contains(actions, "Diff") {
+		t.Fatalf("invalid session action menu:\n%s", actions)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(dashboardModel)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	model = updated.(dashboardModel)
+	if !model.filter || model.query != "g" {
+		t.Fatalf("Sessions g did not search: %#v", model)
+	}
+
+	model = newDashboard("/repo")
+	model.width, model.height, model.tab = 140, 20, tabWorktrees
+	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main"}}
+	model.preview = previewData{target: "/repo", title: "repo", lines: []string{"preview"}}
+	view := ansi.Strip(model.View())
+	if !model.wideLayout() || !strings.Contains(view, "# Project") || !strings.Contains(view, "preview") {
+		t.Fatalf("wide layout is not readable:\n%s", view)
+	}
+	updated, _ = model.Update(tea.MouseMsg{X: 139, Y: 4, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if got := updated.(dashboardModel); !got.previewFocused {
+		t.Fatal("wide preview click did not focus the preview")
+	}
+}
+
+func TestSessionsReservedKeysAndPreviewPaging(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height, model.tab, model.filter = 80, 20, tabSessions, true
+	model.sessions = []item{{kind: "tmux-session", target: "dev", title: "dev", muxSessionID: "$1"}}
+	model.filterInputs[tabSessions].Focus()
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	model = updated.(dashboardModel)
+	if !model.help || model.query != "" {
+		t.Fatalf("Sessions ? did not open Help before search: %#v", model)
+	}
+	model.help = false
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	model = updated.(dashboardModel)
+	if !model.actionMenu || model.query != "" {
+		t.Fatalf("Sessions Space did not open Actions before search: %#v", model)
+	}
+	model.actionMenu, model.filter = false, false
+	model.preview = previewData{target: "dev", kind: "tmux-session", lines: make([]string, 100)}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	model = updated.(dashboardModel)
+	if model.previewOffset != model.previewVisibleHeight() {
+		t.Fatalf("PgDn offset = %d, want %d", model.previewOffset, model.previewVisibleHeight())
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	model = updated.(dashboardModel)
+	if model.action != actionRemoveSession {
+		t.Fatalf("Ctrl+D action = %d, want remove session", model.action)
+	}
+}
+
+func TestWideWorktreePreviewPanelFocus(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height, model.tab = 160, 24, tabWorktrees
+	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main"}}
+	model.preview = previewData{target: "/repo", kind: "worktree", title: "main", lines: []string{"status"}, rightTitle: "Git Log", rightLines: []string{"commit"}}
+	if !model.wideLayout() || !model.hasRightPanel() {
+		t.Fatalf("wide worktree preview has no split: table=%d preview=%d", model.wideTableWidth(), model.previewRenderWidth())
+	}
+	updated, _ := model.Update(tea.MouseMsg{X: 150, Y: 4, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	model = updated.(dashboardModel)
+	if !model.previewFocused || model.panelFocus != panelRight {
+		t.Fatalf("wide right panel focus = preview:%v panel:%d", model.previewFocused, model.panelFocus)
+	}
+}
+
+func TestDashboardFocusAndReducedMotion(t *testing.T) {
+	model := newDashboard("/repo")
+	model.agentsInFlight, model.worktreesInFlight, model.sessionsInFlight = false, false, false
+	updated, command := model.Update(tea.BlurMsg{})
+	model = updated.(dashboardModel)
+	if model.focused || command != nil {
+		t.Fatalf("blur state = focused:%v command:%v", model.focused, command)
+	}
+	updated, command = model.Update(tickMsg(time.Now()))
+	model = updated.(dashboardModel)
+	if model.focused || command == nil || model.agentsInFlight || model.worktreesInFlight || model.sessionsInFlight {
+		t.Fatalf("blurred refresh launched work: %#v", model)
+	}
+	updated, command = model.Update(dashboardDataMsg(dashboardData{agents: []item{{kind: "session", target: "agent", cwd: "/repo"}}}))
+	model = updated.(dashboardModel)
+	if model.agentGitInFlight || command != nil {
+		t.Fatalf("blurred agent result launched Git refresh: %#v", model)
+	}
+	updated, command = model.Update(worktreeDataMsg{stage: worktreeListStage, generation: model.worktreeGeneration, worktrees: []item{{kind: "worktree", target: "/repo", cwd: "/repo"}}})
+	model = updated.(dashboardModel)
+	if model.worktreesInFlight || command != nil {
+		t.Fatalf("blurred worktree result launched detail refresh: %#v", model)
+	}
+	updated, command = model.Update(tea.FocusMsg{})
+	model = updated.(dashboardModel)
+	if !model.focused || command == nil || !model.agentsInFlight || !model.worktreesInFlight || !model.sessionsInFlight {
+		t.Fatalf("focus did not refresh immediately: %#v", model)
+	}
+	t.Setenv("JUMPMUX_REDUCED_MOTION", "1")
+	if spinnerFrame(time.Now()) != "·" {
+		t.Fatal("reduced motion spinner animates")
+	}
+}
+
+func TestDashboardWidthAndUnicodeSafety(t *testing.T) {
+	for _, width := range []int{40, 60, 80, 100, 140, 160} {
+		model := newDashboard("/repo")
+		model.width, model.height = width, 18
+		model.agents = []item{{kind: "session", target: "one", cwd: "/repo/表", title: "e\u0301 🚀 表", gitLoaded: true}}
+		for _, line := range strings.Split(model.View(), "\n") {
+			if got := ansi.StringWidth(line); got != width {
+				t.Fatalf("width %d line width = %d", width, got)
+			}
+		}
+		footer := ansi.Strip(model.renderFooter(width))
+		if ansi.StringWidth(footer) != width || strings.Contains(footer, "BROWSE") {
+			t.Fatalf("width %d footer = %q", width, footer)
+		}
+	}
+}
+
+func TestModeLabelMovesToHeader(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height = 100, 20
+	browseHeader := ansi.Strip(model.renderHeader(model.width))
+	if strings.Contains(browseHeader, "BROWSE") || strings.Contains(ansi.Strip(model.renderFooter(model.width)), "BROWSE") {
+		t.Fatalf("default mode rendered: header=%q footer=%q", browseHeader, ansi.Strip(model.renderFooter(model.width)))
+	}
+
+	model.agentsInFlight = false
+	model.lastRefresh[tabAgents] = model.now
+	if header := ansi.Strip(model.renderHeader(model.width)); strings.Contains(header, "updated") {
+		t.Fatalf("healthy refresh rendered: %q", header)
+	}
+
+	model.filter = true
+	searchHeader := ansi.Strip(model.renderHeader(model.width))
+	if !strings.Contains(searchHeader, "SEARCH") || strings.Contains(ansi.Strip(model.renderFooter(model.width)), "SEARCH") {
+		t.Fatalf("SEARCH placement: header=%q footer=%q", searchHeader, ansi.Strip(model.renderFooter(model.width)))
+	}
+
+	model.width = 40
+	narrowHeader := ansi.Strip(model.renderHeader(model.width))
+	if !strings.Contains(narrowHeader, "SEARCH") {
+		t.Fatalf("narrow header dropped mode: %q", narrowHeader)
+	}
+}
+
 func TestDashboardFooterAndHeaderWidths(t *testing.T) {
 	for _, width := range []int{40, 60, 100, 120} {
 		model := newDashboard("/repo")

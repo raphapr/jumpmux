@@ -28,6 +28,9 @@ func TestPIExtensionSetup(t *testing.T) {
 	if !strings.Contains(string(data), "timeout: 30000") {
 		t.Fatal("Pi lifecycle timeout is shorter than the tmux operation bound")
 	}
+	if !strings.Contains(string(data), `event.name ?? ""`) {
+		t.Fatal("Pi rename event does not report its new title directly")
+	}
 }
 
 func TestAgentPreviewCapturesPaneHistory(t *testing.T) {
@@ -130,9 +133,22 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(agents) != 1 || agents[0].pane != "%7" || agents[0].status != "working" || agents[0].title != "Fix live tracking" || !agents[0].current {
+	if len(agents) != 1 || agents[0].pane != "%7" || agents[0].status != "working" || agents[0].title != "π - Fix live tracking" || !agents[0].current {
 		t.Fatalf("unexpected live agents: %#v", agents)
 	}
+	t.Setenv("TMUX_PANE", "%7")
+	if err := setAgentStatus([]string{"update", "session-id", "", cwd, ""}); err != nil {
+		t.Fatal(err)
+	}
+	invalidateTmuxPaneCache()
+	unnamed, err := listLiveAgents()
+	if err != nil || len(unnamed) != 1 || unnamed[0].title != "Pi" {
+		t.Fatalf("unnamed agent title = %#v, %v", unnamed, err)
+	}
+	if err := setAgentStatus([]string{"update", "session-id", "", cwd, "Fix live tracking"}); err != nil {
+		t.Fatal(err)
+	}
+	invalidateTmuxPaneCache()
 	if err := jumpTmuxPane(agents[0]); err != nil {
 		t.Fatal(err)
 	}
@@ -200,10 +216,10 @@ esac
 func TestAgentStatusDisplay(t *testing.T) {
 	started := time.Unix(0, 0)
 	working := item{status: "working", updated: started}
-	if got := statusText(working, started); got != workingIcon+" "+spinnerFrames[0] {
+	if got := statusText(working, started); got != workingIcon+" "+spinnerFrame(started) {
 		t.Fatalf("working status = %q", got)
 	}
-	if got := statusText(working, started.Add(clockInterval)); got != workingIcon+" "+spinnerFrames[1] {
+	if got := statusText(working, started.Add(clockInterval)); got != workingIcon+" "+spinnerFrame(started.Add(clockInterval)) {
 		t.Fatalf("next spinner frame = %q", got)
 	}
 	if got := statusText(working, started.Add(staleThreshold+time.Second)); got != workingIcon+" "+dashboardIcon(staleAgentIcon, "old") {

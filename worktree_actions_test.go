@@ -118,7 +118,7 @@ func TestRemovalUsesConfirmedBackend(t *testing.T) {
 	if err := atomicWrite(config, []byte("worktree_backend = \"wt\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if command == nil || updated.(dashboardModel).action != actionRunning {
 		t.Fatal("removal command did not start")
 	}
@@ -240,7 +240,7 @@ func TestDashboardWorktreeActionModes(t *testing.T) {
 	if model.action != actionRemoveWorktree || model.actionTarget.cwd != "/feature" {
 		t.Fatalf("remove mode = %#v target=%#v", model.action, model.actionTarget)
 	}
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	model = updated.(dashboardModel)
 	if model.action != actionNone {
 		t.Fatal("remove cancellation did not close confirmation")
@@ -302,18 +302,18 @@ func TestRemovalConfirmationPreviewAndInput(t *testing.T) {
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	model = updated.(dashboardModel)
 	preview := ansi.Strip(model.renderPreview(model.width))
-	for _, expected := range []string{"Branch: feature", "Path:   /feature", "Native Git removes the worktree and keeps its branch.", "y Remove    n or Esc Cancel"} {
+	for _, expected := range []string{"Branch: feature", "Path:   /feature", "Native Git removes the worktree and keeps its branch.", "Enter Remove    Esc Cancel"} {
 		if !strings.Contains(preview, expected) {
 			t.Fatalf("removal preview missing %q:\n%s", expected, preview)
 		}
 	}
-	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'Y'}})
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if updated.(dashboardModel).action != actionRunning || command == nil {
-		t.Fatal("uppercase Y did not confirm removal")
+		t.Fatal("Enter did not confirm removal")
 	}
 	model.action = actionRemoveWorktree
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'N'}})
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if updated.(dashboardModel).action != actionNone {
-		t.Fatal("uppercase N did not cancel removal")
+		t.Fatal("Esc did not cancel removal")
 	}
 }

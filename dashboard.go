@@ -90,17 +90,24 @@ type dashboardModel struct {
 	themePickerIndex, themePickerOffset                                   int
 	themePickerPrevious                                                   colorScheme
 	sessionFilter                                                         sessionFilter
+	actionMenu                                                            bool
+	actionMenuIndex                                                       int
 	actionTextInput                                                       textinput.Model
 	preview                                                               previewData
 	previewOffset, diffOff, rightOffset, xOffset, previewSize             int
 	previewEnabled                                                        [tabCount]bool
+	previewOverride                                                       [tabCount]int8
 	panelFocus, helpOffset                                                int
+	previewFocused, focused                                               bool
 	loading                                                               bool
 	agentsLoaded, worktreesLoaded, sessionsLoaded                         bool
+	lastRefresh                                                           [tabCount]time.Time
 	agentsInFlight, agentGitInFlight, worktreesInFlight, sessionsInFlight bool
 	agentGitRefreshed                                                     time.Time
 	worktreePending                                                       int
 	err, agentErr, worktreeErr, sessionsErr                               error
+	notice                                                                string
+	noticeUntil                                                           time.Time
 	chosen                                                                bool
 	selection                                                             item
 	lastClickTarget                                                       string
@@ -108,6 +115,8 @@ type dashboardModel struct {
 	action                                                                dashboardAction
 	actionTarget                                                          item
 	actionBackend                                                         worktreeBackend
+	sessionSelectionAfterRemove                                           string
+	restoreSessionSelection                                               bool
 }
 
 type dashboardData struct {
@@ -126,6 +135,7 @@ type sessionDataMsg struct {
 }
 
 type dashboardAction uint8
+type menuAction uint8
 
 const (
 	panelLeft = iota
@@ -140,8 +150,21 @@ const (
 	actionRunning
 )
 
+const (
+	menuOpen menuAction = iota
+	menuDiff
+	menuPR
+	menuRemove
+)
+
+type actionMenuEntry struct {
+	action menuAction
+	label  string
+}
+
 type worktreeActionMsg struct {
 	action dashboardAction
+	notice string
 	err    error
 }
 
@@ -207,7 +230,7 @@ type previewTickMsg uint64
 func newDashboard(cwd string) dashboardModel {
 	nerdFontEnabled = true
 	applyColorScheme(schemeDefault)
-	return dashboardModel{cwd: cwd, now: time.Now(), width: 80, height: 24, previewSize: defaultPreviewSize, previewEnabled: [tabCount]bool{true, true, true}, scheme: schemeDefault, worktreeGeneration: 1, agentGit: map[string]item{}, gitCache: map[string]item{}, prCache: map[string]item{}, filterInputs: [tabCount]textinput.Model{newTextInput("/"), newTextInput("/"), newTextInput("/")}, themePickerInput: newTextInput("filter: "), actionTextInput: newTextInput(""), agentsInFlight: true, worktreesInFlight: true, sessionsInFlight: true}
+	return dashboardModel{cwd: cwd, now: time.Now(), width: 80, height: 24, previewSize: defaultPreviewSize, previewEnabled: [tabCount]bool{true, true, true}, scheme: schemeDefault, focused: true, worktreeGeneration: 1, agentGit: map[string]item{}, gitCache: map[string]item{}, prCache: map[string]item{}, filterInputs: [tabCount]textinput.Model{newTextInput("/"), newTextInput("/"), newTextInput("/")}, themePickerInput: newTextInput("filter: "), actionTextInput: newTextInput(""), agentsInFlight: true, worktreesInFlight: true, sessionsInFlight: true}
 }
 
 func newTextInput(prompt string) textinput.Model {
@@ -277,6 +300,9 @@ func (m *dashboardModel) closeThemePicker(save bool) tea.Cmd {
 		applyColorScheme(m.scheme)
 	} else {
 		m.err = saveColorScheme(m.scheme)
+		if m.err == nil {
+			m.setNotice("Theme: " + m.scheme.slug())
+		}
 	}
 	if selected, ok := m.selected(); ok {
 		return m.requestPreview(selected)
@@ -287,12 +313,100 @@ func (m *dashboardModel) closeThemePicker(save bool) tea.Cmd {
 func (m *dashboardModel) cycleSessionFilter() tea.Cmd {
 	target := m.selectedTarget()
 	m.sessionFilter = sessionFilters[(int(m.sessionFilter)+1)%len(sessionFilters)]
+	m.setNotice("Sessions: " + m.sessionFilter.label())
 	m.restoreSelection(target)
 	if selected, ok := m.selected(); ok {
 		return m.requestPreview(selected)
 	}
 	m.preview, m.loading = previewData{}, false
 	return nil
+}
+
+func (m *dashboardModel) setNotice(value string) {
+	m.notice, m.noticeUntil = value, m.now.Add(2*time.Second)
+}
+
+func (m *dashboardModel) togglePreview() tea.Cmd {
+	if m.previewShown() {
+		m.previewOverride[m.tab] = -1
+		m.preview, m.loading = previewData{}, false
+		m.setNotice("Preview hidden")
+		return nil
+	}
+	m.previewOverride[m.tab] = 1
+	m.setNotice("Preview shown")
+	if selected, ok := m.selected(); ok {
+		return m.requestPreview(selected)
+	}
+	return nil
+}
+
+func (m dashboardModel) actionMenuEntries() []actionMenuEntry {
+	selected, ok := m.selected()
+	if !ok {
+		return nil
+	}
+	entries := []actionMenuEntry{{menuOpen, "Open"}}
+	if m.tab != tabSessions {
+		entries = append(entries, actionMenuEntry{menuDiff, "Diff"})
+		if m.gitItem(selected).prNumber != 0 {
+			entries = append(entries, actionMenuEntry{menuPR, "Open PR"})
+		}
+	}
+	if (m.tab == tabSessions && selected.muxSessionID != "") || (m.tab == tabWorktrees && !selected.current && (len(m.worktrees) == 0 || !samePath(selected.cwd, m.worktrees[0].cwd))) {
+		entries = append(entries, actionMenuEntry{menuRemove, "Remove"})
+	}
+	return entries
+}
+
+func (m *dashboardModel) openActionMenu() tea.Cmd {
+	if _, ok := m.selected(); !ok {
+		return nil
+	}
+	m.actionMenu, m.actionMenuIndex = true, 0
+	m.lastClickTarget, m.lastClickAt = "", time.Time{}
+	return nil
+}
+
+func (m *dashboardModel) beginRemove(selected item) {
+	if m.tab == tabSessions {
+		if selected.muxSessionID == "" {
+			m.err = errors.New("the selected session is not running")
+			return
+		}
+		rows := m.rows()
+		m.sessionSelectionAfterRemove = ""
+		switch {
+		case m.index+1 < len(rows):
+			m.sessionSelectionAfterRemove = rows[m.index+1].target
+		case m.index > 0:
+			m.sessionSelectionAfterRemove = rows[m.index-1].target
+		}
+		m.action, m.actionTarget = actionRemoveSession, selected
+		return
+	}
+	if m.tab != tabWorktrees {
+		return
+	}
+	if selected.current {
+		m.err = errors.New("cannot remove the current worktree")
+		return
+	}
+	if len(m.worktrees) > 0 && samePath(selected.cwd, m.worktrees[0].cwd) {
+		m.err = errors.New("cannot remove the primary worktree")
+		return
+	}
+	backend, err := loadWorktreeBackend()
+	if err != nil {
+		m.err = err
+		return
+	}
+	backend, err = resolvedWorktreeBackend(backend)
+	if err != nil {
+		m.err = err
+		return
+	}
+	m.action, m.actionTarget, m.actionBackend, m.err = actionRemoveWorktree, selected, backend, nil
 }
 
 func (m *dashboardModel) resizeInputs() {
@@ -349,7 +463,7 @@ func newDashboardForLaunch(cwd, launchSession string, forceSession bool) dashboa
 }
 
 func (m dashboardModel) Init() tea.Cmd {
-	return tea.Batch(refreshAgents(), refreshWorktreeList(m.cwd, m.worktreeGeneration), refreshSessions(m.sessionGeneration), nextTick(), nextClock())
+	return tea.Batch(refreshAgents(), refreshWorktreeList(m.cwd, m.worktreeGeneration), refreshSessions(m.sessionGeneration), nextTick(), nextClock(), func() tea.Msg { return tea.EnableReportFocus() })
 }
 
 func nextTick() tea.Cmd {
@@ -357,7 +471,11 @@ func nextTick() tea.Cmd {
 }
 
 func nextClock() tea.Cmd {
-	return tea.Tick(clockInterval, func(t time.Time) tea.Msg { return clockMsg(t) })
+	interval := clockInterval
+	if reducedMotion() {
+		interval = time.Second
+	}
+	return tea.Tick(interval, func(t time.Time) tea.Msg { return clockMsg(t) })
 }
 
 func nextPreviewTick(request uint64) tea.Cmd {
@@ -387,6 +505,25 @@ func refreshWorktreeList(cwd string, generation uint64) tea.Cmd {
 		items, err := listWorktreeItems(cwd)
 		return worktreeDataMsg{stage: worktreeListStage, generation: generation, worktrees: items, err: err}
 	}
+}
+
+func (m *dashboardModel) queueRefreshes() []tea.Cmd {
+	commands := []tea.Cmd{}
+	if !m.agentsInFlight {
+		m.agentsInFlight = true
+		commands = append(commands, refreshAgents())
+	}
+	if !m.worktreesInFlight {
+		m.worktreesInFlight = true
+		m.worktreeGeneration++
+		commands = append(commands, refreshWorktreeList(m.cwd, m.worktreeGeneration))
+	}
+	if !m.sessionsInFlight {
+		m.sessionsInFlight = true
+		m.sessionGeneration++
+		commands = append(commands, refreshSessions(m.sessionGeneration))
+	}
+	return commands
 }
 
 func refreshWorktreeGit(items []item, generation uint64) tea.Cmd {
@@ -584,7 +721,10 @@ func loadDiff(item item, request uint64) tea.Cmd {
 }
 
 func (m *dashboardModel) requestPreview(item item) tea.Cmd {
-	if !m.previewEnabled[m.tab] {
+	if !m.focused {
+		return nil
+	}
+	if !m.previewShown() {
 		m.preview, m.loading = previewData{}, false
 		return nil
 	}
@@ -620,6 +760,7 @@ func (m *dashboardModel) requestPreview(item item) tea.Cmd {
 func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		wasShown := m.previewShown()
 		wasPreviewAtBottom := m.previewOffset == m.previewBottomOffset(m.preview.lines)
 		m.width, m.height = msg.Width, msg.Height
 		m.resizeInputs()
@@ -629,29 +770,36 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.hasRightPanel() {
 			m.panelFocus = panelLeft
 		}
+		if !wasShown && m.previewShown() && !m.diff {
+			if selected, ok := m.selected(); ok {
+				return m, m.requestPreview(selected)
+			}
+		}
+		return m, nil
+	case tea.FocusMsg:
+		m.focused = true
+		commands := m.queueRefreshes()
+		if selected, ok := m.selected(); ok && !m.diff {
+			commands = append(commands, m.requestPreview(selected))
+		}
+		return m, tea.Batch(commands...)
+	case tea.BlurMsg:
+		m.focused = false
 		return m, nil
 	case tickMsg:
 		commands := []tea.Cmd{nextTick()}
-		if !m.agentsInFlight {
-			m.agentsInFlight = true
-			commands = append(commands, refreshAgents())
-		}
-		if !m.worktreesInFlight {
-			m.worktreesInFlight = true
-			m.worktreeGeneration++
-			commands = append(commands, refreshWorktreeList(m.cwd, m.worktreeGeneration))
-		}
-		if !m.sessionsInFlight {
-			m.sessionsInFlight = true
-			m.sessionGeneration++
-			commands = append(commands, refreshSessions(m.sessionGeneration))
+		if m.focused {
+			commands = append(commands, m.queueRefreshes()...)
 		}
 		return m, tea.Batch(commands...)
 	case clockMsg:
 		m.now = time.Time(msg)
+		if !m.noticeUntil.IsZero() && !m.now.Before(m.noticeUntil) {
+			m.notice, m.noticeUntil = "", time.Time{}
+		}
 		return m, nextClock()
 	case previewTickMsg:
-		if uint64(msg) != m.previewRequest || m.diff {
+		if !m.focused || uint64(msg) != m.previewRequest || m.diff {
 			return m, nil
 		}
 		if selected, ok := m.selected(); ok && (selected.kind == "session" || (selected.kind == "tmux-session" && selected.muxSessionID != "")) {
@@ -663,13 +811,23 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.sessionsInFlight, m.sessionsLoaded, m.sessionsErr = false, true, msg.err
+		if msg.err == nil {
+			m.lastRefresh[tabSessions] = m.now
+		}
 		if msg.err != nil {
 			return m, nil
 		}
 		before, hadBefore := m.selected()
-		target := m.selectedTarget()
+		target, index := m.selectedTarget(), m.index
+		if m.restoreSessionSelection {
+			target = m.sessionSelectionAfterRemove
+			m.restoreSessionSelection, m.sessionSelectionAfterRemove = false, ""
+		}
 		m.sessions = msg.sessions
 		m.restoreSelection(target)
+		if selected, ok := m.selected(); hadBefore && target != "" && (!ok || selected.target != target) {
+			m.index = min(index, max(0, len(m.rows())-1))
+		}
 		after, hasAfter := m.selected()
 		if hasAfter && after.kind == "tmux-session" && !m.diff {
 			if !hadBefore || before != after || m.preview.target != after.target || m.preview.kind != after.kind {
@@ -681,6 +839,9 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case dashboardDataMsg:
 		m.agentsInFlight, m.agentsLoaded, m.agentErr = false, true, msg.err
+		if msg.err == nil {
+			m.lastRefresh[tabAgents] = m.now
+		}
 		if msg.err != nil {
 			return m, nil
 		}
@@ -699,7 +860,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		commands := []tea.Cmd{}
-		if len(m.allAgents) > 0 && !m.agentGitInFlight && time.Since(m.agentGitRefreshed) >= gitRefreshPeriod {
+		if m.focused && len(m.allAgents) > 0 && !m.agentGitInFlight && time.Since(m.agentGitRefreshed) >= gitRefreshPeriod {
 			m.agentGitInFlight = true
 			m.agentGitRefreshed = time.Now()
 			commands = append(commands, refreshAgentGit(m.allAgents))
@@ -754,6 +915,9 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.stage == worktreeListStage {
 			m.worktreesLoaded, m.worktreeErr = true, msg.err
+			if msg.err == nil {
+				m.lastRefresh[tabWorktrees] = m.now
+			}
 			if msg.err != nil {
 				m.worktreesInFlight = false
 				return m, nil
@@ -776,6 +940,10 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.worktrees = mergeWorktreeData(m.worktrees, cached, worktreePRStage)
 			m.restoreSelection(target)
 			attachAgentsToWorktrees(m.worktrees, m.allAgents)
+			if !m.focused {
+				m.worktreesInFlight = false
+				return m, nil
+			}
 			m.worktreePending = len(msg.worktrees) + 2
 			commands := []tea.Cmd{
 				refreshWorktreeGit(msg.worktrees, msg.generation),
@@ -896,6 +1064,15 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case worktreeActionMsg:
 		m.action, m.actionTarget, m.actionBackend, m.err = actionNone, item{}, "", msg.err
+		if msg.action == actionRemoveSession {
+			m.restoreSessionSelection = msg.err == nil
+			if msg.err != nil {
+				m.sessionSelectionAfterRemove = ""
+			}
+		}
+		if msg.err == nil && msg.notice != "" {
+			m.setNotice(msg.notice)
+		}
 		if msg.err == nil && (msg.action == actionAddWorktree || msg.action == actionRemoveWorktree) {
 			m.worktreesInFlight = true
 			m.worktreeGeneration++
@@ -958,7 +1135,7 @@ func (m dashboardModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.themePicker || m.filter || m.action != actionNone {
+	if m.themePicker || m.actionMenu || m.filter || m.action != actionNone {
 		return m, nil
 	}
 	if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
@@ -967,6 +1144,9 @@ func (m dashboardModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			delta = -delta
 		}
 		if m.diff {
+			m.focusPanelAt(msg.X)
+			m.scrollFocusedPanel(delta)
+		} else if m.wideLayout() && msg.X >= m.wideTableWidth() {
 			m.focusPanelAt(msg.X)
 			m.scrollFocusedPanel(delta)
 		} else if msg.Y >= 2+m.tableHeight() {
@@ -980,7 +1160,19 @@ func (m dashboardModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.diff || msg.Button != tea.MouseButtonLeft || msg.Action != tea.MouseActionPress {
+	if msg.Button != tea.MouseButtonLeft || msg.Action != tea.MouseActionPress {
+		return m, nil
+	}
+	if m.diff {
+		m.focusPanelAt(msg.X)
+		return m, nil
+	}
+	if m.wideLayout() && msg.X >= m.wideTableWidth() {
+		m.focusPanelAt(msg.X)
+		return m, nil
+	}
+	if msg.Y >= 2+m.tableHeight() {
+		m.focusPanelAt(msg.X)
 		return m, nil
 	}
 	if msg.Y == 0 {
@@ -1035,18 +1227,36 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.helpOffset = m.clampHelpOffset(m.helpOffset - m.helpHeight()/2)
 		case "ctrl+d":
 			m.helpOffset = m.clampHelpOffset(m.helpOffset + m.helpHeight()/2)
+		case "pgup":
+			m.helpOffset = m.clampHelpOffset(m.helpOffset - m.helpHeight())
+		case "pgdown":
+			m.helpOffset = m.clampHelpOffset(m.helpOffset + m.helpHeight())
+		case "g", "home":
+			m.helpOffset = 0
+		case "G", "end":
+			m.helpOffset = m.clampHelpOffset(len(m.helpLines()))
 		}
 		return m, nil
 	}
 	if m.themePicker {
 		return m.handleThemePickerKey(msg)
 	}
+	if m.actionMenu {
+		return m.handleActionMenuKey(msg)
+	}
 	if m.action != actionNone {
 		return m.handleActionKey(msg)
 	}
-	if m.tab == tabSessions && (key == "ctrl+j" || key == "ctrl+k") {
+	if key == "?" {
+		m.help, m.helpOffset = true, 0
+		return m, nil
+	}
+	if key == " " {
+		return m, m.openActionMenu()
+	}
+	if m.tab == tabSessions && (key == "ctrl+j" || key == "ctrl+k" || key == "ctrl+n" || key == "ctrl+p") {
 		delta := 1
-		if key == "ctrl+k" {
+		if key == "ctrl+k" || key == "ctrl+p" {
 			delta = -1
 		}
 		m.move(delta)
@@ -1056,17 +1266,38 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.tab == tabSessions && key == "ctrl+d" {
-		selected, ok := m.selected()
-		if !ok || selected.muxSessionID == "" {
+		if selected, ok := m.selected(); ok {
+			m.beginRemove(selected)
+		} else {
 			m.err = errors.New("the selected session is not running")
-			return m, nil
 		}
-		m.action, m.actionTarget = actionRemoveSession, selected
 		m.lastClickTarget, m.lastClickAt = "", time.Time{}
+		return m, nil
+	}
+	if m.tab == tabSessions && (key == "pgup" || key == "pgdown") {
+		delta := m.previewVisibleHeight()
+		if key == "pgup" {
+			delta = -delta
+		}
+		m.previewFocused = true
+		m.scrollFocusedPanel(delta)
+		return m, nil
+	}
+	if m.tab == tabSessions && (key == "home" || key == "end") {
+		if key == "home" {
+			m.index = 0
+		} else {
+			m.index = max(0, len(m.rows())-1)
+		}
+		if selected, ok := m.selected(); ok {
+			return m, m.requestPreview(selected)
+		}
 		return m, nil
 	}
 	if m.filter {
 		switch key {
+		case "shift+tab":
+			return m.switchTab((m.tab - 1 + tabCount) % tabCount)
 		case "tab":
 			if m.tab == tabSessions {
 				return m.switchTab((m.tab + 1) % tabCount)
@@ -1134,6 +1365,7 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if key == "shift+left" || key == "shift+right" {
 		if m.hasRightPanel() {
+			m.previewFocused = true
 			m.panelFocus = panelLeft
 			if key == "shift+right" {
 				m.panelFocus = panelRight
@@ -1156,6 +1388,18 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.scrollFocusedPanel(-m.diffVisibleHeight() / 2)
 		case "ctrl+d":
 			m.scrollFocusedPanel(m.diffVisibleHeight() / 2)
+		case "pgup":
+			m.scrollFocusedPanel(-m.diffVisibleHeight())
+		case "pgdown":
+			m.scrollFocusedPanel(m.diffVisibleHeight())
+		case "g", "home":
+			m.diffOff, m.rightOffset = 0, 0
+		case "G", "end":
+			if m.panelFocus == panelRight && m.hasRightPanel() {
+				m.rightOffset = m.clampDiffOffset(len(m.preview.rightLines), m.preview.rightLines)
+			} else {
+				m.diffOff = m.clampDiffOffset(len(m.preview.lines), m.preview.lines)
+			}
 		case "h", "left":
 			m.xOffset = max(0, m.xOffset-4)
 		case "l", "right":
@@ -1202,11 +1446,12 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, tea.Quit
-	case "?":
-		m.help, m.helpOffset = true, 0
-		return m, nil
 	case "tab":
 		return m.switchTab((m.tab + 1) % tabCount)
+	case "shift+tab":
+		return m.switchTab((m.tab - 1 + tabCount) % tabCount)
+	case "ctrl+v":
+		return m, m.togglePreview()
 	case "t":
 		return m, m.openThemePicker()
 	case "ctrl+f":
@@ -1220,6 +1465,9 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		target := m.selectedTarget()
 		m.scope = m.scope.toggle()
 		m.err = saveScopeMode(m.scope)
+		if m.err == nil {
+			m.setNotice("Scope: " + m.scope.label())
+		}
 		m.applyAgentScope()
 		m.restoreSelection(target)
 		if selected, ok := m.selected(); ok {
@@ -1238,34 +1486,8 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.actionTextInput.Focus()
 		}
 	case "r":
-		selected, ok := m.selected()
-		if !ok {
-			return m, nil
-		}
-		switch m.tab {
-		case tabWorktrees:
-			if selected.kind != "worktree" {
-				return m, nil
-			}
-			if selected.current {
-				m.err = errors.New("cannot remove the current worktree")
-				return m, nil
-			}
-			if len(m.worktrees) > 0 && samePath(selected.cwd, m.worktrees[0].cwd) {
-				m.err = errors.New("cannot remove the primary worktree")
-				return m, nil
-			}
-			backend, err := loadWorktreeBackend()
-			if err != nil {
-				m.err = err
-				return m, nil
-			}
-			backend, err = resolvedWorktreeBackend(backend)
-			if err != nil {
-				m.err = err
-				return m, nil
-			}
-			m.action, m.actionTarget, m.actionBackend, m.err = actionRemoveWorktree, selected, backend, nil
+		if selected, ok := m.selected(); ok {
+			m.beginRemove(selected)
 		}
 		m.lastClickTarget, m.lastClickAt = "", time.Time{}
 	case "o":
@@ -1274,7 +1496,7 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				pr := m.gitItem(selected)
 				m.err = nil
 				return m, func() tea.Msg {
-					return worktreeActionMsg{err: openPullRequest(selected.cwd, pr.prNumber)}
+					return worktreeActionMsg{notice: fmt.Sprintf("Opened PR #%d", pr.prNumber), err: openPullRequest(selected.cwd, pr.prNumber)}
 				}
 			}
 		}
@@ -1295,10 +1517,22 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.move(1)
 	case "k", "up":
 		m.move(-1)
+	case "g", "home":
+		if m.tab != tabSessions {
+			m.index = 0
+		}
+	case "G", "end":
+		if m.tab != tabSessions {
+			m.index = max(0, len(m.rows())-1)
+		}
 	case "ctrl+u":
 		m.scrollFocusedPanel(-m.previewVisibleHeight() / 2)
 	case "ctrl+d":
 		m.scrollFocusedPanel(m.previewVisibleHeight() / 2)
+	case "pgup":
+		m.scrollFocusedPanel(-m.previewVisibleHeight())
+	case "pgdown":
+		m.scrollFocusedPanel(m.previewVisibleHeight())
 	case "h", "left":
 		m.xOffset = max(0, m.xOffset-4)
 	case "l", "right":
@@ -1306,7 +1540,7 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default:
 		return m, nil
 	}
-	if key == "j" || key == "down" || key == "k" || key == "up" {
+	if key == "j" || key == "down" || key == "k" || key == "up" || (m.tab != tabSessions && (key == "g" || key == "G" || key == "home" || key == "end")) {
 		if selected, ok := m.selected(); ok {
 			return m, m.requestPreview(selected)
 		}
@@ -1339,6 +1573,59 @@ func (m dashboardModel) handleThemePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd
 	return m, nil
 }
 
+func (m dashboardModel) handleActionMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+	entries := m.actionMenuEntries()
+	switch key {
+	case "esc":
+		m.actionMenu = false
+		return m, nil
+	case "j", "down":
+		if len(entries) > 0 {
+			m.actionMenuIndex = (m.actionMenuIndex + 1) % len(entries)
+		}
+		return m, nil
+	case "k", "up":
+		if len(entries) > 0 {
+			m.actionMenuIndex = (m.actionMenuIndex - 1 + len(entries)) % len(entries)
+		}
+		return m, nil
+	case "enter":
+		if len(entries) == 0 {
+			return m, nil
+		}
+		entry := entries[m.actionMenuIndex%len(entries)]
+		m.actionMenu = false
+		switch entry.action {
+		case menuOpen:
+			if selected, ok := m.selected(); ok {
+				m.selection, m.chosen = selected, true
+				return m, tea.Quit
+			}
+		case menuDiff:
+			if selected, ok := m.selected(); ok {
+				m.diff, m.loading, m.panelFocus = true, true, panelLeft
+				m.diffRequest++
+				return m, loadDiff(selected, m.diffRequest)
+			}
+		case menuPR:
+			if selected, ok := m.selected(); ok {
+				pr := m.gitItem(selected)
+				return m, func() tea.Msg {
+					return worktreeActionMsg{notice: fmt.Sprintf("Opened PR #%d", pr.prNumber), err: openPullRequest(selected.cwd, pr.prNumber)}
+				}
+			}
+		case menuRemove:
+			if selected, ok := m.selected(); ok {
+				m.beginRemove(selected)
+			}
+		}
+		return m, nil
+	default:
+		return m, nil
+	}
+}
+
 func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	switch m.action {
@@ -1356,7 +1643,7 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.action, m.err = actionRunning, nil
 			m.actionTextInput.Blur()
 			return m, func() tea.Msg {
-				return worktreeActionMsg{action: actionAddWorktree, err: addWorktree(m.cwd, branch, backendAuto)}
+				return worktreeActionMsg{action: actionAddWorktree, notice: "Created worktree " + branch, err: addWorktree(m.cwd, branch, backendAuto)}
 			}
 		default:
 			var command tea.Cmd
@@ -1365,16 +1652,19 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case actionRemoveWorktree, actionRemoveSession:
 		switch key {
-		case "y", "Y":
+		case "enter":
 			action, target, backend := m.action, m.actionTarget, m.actionBackend
 			m.action, m.err = actionRunning, nil
 			return m, func() tea.Msg {
 				if action == actionRemoveSession {
-					return worktreeActionMsg{action: action, err: removeTmuxSession(target)}
+					return worktreeActionMsg{action: action, notice: "Removed session " + target.title, err: removeTmuxSession(target)}
 				}
-				return worktreeActionMsg{action: action, err: removeWorktree(m.cwd, target.cwd, backend)}
+				return worktreeActionMsg{action: action, notice: "Removed worktree " + m.displayWorktree(target), err: removeWorktree(m.cwd, target.cwd, backend)}
 			}
-		case "n", "N", "esc":
+		case "esc":
+			if m.action == actionRemoveSession {
+				m.sessionSelectionAfterRemove = ""
+			}
 			m.action, m.actionTarget, m.actionBackend = actionNone, item{}, ""
 		}
 	}
@@ -1386,7 +1676,7 @@ func (m dashboardModel) switchTab(tab int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.queries[m.tab], m.tabTargets[m.tab] = m.query, m.selectedTarget()
-	m.tab, m.index, m.previewOffset, m.rightOffset, m.xOffset, m.panelFocus = tab, 0, 0, 0, 0, panelLeft
+	m.tab, m.index, m.previewOffset, m.rightOffset, m.xOffset, m.panelFocus, m.previewFocused = tab, 0, 0, 0, 0, panelLeft, false
 	m.query = m.queries[m.tab]
 	m.filterInputs[m.tab].SetValue(m.query)
 	m.restoreSelection(m.tabTargets[m.tab])
@@ -1414,22 +1704,33 @@ func (m dashboardModel) clampDiffOffset(offset int, lines []string) int {
 	return clampLineOffset(offset, lines, m.diffVisibleHeight())
 }
 
+func (m dashboardModel) previewRenderWidth() int {
+	if m.wideLayout() {
+		return m.width - m.wideTableWidth()
+	}
+	return m.width
+}
+
 func (m dashboardModel) hasRightPanel() bool {
 	if m.diff {
 		rightWidth := max(24, m.width/4)
 		return rightWidth < m.width-20
 	}
-	return m.tab == tabWorktrees && m.preview.rightTitle != "" && m.width >= 60
+	return m.tab == tabWorktrees && m.preview.rightTitle != "" && m.previewRenderWidth() >= 60
 }
 
 func (m *dashboardModel) focusPanelAt(x int) {
+	m.previewFocused = true
 	m.panelFocus = panelLeft
 	if m.hasRightPanel() {
 		leftWidth := m.width
 		if m.diff {
 			leftWidth -= max(24, m.width/4)
 		} else {
-			leftWidth = min(40, m.width/2)
+			if m.wideLayout() {
+				x -= m.wideTableWidth()
+			}
+			leftWidth = min(40, m.previewRenderWidth()/2)
 		}
 		if x >= leftWidth {
 			m.panelFocus = panelRight
@@ -1438,6 +1739,7 @@ func (m *dashboardModel) focusPanelAt(x int) {
 }
 
 func (m *dashboardModel) scrollFocusedPanel(delta int) {
+	m.previewFocused = true
 	if m.panelFocus == panelRight && m.hasRightPanel() {
 		if m.diff {
 			m.rightOffset = m.clampDiffOffset(m.rightOffset+delta, m.preview.rightLines)
@@ -1462,16 +1764,19 @@ func (m dashboardModel) clampHelpOffset(offset int) int {
 func (m dashboardModel) helpLines() []string {
 	return []string{
 		"↑/k, ↓/j     Move (Agents/Worktrees)",
-		"Ctrl+j/k      Move (Sessions)",
-		"Session icons " + dashboardIcon(" live,  configured,  repo", "L live, C configured, R repo"),
+		"g/Home, G/End First/last (Agents/Worktrees)",
+		"Ctrl+j/k/n/p  Move (Sessions)",
+		"Home/End      First/last (Sessions)",
+		"Session icons " + dashboardIcon(" live,  configured,  discovered", "L live, C configured, R discovered") + " (live > configured > discovered)",
 		"Enter         Open selected row",
 		"1–9           Open row (Agents/Worktrees)",
 		"Click         Select row",
 		"Double-click  Open row",
 		"Mouse wheel   Scroll table or preview",
-		"Tab           Switch tabs",
+		"Tab/Shift+Tab Switch tabs",
 		"/             Filter (Agents/Worktrees)",
-		"Type          Search Sessions",
+		"Type          Search Sessions (g/G stay searchable)",
+		"Space         Selected-item actions",
 		"Ctrl+f        Cycle Session filter",
 		"Enter / Esc   Open / clear session search",
 		"d             Open Git diff (Agents/Worktrees)",
@@ -1480,9 +1785,12 @@ func (m dashboardModel) helpLines() []string {
 		"r             Remove worktree (Worktrees)",
 		"Ctrl+d        Remove live session (Sessions)",
 		"o             Open pull request (Agents/Worktrees)",
+		"PgUp/PgDn     Page diff/help; preview in Sessions",
 		"Ctrl+u/d      Page preview, diff, or help",
-		"              (Ctrl+d removes in Sessions)",
+		"              (Ctrl+d only removes in Sessions)",
+		"g/G, Home/End Top/bottom in diff or help",
 		"h/l           Pan long lines",
+		"Ctrl+v        Toggle this tab's runtime preview",
 		"+/-           Resize preview by 10%",
 		"s             Toggle agent scope",
 		"t             Open theme picker",
@@ -1518,7 +1826,7 @@ func (m *dashboardModel) move(delta int) {
 		return
 	}
 	m.index = max(0, min(len(rows)-1, m.index+delta))
-	m.previewOffset, m.rightOffset, m.xOffset, m.panelFocus = 0, 0, 0, panelLeft
+	m.previewOffset, m.rightOffset, m.xOffset, m.panelFocus, m.previewFocused = 0, 0, 0, panelLeft, false
 }
 
 func (m dashboardModel) rows() []item {
@@ -1678,10 +1986,20 @@ func copyPRStatus(dst *item, src item) {
 }
 
 func (m dashboardModel) contentHeight() int { return max(0, m.height-3) }
-func (m dashboardModel) previewShown() bool { return m.previewEnabled[m.tab] || m.themePicker }
+
+func (m dashboardModel) previewShown() bool {
+	return m.themePicker || m.actionMenu || m.action != actionNone || ((m.previewOverride[m.tab] == 1 || (m.previewOverride[m.tab] != -1 && m.previewEnabled[m.tab])) && (m.width >= 60 || m.previewOverride[m.tab] == 1))
+}
+
+func (m dashboardModel) wideLayout() bool {
+	return !m.diff && !m.help && !m.themePicker && !m.actionMenu && m.width >= 140 && m.previewShown()
+}
+
+func (m dashboardModel) wideTableWidth() int { return max(60, m.width*11/20) }
+
 func (m dashboardModel) tableHeight() int {
 	content := m.contentHeight()
-	if !m.previewShown() {
+	if !m.previewShown() || m.wideLayout() {
 		return content
 	}
 	return max(2, min(content-3, content*(100-m.previewSize)/100))
@@ -1689,6 +2007,9 @@ func (m dashboardModel) tableHeight() int {
 func (m dashboardModel) previewHeight() int {
 	if !m.previewShown() {
 		return 0
+	}
+	if m.wideLayout() {
+		return m.contentHeight()
 	}
 	return m.contentHeight() - m.tableHeight()
 }
