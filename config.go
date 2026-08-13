@@ -65,9 +65,13 @@ func loadConfig() (jumpmuxConfig, error) {
 		}
 		for _, detail := range unknown.Errors {
 			key := detail.Key()
-			if len(key) > 0 && key[0] == "preview" {
+			if len(key) == 0 {
+				continue
+			}
+			if key[0] == "preview" {
 				return config, fmt.Errorf("%s: preview uses unsupported %q", path, key[len(key)-1])
 			}
+			return config, fmt.Errorf("%s: uses unsupported %q", path, key[0])
 		}
 	}
 
