@@ -99,6 +99,32 @@ func TestDiscoverSessionsFromScript(t *testing.T) {
 	}
 }
 
+func TestDiscoverSessionsCachesSuccessfulCommand(t *testing.T) {
+	project := t.TempDir()
+	count := filepath.Join(t.TempDir(), "count")
+	script := filepath.Join(t.TempDir(), "discover")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho run >>\"$DISCOVER_LOG\"\nprintf '%s\\n' \"$DISCOVER_PROJECT\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DISCOVER_LOG", count)
+	t.Setenv("DISCOVER_PROJECT", project)
+	discoveredSessionsCache.Lock()
+	discoveredSessionsCache.values = nil
+	discoveredSessionsCache.Unlock()
+	for range 2 {
+		if sessions, err := discoverSessions([]string{script}); err != nil || len(sessions) != 1 || sessions[0].path != project {
+			t.Fatalf("discovered sessions = %#v, %v", sessions, err)
+		}
+	}
+	data, err := os.ReadFile(count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(strings.TrimSpace(string(data)), "run"); got != 1 {
+		t.Fatalf("discover invocations = %d, want 1", got)
+	}
+}
+
 func TestDiscoverSessionsRejectsInvalidOutput(t *testing.T) {
 	script := filepath.Join(t.TempDir(), "discover")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf 'relative/path\\n'\n"), 0o755); err != nil {

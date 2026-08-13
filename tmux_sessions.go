@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -21,6 +22,7 @@ const (
 	tmuxFieldSeparator     = "\x1f"
 	tmuxRecordSeparator    = "\x1e"
 	discoveryTimeout       = 5 * time.Second
+	discoveryCacheTTL      = 45 * time.Second
 	maxDiscoveryOutputSize = 1 << 20
 )
 
@@ -63,6 +65,16 @@ type sessionsSection struct {
 type sessionEntry struct {
 	Name string `toml:"name"`
 	Path string `toml:"path"`
+}
+
+type discoveredSessionsEntry struct {
+	expires  time.Time
+	sessions []configuredSession
+}
+
+var discoveredSessionsCache struct {
+	sync.Mutex
+	values map[string]discoveredSessionsEntry
 }
 
 func loadSessionsConfig() (*sessionsConfig, error) {
@@ -252,6 +264,13 @@ func discoverSessions(command []string) ([]configuredSession, error) {
 	if len(command) == 0 {
 		return nil, nil
 	}
+	key := strings.Join(command, "\x00")
+	discoveredSessionsCache.Lock()
+	entry, ok := discoveredSessionsCache.values[key]
+	discoveredSessionsCache.Unlock()
+	if ok && time.Now().Before(entry.expires) {
+		return append([]configuredSession(nil), entry.sessions...), nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), discoveryTimeout)
 	defer cancel()
 	stdout, stderr := &cappedBuffer{limit: maxDiscoveryOutputSize}, &cappedBuffer{limit: 4096}
@@ -295,6 +314,12 @@ func discoverSessions(command []string) ([]configuredSession, error) {
 		seen[location] = true
 		sessions = append(sessions, configuredSession{name: name, path: location})
 	}
+	discoveredSessionsCache.Lock()
+	if discoveredSessionsCache.values == nil {
+		discoveredSessionsCache.values = map[string]discoveredSessionsEntry{}
+	}
+	discoveredSessionsCache.values[key] = discoveredSessionsEntry{expires: time.Now().Add(discoveryCacheTTL), sessions: append([]configuredSession(nil), sessions...)}
+	discoveredSessionsCache.Unlock()
 	return sessions, nil
 }
 
