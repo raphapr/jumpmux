@@ -39,7 +39,6 @@ type tmuxSession struct {
 	id           string
 	name         string
 	windows      int
-	attached     int
 	lastAttached time.Time
 	path         string
 	pane         string
@@ -169,7 +168,7 @@ func listLiveTmuxSessions(includeServer bool) ([]tmuxSession, error) {
 		return nil, nil
 	}
 	format := strings.Join([]string{
-		"#{session_id}", "#{session_name}", "#{session_windows}", "#{session_attached}", "#{session_last_attached}",
+		"#{session_id}", "#{session_name}", "#{session_windows}", "#{session_last_attached}",
 		"#{window_active}", "#{pane_active}", "#{pane_id}", "#{pane_current_path}",
 	}, tmuxFieldSeparator) + tmuxRecordSeparator
 	output, err := tmuxOutput("list-panes", "-a", "-F", format)
@@ -186,24 +185,19 @@ func listLiveTmuxSessions(includeServer bool) ([]tmuxSession, error) {
 	sessionsByID := map[string]tmuxSession{}
 	for _, record := range tmuxRecords(output) {
 		parts := strings.Split(record, tmuxFieldSeparator)
-		if len(parts) != 7 && len(parts) != 9 {
+		if len(parts) != 7 && len(parts) != 8 {
 			return nil, errors.New("tmux returned a malformed pane record")
 		}
-		attached, lastAttached, offset := 0, time.Time{}, 0
-		if len(parts) == 9 {
-			var err error
-			attached, err = strconv.Atoi(parts[3])
-			if err != nil || attached < 0 {
-				return nil, errors.New("tmux returned a malformed pane record")
-			}
-			if parts[4] != "" && parts[4] != "0" {
-				seconds, err := strconv.ParseInt(parts[4], 10, 64)
+		lastAttached, offset := time.Time{}, 0
+		if len(parts) == 8 {
+			if parts[3] != "" && parts[3] != "0" {
+				seconds, err := strconv.ParseInt(parts[3], 10, 64)
 				if err != nil || seconds < 0 {
 					return nil, errors.New("tmux returned a malformed pane record")
 				}
 				lastAttached = time.Unix(seconds, 0)
 			}
-			offset = 2
+			offset = 1
 		}
 		if !validTmuxSessionID(parts[0]) || parts[1] == "" || (parts[3+offset] != "0" && parts[3+offset] != "1") || (parts[4+offset] != "0" && parts[4+offset] != "1") || !validTmuxPaneID(parts[5+offset]) {
 			return nil, errors.New("tmux returned a malformed pane record")
@@ -213,11 +207,11 @@ func listLiveTmuxSessions(includeServer bool) ([]tmuxSession, error) {
 			return nil, errors.New("tmux returned a malformed pane record")
 		}
 		session, exists := sessionsByID[parts[0]]
-		if exists && (session.name != parts[1] || session.windows != windows || session.attached != attached || !session.lastAttached.Equal(lastAttached)) {
+		if exists && (session.name != parts[1] || session.windows != windows || !session.lastAttached.Equal(lastAttached)) {
 			return nil, errors.New("tmux returned inconsistent session metadata")
 		}
 		if !exists {
-			session = tmuxSession{id: parts[0], name: parts[1], windows: windows, attached: attached, lastAttached: lastAttached, current: parts[1] == current}
+			session = tmuxSession{id: parts[0], name: parts[1], windows: windows, lastAttached: lastAttached, current: parts[1] == current}
 		}
 		if parts[3+offset] == "1" && parts[4+offset] == "1" {
 			if session.pane != "" {
@@ -341,7 +335,7 @@ func listSessions(includeServer bool) ([]item, error) {
 		}
 		entry.muxSessionID, entry.muxSessionName, entry.pane = session.id, session.name, session.pane
 		entry.current, entry.tmuxWindows = session.current, session.windows
-		entry.tmuxAttached, entry.lastAttached = session.attached, session.lastAttached
+		entry.lastAttached = session.lastAttached
 		items[session.name] = entry
 	}
 	result := make([]item, 0, len(items))

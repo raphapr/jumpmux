@@ -1868,15 +1868,8 @@ func (m dashboardModel) livePreviewPaused() bool {
 }
 
 func (m dashboardModel) previewFollowLabel() string {
-	if !m.preview.followBottom {
-		return ""
-	}
-	selected, ok := m.selected()
-	if !ok || (selected.kind != "session" && (selected.kind != "tmux-session" || selected.muxSessionID == "")) {
-		return ""
-	}
 	if !m.livePreviewPaused() {
-		return "FOLLOW"
+		return ""
 	}
 	return fmt.Sprintf("PAUSED %d/%d", min(len(m.preview.lines), m.previewOffset+m.previewVisibleHeight()), len(m.preview.lines))
 }
@@ -1947,8 +1940,7 @@ func (m dashboardModel) helpLines() []string {
 		"g/Home, G/End First/last (Agents/Worktrees)",
 		"Ctrl+j/k/n/p  Move (Sessions)",
 		"Home/End      First/last (Sessions)",
-		"Session source " + dashboardIcon(" live,  configured,  discovered", "L live, C configured, R discovered"),
-		"Session activity " + dashboardIcon("󰌽 self, 󰘴 attached, 󰖲 detached", "SELF, ATT, LIVE"),
+		"Session icons  " + dashboardIcon(" live,  configured,  discovered", "L live, C configured, R discovered"),
 		"Enter         Open selected row",
 		"1–9           Open row (Agents/Worktrees)",
 		"Click         Select row",
@@ -1970,7 +1962,7 @@ func (m dashboardModel) helpLines() []string {
 		"PgUp/PgDn     Page diff/help; preview in Sessions",
 		"Ctrl+u/d      Page preview, diff, or help",
 		"              (Ctrl+d only removes in Sessions)",
-		"G/End         Resume FOLLOW in a paused live preview",
+		"G/End         Resume a paused live preview",
 		"g/G, Home/End Top/bottom in diff or help",
 		"h/l           Pan long lines",
 		"Ctrl+v        Toggle this tab's runtime preview",

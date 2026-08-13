@@ -193,13 +193,13 @@ func TestLiveTmuxSessionsReadAttachmentMetadata(t *testing.T) {
 	writeFakeTmux(t, `
 case "$1" in
   display-message) printf 'dev\n' ;;
-  list-panes) printf '$1\037dev\0372\0373\037100\0371\0371\037%%7\037/tmp/dev\036\n' ;;
+  list-panes) printf '$1\037dev\0372\037100\0371\0371\037%%7\037/tmp/dev\036\n' ;;
 esac
 `)
 	t.Setenv("TMUX", "/tmp/tmux,1,0")
 	sessions, err := listLiveTmuxSessions(false)
-	if err != nil || len(sessions) != 1 || sessions[0].attached != 3 || !sessions[0].lastAttached.Equal(time.Unix(100, 0)) {
-		t.Fatalf("attachment metadata = %#v, %v", sessions, err)
+	if err != nil || len(sessions) != 1 || !sessions[0].lastAttached.Equal(time.Unix(100, 0)) {
+		t.Fatalf("last-attached metadata = %#v, %v", sessions, err)
 	}
 }
 
@@ -465,7 +465,7 @@ func TestSessionIconsAndColumns(t *testing.T) {
 		{title: "repo", cwd: "/repo", sessionSource: "discovered"},
 	}
 	view := ansi.Strip(model.renderTable(100))
-	for _, want := range []string{"Session", "Path", "Win", "Last", " 󰖲 live", " pinned", " repo", "3"} {
+	for _, want := range []string{"Session", "Path", "Win", "Last", " live", " pinned", " repo", "3"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("sessions table missing %q:\n%s", want, view)
 		}
@@ -475,7 +475,7 @@ func TestSessionIconsAndColumns(t *testing.T) {
 	}
 	nerdFontEnabled = false
 	plain := ansi.Strip(model.renderTable(100))
-	for _, want := range []string{"L LIVE live", "C pinned", "R repo"} {
+	for _, want := range []string{"L live", "C pinned", "R repo"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("plain sessions table missing %q:\n%s", want, plain)
 		}

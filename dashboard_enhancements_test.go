@@ -16,8 +16,8 @@ func TestLivePreviewFeedbackResumesFollowing(t *testing.T) {
 	model.agents = []item{{kind: "session", target: "%1", cwd: "/repo"}}
 	model.preview = previewData{target: "%1", kind: "session", followBottom: true, lines: make([]string, 30)}
 	model.previewOffset = model.previewBottomOffset(model.preview.lines)
-	if title := model.previewTitle(model.agents[0], "Preview"); !strings.Contains(title, "FOLLOW") || strings.Contains(title, "updated") {
-		t.Fatalf("following preview title = %q", title)
+	if title := model.previewTitle(model.agents[0], "Preview"); strings.Contains(title, "FOLLOW") || strings.Contains(title, "PAUSED") {
+		t.Fatalf("following preview title is noisy: %q", title)
 	}
 	model.scrollFocusedPanel(-1)
 	if title := model.previewTitle(model.agents[0], "Preview"); !strings.Contains(title, "PAUSED") || !strings.Contains(title, "/30") {
@@ -25,7 +25,7 @@ func TestLivePreviewFeedbackResumesFollowing(t *testing.T) {
 	}
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
 	model = updated.(dashboardModel)
-	if model.previewOffset != model.previewBottomOffset(model.preview.lines) || !strings.Contains(model.previewTitle(model.agents[0], "Preview"), "FOLLOW") {
+	if model.previewOffset != model.previewBottomOffset(model.preview.lines) || strings.Contains(model.previewTitle(model.agents[0], "Preview"), "PAUSED") {
 		t.Fatalf("G did not resume following: %#v", model.preview)
 	}
 	model.scrollFocusedPanel(-1)
@@ -42,26 +42,22 @@ func TestSessionsUseSourceActivityLastAndRecentOrder(t *testing.T) {
 	nerdFontEnabled = false
 	model.tab, model.width, model.height = tabSessions, 100, 20
 	model.sessions = []item{
-		{kind: "tmux-session", target: "configured", title: "configured", sessionSource: "config", muxSessionID: "$1", tmuxAttached: 2, lastAttached: now.Add(-time.Hour)},
-		{kind: "tmux-session", target: "current", title: "current", muxSessionID: "$2", current: true, tmuxAttached: 1, lastAttached: now.Add(-2 * time.Hour)},
-		{kind: "tmux-session", target: "detached", title: "detached", muxSessionID: "$3", lastAttached: now},
+		{kind: "tmux-session", target: "configured", title: "configured", sessionSource: "config", lastAttached: now.Add(-time.Hour)},
+		{kind: "tmux-session", target: "current", title: "current", muxSessionID: "$2", current: true, lastAttached: now.Add(-2 * time.Hour)},
+		{kind: "tmux-session", target: "live", title: "live", muxSessionID: "$3", lastAttached: now},
 	}
-	if got := sessionActivityMarker(model.sessions[0]); got != "ATT" {
-		t.Fatalf("attached marker = %q", got)
+	for index, want := range []string{"C", "L", "L"} {
+		if got, _ := sessionIcon(model.sessions[index]); got != want {
+			t.Fatalf("session %d icon = %q, want %q", index, got, want)
+		}
 	}
-	if got := sessionActivityMarker(model.sessions[1]); got != "SELF" {
-		t.Fatalf("current marker = %q", got)
-	}
-	if got := sessionActivityMarker(model.sessions[2]); got != "LIVE" {
-		t.Fatalf("detached marker = %q", got)
-	}
-	if view := ansi.Strip(model.renderTable(model.width)); !strings.Contains(view, "Last") || !strings.Contains(view, "C ATT configured") {
-		t.Fatalf("session source/activity/last columns missing:\n%s", view)
+	if view := ansi.Strip(model.renderTable(model.width)); !strings.Contains(view, "Last") || !strings.Contains(view, "C configured") {
+		t.Fatalf("session icons/last column missing:\n%s", view)
 	}
 	model.index = 1
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
 	model = updated.(dashboardModel)
-	if rows := model.rows(); rows[0].target != "detached" {
+	if rows := model.rows(); rows[0].target != "live" {
 		t.Fatalf("recent sessions = %#v", rows)
 	}
 	if selected, _ := model.selected(); selected.target != "current" {

@@ -72,7 +72,6 @@ type item struct {
 	prLoaded         bool
 	sessionSource    string
 	tmuxWindows      int
-	tmuxAttached     int
 	lastAttached     time.Time
 	locked           bool
 	prunable         bool

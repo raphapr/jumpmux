@@ -307,7 +307,7 @@ func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) st
 		if !item.lastAttached.IsZero() {
 			last = relativeAge(item.lastAttached)
 		}
-		name := icon + " " + sessionActivityMarker(item) + " " + item.title
+		name := icon + " " + item.title
 		line += renderCell(style, name, c.name, background) + renderCell(textStyle, compactHome(item.cwd), c.path, background) + renderCell(mutedStyle, windows, c.windows, background) + renderCell(mutedStyle, last, c.last, background)
 		return padANSIBackground(line, width, background)
 	}
@@ -660,25 +660,13 @@ func dashboardIcon(nerd, plain string) string {
 }
 
 func sessionIcon(session item) (string, lipgloss.Style) {
-	if session.sessionSource == "config" {
-		return dashboardIcon("", "C"), mutedStyle
-	}
-	if session.sessionSource == "discovered" {
-		return dashboardIcon("", "R"), mutedStyle
-	}
-	return dashboardIcon("", "L"), infoStyle
-}
-
-func sessionActivityMarker(session item) string {
 	switch {
-	case session.current:
-		return dashboardIcon("󰌽", "SELF")
-	case session.tmuxAttached > 0:
-		return dashboardIcon("󰘴", "ATT")
 	case session.muxSessionID != "":
-		return dashboardIcon("󰖲", "LIVE")
+		return dashboardIcon("", "L"), infoStyle
+	case session.sessionSource == "config":
+		return dashboardIcon("", "C"), mutedStyle
 	default:
-		return ""
+		return dashboardIcon("", "R"), mutedStyle
 	}
 }
 

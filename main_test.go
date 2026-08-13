@@ -59,7 +59,7 @@ func TestSessionIconPrecedenceAcrossContext(t *testing.T) {
 		{kind: "tmux-session", title: "configured", sessionSource: "config"},
 		{kind: "tmux-session", title: "discovered", sessionSource: "discovered"},
 	}
-	want := []string{"C", "C", "R"}
+	want := []string{"L", "C", "R"}
 	for index, session := range items {
 		icon, _ := sessionIcon(session)
 		if icon != want[index] || contextJSON([]item{session})[0].Icon != want[index] {
