@@ -10,8 +10,6 @@ It is inspired by [Workmux](https://github.com/raine/workmux), but takes a more 
 - **Worktrees:** Worktrees from the current repository with Project, Worktree, Git, PR, Mux, Age, and Agent columns.
 - **Sessions:** Configured locations, discovered repositories, and live tmux sessions with Session, Path, Windows, and Last-attached columns.
 
-`▌` marks the selected row. A subtle `▏` marks the current agent, worktree, or session. Selecting an agent focuses its tmux pane. Selecting a worktree focuses its agent pane or its jumpmux tmux window. The first jump creates a window in that worktree. Later jumps reuse it. Inside tmux, selecting a live session switches the current client; selecting an inactive configured session creates it detached at its configured path, then switches to it. Outside tmux, selecting either attaches to the named session, creating a configured session when needed.
-
 ## Requirements
 
 - Go 1.24+ to install from source
