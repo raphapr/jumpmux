@@ -52,20 +52,29 @@ type checkRollupItem struct {
 type pullRequestMemoryEntry struct {
 	expires time.Time
 	values  map[string][]pullRequest
+	ready   chan struct{}
 }
 
 var pullRequestMemory struct {
 	sync.Mutex
-	values map[string]pullRequestMemoryEntry
+	values     map[string]pullRequestMemoryEntry
+	identities map[string]string
 }
 
 func listPullRequests(repo string) (map[string][]pullRequest, bool) {
-	pullRequestMemory.Lock()
-	entry, ok := pullRequestMemory.values[repo]
-	pullRequestMemory.Unlock()
-	if ok && time.Now().Before(entry.expires) {
-		return entry.values, entry.values != nil
+	key := pullRequestCacheKey(repo)
+	values, cached, ready := pullRequestMemoryStart(key)
+	if ready != nil {
+		<-ready
+		return listPullRequests(repo)
 	}
+	if cached {
+		return values, values != nil
+	}
+	ttl := pullRequestRetryPeriod
+	defer func() {
+		pullRequestMemoryFinish(key, values, ttl)
+	}()
 
 	run := func(fields string) ([]byte, error, bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), pullRequestQueryTimeout)
@@ -90,26 +99,86 @@ func listPullRequests(repo string) (map[string][]pullRequest, bool) {
 		identityAvailable = false
 		output, err, _ = run("number,state,isDraft,headRefName")
 	}
-
-	pullRequestMemory.Lock()
-	if pullRequestMemory.values == nil {
-		pullRequestMemory.values = map[string]pullRequestMemoryEntry{}
-	}
 	if err != nil {
-		pullRequestMemory.values[repo] = pullRequestMemoryEntry{expires: time.Now().Add(pullRequestRetryPeriod)}
-		pullRequestMemory.Unlock()
 		return nil, false
 	}
 
-	values := parsePullRequests(output)
+	values = parsePullRequests(output)
 	for branch := range values {
 		for index := range values[branch] {
 			values[branch][index].IdentityAvailable = identityAvailable
 		}
 	}
-	pullRequestMemory.values[repo] = pullRequestMemoryEntry{expires: time.Now().Add(time.Minute), values: values}
-	pullRequestMemory.Unlock()
+	ttl = time.Minute
 	return values, true
+}
+
+func pullRequestMemoryStart(key string) (map[string][]pullRequest, bool, <-chan struct{}) {
+	pullRequestMemory.Lock()
+	defer pullRequestMemory.Unlock()
+	if pullRequestMemory.values == nil {
+		pullRequestMemory.values = map[string]pullRequestMemoryEntry{}
+	}
+	entry := pullRequestMemory.values[key]
+	if entry.ready != nil {
+		return nil, false, entry.ready
+	}
+	if time.Now().Before(entry.expires) {
+		return entry.values, true, nil
+	}
+	entry.ready = make(chan struct{})
+	pullRequestMemory.values[key] = entry
+	return nil, false, nil
+}
+
+func pullRequestMemoryFinish(key string, values map[string][]pullRequest, ttl time.Duration) {
+	pullRequestMemory.Lock()
+	entry := pullRequestMemory.values[key]
+	ready := entry.ready
+	entry.expires, entry.values, entry.ready = time.Now().Add(ttl), values, nil
+	pullRequestMemory.values[key] = entry
+	pullRequestMemory.Unlock()
+	if ready != nil {
+		close(ready)
+	}
+}
+
+func pullRequestCacheKey(repo string) string {
+	pullRequestMemory.Lock()
+	key := pullRequestMemory.identities[repo]
+	pullRequestMemory.Unlock()
+	if key != "" {
+		return key
+	}
+	key, err := gitCommonDir(repo)
+	if err != nil {
+		return repo
+	}
+	pullRequestMemory.Lock()
+	if pullRequestMemory.identities == nil {
+		pullRequestMemory.identities = map[string]string{}
+	}
+	pullRequestMemory.identities[repo] = key
+	pullRequestMemory.Unlock()
+	return key
+}
+
+func gitCommonDir(repo string) (string, error) {
+	if _, err := os.Stat(filepath.Join(repo, ".git")); err != nil {
+		return "", err
+	}
+	path, err := gitOutput(repo, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", os.ErrNotExist
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(repo, path)
+	}
+	return filepath.Clean(path), nil
 }
 
 func parsePullRequests(output []byte) map[string][]pullRequest {

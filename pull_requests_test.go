@@ -6,7 +6,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestLegacyPRCacheInfersBranchFromGitCache(t *testing.T) {
@@ -183,6 +185,88 @@ func TestPullRequestFailureIsCached(t *testing.T) {
 	}
 	if got := strings.Count(strings.TrimSpace(string(data)), "\n") + 1; got != 4 {
 		t.Fatalf("gh calls = %d, want 4:\n%s", got, data)
+	}
+}
+
+func TestPullRequestMemoryFinishSafelyReleasesWaiters(t *testing.T) {
+	key := t.Name()
+	pullRequestMemory.Lock()
+	pullRequestMemory.values = map[string]pullRequestMemoryEntry{}
+	pullRequestMemory.Unlock()
+
+	pullRequestMemoryFinish(key, nil, pullRequestRetryPeriod)
+	pullRequestMemory.Lock()
+	entry := pullRequestMemory.values[key]
+	entry.expires = time.Time{}
+	pullRequestMemory.values[key] = entry
+	pullRequestMemory.Unlock()
+
+	if _, cached, ready := pullRequestMemoryStart(key); cached || ready != nil {
+		t.Fatalf("started cache entry = cached:%v ready:%v", cached, ready)
+	}
+	_, cached, ready := pullRequestMemoryStart(key)
+	if cached || ready == nil {
+		t.Fatalf("waiting cache entry = cached:%v ready:%v", cached, ready)
+	}
+	values := map[string][]pullRequest{"feature": {{Number: 1}}}
+	pullRequestMemoryFinish(key, values, time.Minute)
+	select {
+	case <-ready:
+	case <-time.After(time.Second):
+		t.Fatal("waiter was not released")
+	}
+	got, cached, ready := pullRequestMemoryStart(key)
+	if !cached || ready != nil || got["feature"][0].Number != 1 {
+		t.Fatalf("completed cache entry = %#v, cached:%v ready:%v", got, cached, ready)
+	}
+}
+
+func TestPullRequestMemoryUsesGitCommonDir(t *testing.T) {
+	parent := t.TempDir()
+	repo, sibling := filepath.Join(parent, "repo"), filepath.Join(parent, "sibling")
+	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "feature", sibling}} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	bin, log := t.TempDir(), filepath.Join(t.TempDir(), "gh.log")
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\necho called >>\"$GH_LOG\"\nsleep 1\nprintf '%s\\n' '[]'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GH_LOG", log)
+	pullRequestMemory.Lock()
+	pullRequestMemory.values = nil
+	pullRequestMemory.Unlock()
+	var calls sync.WaitGroup
+	loaded := make(chan bool, 2)
+	for _, worktree := range []string{repo, sibling} {
+		calls.Add(1)
+		go func() {
+			defer calls.Done()
+			_, ok := listPullRequests(worktree)
+			loaded <- ok
+		}()
+	}
+	calls.Wait()
+	close(loaded)
+	for ok := range loaded {
+		if !ok {
+			t.Fatal("sibling worktree PR lookup did not load")
+		}
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls := strings.Count(strings.TrimSpace(string(data)), "called"); calls != 1 {
+		t.Fatalf("gh calls = %d, want 1:\n%s", calls, data)
+	}
+	pullRequestMemory.Lock()
+	entries := len(pullRequestMemory.values)
+	pullRequestMemory.Unlock()
+	if entries != 1 {
+		t.Fatalf("PR cache entries = %d, want 1", entries)
 	}
 }
 
