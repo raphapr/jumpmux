@@ -464,7 +464,7 @@ func muxCell(item item, width int, background *lipgloss.AdaptiveColor) string {
 	if item.muxWindowID == "" {
 		return renderCell(mutedStyle, "-", width, background)
 	}
-	return renderCell(infoStyle, "●", width, background)
+	return renderCell(mutedStyle, "●", width, background)
 }
 
 func muxView(item item) string {

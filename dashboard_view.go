@@ -5,7 +5,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -291,10 +290,7 @@ func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) st
 	if index == m.index {
 		background = &selectedColor
 	}
-	worktreeStyle := semanticRowStyle(item, gitItem, m.now)
-	if index == m.index {
-		worktreeStyle = textStyle
-	}
+	worktreeStyle := textStyle
 	prefix := renderCell(textStyle, "  ", 2, background)
 	if index == m.index {
 		prefix = renderCell(infoStyle, "▌ ", 2, background)
@@ -674,17 +670,6 @@ func sessionIcon(session item) (string, lipgloss.Style) {
 		return dashboardIcon("", "C"), mutedStyle
 	default:
 		return dashboardIcon("", "R"), mutedStyle
-	}
-}
-
-func semanticRowStyle(item, git item, now time.Time) lipgloss.Style {
-	switch {
-	case isStale(item, now):
-		return mutedStyle
-	case item.status == "done":
-		return successStyle
-	default:
-		return textStyle
 	}
 }
 

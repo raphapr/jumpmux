@@ -395,6 +395,41 @@ func TestAgentFilterAndPreviewIncludeSessionMetadata(t *testing.T) {
 	}
 }
 
+func TestAgentAndWorktreeIdentityTextStaysNeutral(t *testing.T) {
+	previousProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(0)
+	defer lipgloss.SetColorProfile(previousProfile)
+	applyColorScheme(schemeDefault)
+
+	now := time.Now()
+	agentModel := newDashboard("/repo")
+	agentModel.width, agentModel.height, agentModel.index = 100, 20, 1
+	agent := item{kind: "session", target: "%1", cwd: "/repo", title: "agent-title", status: "done", updated: now.Add(-staleThreshold - time.Minute)}
+	agentModel.agents = []item{agent}
+	agentModel.agentGit[agent.cwd] = item{gitLoaded: true}
+	agentRow := agentModel.tableRow(agent, 0, agentModel.width, agentModel.columns(agentModel.width, agentModel.rows()))
+	neutralPrefix := strings.SplitN(textStyle.Render("probe"), "probe", 2)[0]
+	mutedPrefix := strings.SplitN(mutedStyle.Render("probe"), "probe", 2)[0]
+	successPrefix := strings.SplitN(successStyle.Render("probe"), "probe", 2)[0]
+	if !strings.Contains(agentRow, neutralPrefix+agent.title) || strings.Contains(agentRow, mutedPrefix+agent.title) || strings.Contains(agentRow, successPrefix+agent.title) {
+		t.Fatalf("Agent identity is not neutral: %q", agentRow)
+	}
+
+	worktreeModel := newDashboard("/repo")
+	worktreeModel.width, worktreeModel.height, worktreeModel.index, worktreeModel.tab = 100, 20, 1, tabWorktrees
+	worktreeModel.agentsLoaded = true
+	worktree := item{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main", gitLoaded: true, sessionTitle: "worktree-agent", status: "done", updated: now.Add(-staleThreshold - time.Minute), muxWindowID: "@1"}
+	worktreeModel.worktrees = []item{worktree}
+	worktreeRow := worktreeModel.tableRow(worktree, 0, worktreeModel.width, worktreeModel.columns(worktreeModel.width, worktreeModel.rows()))
+	if !strings.Contains(worktreeRow, neutralPrefix+" "+worktree.sessionTitle) || strings.Contains(worktreeRow, mutedPrefix+" "+worktree.sessionTitle) || strings.Contains(worktreeRow, successPrefix+" "+worktree.sessionTitle) {
+		t.Fatalf("Worktree Agent identity is not neutral: %q", worktreeRow)
+	}
+	infoPrefix := strings.SplitN(infoStyle.Render("probe"), "probe", 2)[0]
+	if strings.Contains(worktreeRow, infoPrefix+"●") || !strings.Contains(worktreeRow, mutedPrefix+"●") {
+		t.Fatalf("Worktree Mux marker is not muted: %q", worktreeRow)
+	}
+}
+
 func TestSelectedRowsPreserveGitStyle(t *testing.T) {
 	model := newDashboard("/repo")
 	model.width, model.height = 100, 30
