@@ -193,6 +193,11 @@ func TestNativeGitWorktreeActionsKeepBranch(t *testing.T) {
 	if _, err := os.Stat(worktree); err != nil {
 		t.Fatalf("created worktree: %v", err)
 	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\necho 'error connecting to /tmp/tmux-1001/default (No such file or directory)' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if err := removeWorktree(repo, worktree, backendGit); err != nil {
 		t.Fatal(err)
 	}
@@ -246,6 +251,9 @@ func TestWorktrunkActionCommands(t *testing.T) {
 	bin, log := t.TempDir(), filepath.Join(t.TempDir(), "wt.log")
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$WT_LOG\"\n"
 	if err := os.WriteFile(filepath.Join(bin, "wt"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\necho 'error connecting to /tmp/tmux-1001/default (No such file or directory)' >&2\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))

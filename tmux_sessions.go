@@ -185,7 +185,7 @@ func listLiveTmuxSessions(includeServer bool) ([]tmuxSession, error) {
 	}, tmuxFieldSeparator) + tmuxRecordSeparator
 	output, err := tmuxOutput("list-panes", "-a", "-F", format)
 	if err != nil {
-		if includeServer && (strings.Contains(err.Error(), "no server running") || strings.Contains(err.Error(), "failed to connect")) {
+		if includeServer && tmuxUnavailable(err) {
 			return nil, nil
 		}
 		return nil, err

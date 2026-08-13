@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -542,9 +543,20 @@ func tmuxOutput(args ...string) (string, error) {
 		if ctx.Err() != nil {
 			return "", fmt.Errorf("tmux %s: %w", args[0], ctx.Err())
 		}
-		return "", fmt.Errorf("tmux %s: %s", args[0], strings.TrimSpace(string(output)))
+		if message := strings.TrimSpace(string(output)); message != "" {
+			return "", fmt.Errorf("tmux %s: %s", args[0], message)
+		}
+		return "", fmt.Errorf("tmux %s: %w", args[0], err)
 	}
 	return string(output), nil
+}
+
+func tmuxUnavailable(err error) bool {
+	message := strings.ToLower(err.Error())
+	return errors.Is(err, exec.ErrNotFound) ||
+		strings.Contains(message, "no server running") ||
+		strings.Contains(message, "failed to connect") ||
+		strings.Contains(message, "error connecting")
 }
 
 func agentStateDir() (string, error) {

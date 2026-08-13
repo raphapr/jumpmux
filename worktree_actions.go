@@ -153,7 +153,7 @@ func actionWorktreeBackend(backend worktreeBackend) (worktreeBackend, error) {
 func validateWorktreeRemoval(path string) error {
 	panes, err := listTmuxPanes()
 	if err != nil {
-		if strings.Contains(err.Error(), "no server running") || strings.Contains(err.Error(), "executable file not found") {
+		if tmuxUnavailable(err) {
 			return nil
 		}
 		return err
