@@ -363,7 +363,7 @@ func runDestructiveWorktreeCommand(cwd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		return updateWorktree(selected.cwd, selected.branch, args[0], backend)
+		return updateWorktree(selected.cwd, selected.branch, args[0], false, backend)
 	}
 	return nil
 }

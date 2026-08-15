@@ -118,6 +118,7 @@ type dashboardModel struct {
 	action                                                                dashboardAction
 	actionTarget                                                          item
 	actionBackend                                                         worktreeBackend
+	actionNoSquash                                                        bool
 	sessionSelectionAfterRemove                                           string
 	restoreSessionSelection                                               bool
 }
@@ -572,7 +573,7 @@ func (m *dashboardModel) beginWorktreeOperation(selected item, action dashboardA
 		m.err = err
 		return
 	}
-	m.action, m.actionTarget, m.actionBackend, m.err = action, selected, backend, nil
+	m.action, m.actionTarget, m.actionBackend, m.actionNoSquash, m.err = action, selected, backend, false, nil
 }
 
 func (m *dashboardModel) beginRemove(selected item) {
@@ -1362,7 +1363,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case worktreeActionMsg:
-		m.action, m.actionTarget, m.actionBackend, m.err = actionNone, item{}, "", msg.err
+		m.action, m.actionTarget, m.actionBackend, m.actionNoSquash, m.err = actionNone, item{}, "", false, msg.err
 		if msg.action == actionAddWorktree {
 			if msg.err == nil && msg.notice != "" {
 				m.setNotice(msg.notice)
@@ -1958,13 +1959,17 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.action == actionRemoveSession {
 				m.sessionSelectionAfterRemove = ""
 			}
-			m.action, m.actionTarget, m.actionBackend = actionNone, item{}, ""
+			m.action, m.actionTarget, m.actionBackend, m.actionNoSquash = actionNone, item{}, "", false
 			return m, m.resumeRefreshes()
+		}
+		if m.action == actionMergeWorktree && m.actionBackend == backendWT && key == "s" {
+			m.actionNoSquash = !m.actionNoSquash
+			return m, nil
 		}
 		if key != actionConfirmationKey(m.action) {
 			return m, nil
 		}
-		action, target, backend := m.action, m.actionTarget, m.actionBackend
+		action, target, backend, noSquash := m.action, m.actionTarget, m.actionBackend, m.actionNoSquash
 		m.action, m.err = actionRunning, nil
 		return m, func() tea.Msg {
 			if action == actionRemoveSession {
@@ -1978,7 +1983,7 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if action == actionMergeWorktree {
 					operation, notice = "merge", "Merged "+target.branch
 				}
-				return worktreeActionMsg{action: action, notice: notice, err: updateWorktree(target.cwd, target.branch, operation, backend)}
+				return worktreeActionMsg{action: action, notice: notice, err: updateWorktree(target.cwd, target.branch, operation, noSquash, backend)}
 			}
 			return worktreeActionMsg{action: action, notice: "Removed worktree " + m.displayWorktree(target), err: removeWorktree(m.cwd, target.cwd, backend)}
 		}
@@ -2106,7 +2111,7 @@ func (m dashboardModel) helpLines() []string {
 		"Worktrees     a Add · o Open · d Diff · p PR · y Copy PR",
 		"              b Rebase · m Merge · x Cleanup · r Remove",
 		"Sessions      O Open · Y Copy name · R Rename · D Remove · P Previous",
-		"Confirm       Repeat b/m/x/r/D · Esc cancels",
+		"Confirm       Repeat b/m/x/r/D · s toggles Worktrunk squash · Esc cancels",
 		"Click         Select row",
 		"Double-click  Open row",
 		"Mouse wheel   Scroll table or preview",

@@ -296,10 +296,13 @@ func TestWorktrunkRebaseAndMergeActions(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WT_LOG", log)
-	if err := updateWorktree(worktree, "feature", "rebase", backendWT); err != nil {
+	if err := updateWorktree(worktree, "feature", "rebase", false, backendWT); err != nil {
 		t.Fatal(err)
 	}
-	if err := updateWorktree(worktree, "feature", "merge", backendWT); err != nil {
+	if err := updateWorktree(worktree, "feature", "merge", false, backendWT); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateWorktree(worktree, "feature", "merge", true, backendWT); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(log)
@@ -307,7 +310,7 @@ func TestWorktrunkRebaseAndMergeActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	commands := string(data)
-	for _, expected := range []string{"-C " + worktree + " step rebase --format=json", "-C " + worktree + " merge --no-remove --format=json"} {
+	for _, expected := range []string{"-C " + worktree + " step rebase --format=json", "-C " + worktree + " merge --no-remove --format=json", "-C " + worktree + " merge --no-remove --no-squash --format=json"} {
 		if !strings.Contains(commands, expected) {
 			t.Fatalf("Worktrunk log missing %q:\n%s", expected, commands)
 		}
@@ -322,10 +325,10 @@ func TestNativeGitRebaseAndMergeActions(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, output)
 		}
 	}
-	if err := updateWorktree(worktree, "feature", "rebase", backendGit); err != nil {
+	if err := updateWorktree(worktree, "feature", "rebase", false, backendGit); err != nil {
 		t.Fatal(err)
 	}
-	if err := updateWorktree(worktree, "feature", "merge", backendGit); err != nil {
+	if err := updateWorktree(worktree, "feature", "merge", false, backendGit); err != nil {
 		t.Fatal(err)
 	}
 	mainHead, err := exec.Command("git", "-C", repo, "rev-parse", "main").Output()
@@ -441,9 +444,16 @@ func TestWorktreeRebaseAndMergeMenuActions(t *testing.T) {
 	}
 	model.action = actionNone
 	model.beginWorktreeOperation(model.worktrees[1], actionMergeWorktree)
+	model.actionBackend = backendWT
 	preview := ansi.Strip(model.renderPreview(100))
-	if model.action != actionMergeWorktree || !strings.Contains(preview, "keeps the worktree") || !strings.Contains(preview, "may stage and commit uncommitted changes") {
+	if model.action != actionMergeWorktree || !strings.Contains(preview, "Squash: on") || !strings.Contains(preview, "May commit changes; keeps worktree.") {
 		t.Fatalf("merge confirmation = action %v\n%s", model.action, preview)
+	}
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	model = updated.(dashboardModel)
+	preview = ansi.Strip(model.renderPreview(100))
+	if command != nil || !model.actionNoSquash || !strings.Contains(preview, "Squash: off") {
+		t.Fatalf("no-squash confirmation = action %v noSquash=%v\n%s", model.action, model.actionNoSquash, preview)
 	}
 }
 

@@ -120,7 +120,7 @@ func removeWorktree(repo, path string, backend worktreeBackend) error {
 	return nil
 }
 
-func updateWorktree(path, branch, operation string, backend worktreeBackend) error {
+func updateWorktree(path, branch, operation string, noSquash bool, backend worktreeBackend) error {
 	if operation != "rebase" && operation != "merge" {
 		return fmt.Errorf("unsupported worktree action %q", operation)
 	}
@@ -152,7 +152,11 @@ func updateWorktree(path, branch, operation string, backend worktreeBackend) err
 		if operation == "rebase" {
 			args = append(args, "step", "rebase", "--format=json")
 		} else {
-			args = append(args, "merge", "--no-remove", "--format=json")
+			args = append(args, "merge", "--no-remove")
+			if noSquash {
+				args = append(args, "--no-squash")
+			}
+			args = append(args, "--format=json")
 		}
 		output, err := runActionCommand(ctx, path, "wt", args...)
 		if err != nil {

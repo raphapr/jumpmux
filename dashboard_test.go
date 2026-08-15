@@ -16,6 +16,18 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+func TestWorktreeTabExplainsNonRepository(t *testing.T) {
+	cwd := t.TempDir()
+	_, err := listWorktreeItems(cwd)
+	model := newDashboard(cwd)
+	model.width, model.height, model.tab = 100, 20, tabWorktrees
+	model.worktreesLoaded, model.worktreeErr = true, err
+	view := ansi.Strip(model.renderTable(model.width))
+	if !strings.Contains(view, "Not a Git repo. Run jumpmux in one.") || strings.Contains(view, "Press a to add one") {
+		t.Fatalf("worktree empty state = %q", view)
+	}
+}
+
 func TestDashboardRefreshIsIncremental(t *testing.T) {
 	model := newDashboard("/repo")
 	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo"}}

@@ -192,6 +192,8 @@ func (m dashboardModel) renderTable(width int) string {
 		message := "No " + label + "."
 		if !loaded {
 			message = "Loading " + label + "…"
+		} else if m.tab == tabWorktrees && m.worktreeErr != nil && strings.Contains(strings.ToLower(m.worktreeErr.Error()), "not a git repository") {
+			message = "Not a Git repo. Run jumpmux in one."
 		} else if m.query != "" {
 			if m.tab == tabSessions {
 				message = "No sessions match “" + safeText(m.query) + "”. Esc clears search."
@@ -597,17 +599,19 @@ func (m dashboardModel) removePreviewLines() []string {
 		}
 	}
 	if m.action == actionMergeWorktree {
-		behavior := "Native Git requires clean worktrees and fast-forwards the default branch."
+		mode, note := "off (native Git)", "Requires clean worktrees; keeps worktree."
 		if m.actionBackend == backendWT {
-			behavior = "Worktrunk squashes, rebases, runs approved hooks, then merges."
+			mode, note = "on (s toggles)", "May commit changes; keeps worktree."
+			if m.actionNoSquash {
+				mode = "off (s toggles)"
+			}
 		}
 		return []string{
 			"Branch: " + safeText(m.actionTarget.branch),
 			"Path:   " + safeText(compactHome(m.actionTarget.cwd)),
-			"",
-			behavior,
-			"Worktrunk may stage and commit uncommitted changes.",
-			"This uses the local default branch and keeps the worktree.",
+			"Squash: " + mode,
+			note,
+			"Target: local default branch",
 			"",
 			actionConfirmationKey(m.action) + " Merge    Esc Cancel",
 		}
@@ -684,7 +688,15 @@ func (m dashboardModel) renderFooter(width int) string {
 		case actionMergeWorktree:
 			verb = "Merge"
 		}
-		return padANSI("  "+warningStyle.Render(verb+" "+safeText(name)+"?")+"  "+footerCommand(key, verb)+" "+footerCommand("Esc", "Cancel"), width)
+		footer := "  " + warningStyle.Render(verb+" "+safeText(name)+"?") + "  " + footerCommand(key, verb)
+		if m.action == actionMergeWorktree && m.actionBackend == backendWT {
+			mode := "on"
+			if m.actionNoSquash {
+				mode = "off"
+			}
+			footer += " " + footerCommand("s", "Squash "+mode)
+		}
+		return padANSI(footer+" "+footerCommand("Esc", "Cancel"), width)
 	case actionRunning:
 		return padANSI("  "+infoStyle.Render("Working…"), width)
 	}
