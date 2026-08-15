@@ -188,6 +188,31 @@ func TestPullRequestFailureIsCached(t *testing.T) {
 	}
 }
 
+func TestMalformedPullRequestOutputIsCachedAsFailure(t *testing.T) {
+	bin := t.TempDir()
+	log := filepath.Join(t.TempDir(), "gh.log")
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\necho called >>\"$GH_LOG\"\nprintf 'not json\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GH_LOG", log)
+	pullRequestMemory.Lock()
+	pullRequestMemory.values = nil
+	pullRequestMemory.Unlock()
+	repo := t.TempDir()
+
+	if listed, loaded := listPullRequests(repo); loaded || listed != nil {
+		t.Fatalf("malformed PR lookup = %#v, loaded=%v", listed, loaded)
+	}
+	if _, loaded := listPullRequests(repo); loaded {
+		t.Fatal("cached malformed PR lookup reported loaded")
+	}
+	data, err := os.ReadFile(log)
+	if err != nil || strings.Count(strings.TrimSpace(string(data)), "called") != 1 {
+		t.Fatalf("malformed PR lookup calls = %q, %v", data, err)
+	}
+}
+
 func TestPullRequestMemoryFinishSafelyReleasesWaiters(t *testing.T) {
 	key := t.Name()
 	pullRequestMemory.Lock()

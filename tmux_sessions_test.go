@@ -153,7 +153,7 @@ func TestSessionsCLIListsLiveSessionsOutsideTmux(t *testing.T) {
 	writeSessionsConfig(t, "[[sessions.entries]]\nname = \"dev\"\npath = \""+project+"\"\n")
 	writeFakeTmux(t, `
 case "$1" in
-  list-panes) printf '$1\037dev\037\061\037\061\037\061\037%%7\037/tmp/live\036\n' ;;
+  list-panes) printf '$1\037dev\037\061\037\037\061\037\061\037%%7\037/tmp/live\036\n' ;;
 esac
 `)
 	sessions, err := listSessions(true)
@@ -176,7 +176,7 @@ func TestListSessionsMergesDiscoveredConfiguredAndLive(t *testing.T) {
 	writeFakeTmux(t, `
 case "$1" in
   display-message) printf 'dev\n' ;;
-  list-panes) printf '$1\037dev\037\063\037\061\037\061\037%%7\037/tmp/live\036\n' ;;
+  list-panes) printf '$1\037dev\037\063\037\037\061\037\061\037%%7\037/tmp/live\036\n' ;;
 esac
 `)
 	sessions, err := listSessions(false)
@@ -200,7 +200,7 @@ func TestListSessionsMergesLiveTmux(t *testing.T) {
 	writeFakeTmux(t, `
 case "$1" in
   display-message) printf 'dev\n' ;;
-  list-panes) printf '$1\037dev\037\063\037\061\037\061\037%%7\037/tmp/live\036\n$2\037other\037\061\037\061\037\061\037%%8\037/tmp/other\036\n' ;;
+  list-panes) printf '$1\037dev\037\063\037\037\061\037\061\037%%7\037/tmp/live\036\n$2\037other\037\061\037\037\061\037\061\037%%8\037/tmp/other\036\n' ;;
 esac
 `)
 	sessions, err := listSessions(false)
@@ -234,7 +234,7 @@ func TestLiveTmuxSessionsUseOneSnapshot(t *testing.T) {
 printf '%s\n' "$*" >> "$TMUX_LOG"
 case "$1" in
   display-message) printf 'dev\n' ;;
-  list-panes) printf '$1\037dev\037\061\037\061\037\061\037%%7\037/tmp/dev\036\n' ;;
+  list-panes) printf '$1\037dev\037\061\037\037\061\037\061\037%%7\037/tmp/dev\036\n' ;;
 esac
 `)
 	t.Setenv("TMUX", "/tmp/tmux,1,0")
@@ -255,7 +255,7 @@ func TestLiveTmuxSessionsFailClosed(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/tmux,1,0")
 	writeFakeTmux(t, `
 case "$1" in
-  list-panes) printf '$1\037dev\0370\0371' ;;
+  list-panes) printf '$1\037dev\0371\0371\0371\037%%7\037/tmp/dev\036\n' ;;
 esac
 `)
 	if _, err := listLiveTmuxSessions(false); err == nil || !strings.Contains(err.Error(), "malformed pane record") {

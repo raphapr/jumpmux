@@ -111,11 +111,11 @@ func cliItems(kind, cwd string) ([]item, error) {
 			return nil, err
 		}
 		agents, err := listLiveAgents()
-		if err != nil {
+		if err != nil && !tmuxUnavailable(err) {
 			return nil, err
 		}
 		attachAgentsToWorktrees(items, agents)
-		if err := attachTmuxWorktrees(items); err != nil {
+		if err := attachTmuxWorktrees(items); err != nil && !tmuxUnavailable(err) {
 			return nil, err
 		}
 		return items, nil

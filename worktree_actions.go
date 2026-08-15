@@ -90,6 +90,13 @@ func removeWorktree(repo, path string, backend worktreeBackend) error {
 	if samePath(root, path) {
 		return errors.New("cannot remove the primary worktree")
 	}
+	current, err := gitOutput(repo, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return err
+	}
+	if samePath(strings.TrimSpace(current), path) {
+		return errors.New("cannot remove the current worktree")
+	}
 	if err := validateWorktreeRemoval(path); err != nil {
 		return err
 	}
@@ -167,6 +174,12 @@ func updateWorktree(path, branch, operation string, noSquash bool, backend workt
 
 	root := worktrees[0].path
 	base := gitDefaultBranch(root)
+	if operation == "merge" {
+		output, err := runActionCommand(ctx, root, "git", "symbolic-ref", "--quiet", "--short", "HEAD")
+		if err != nil || strings.TrimSpace(string(output)) != base {
+			return fmt.Errorf("cannot merge: primary worktree is not on %s", base)
+		}
+	}
 	for _, dir := range []string{path, root} {
 		output, err := runActionCommand(ctx, dir, "git", "status", "--porcelain")
 		if err != nil {

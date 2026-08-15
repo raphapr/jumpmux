@@ -222,11 +222,11 @@ func collectItemsFor(cwd string) ([]item, error) {
 	items = worktreePRDetails(cwd, items)
 
 	agents, err := listLiveAgents()
-	if err != nil {
+	if err != nil && !tmuxUnavailable(err) {
 		return nil, err
 	}
 	attachAgentsToWorktrees(items, agents)
-	if err := attachTmuxWorktrees(items); err != nil {
+	if err := attachTmuxWorktrees(items); err != nil && !tmuxUnavailable(err) {
 		return nil, err
 	}
 	return append(items, agents...), nil

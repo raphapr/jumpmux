@@ -715,7 +715,7 @@ func (m dashboardModel) renderFooter(width int) string {
 			base := []string{footerCommand("Esc", "Clear"), footerCommand("^c", "Quit")}
 			optional := []string{footerCommand("^j/k/n/p", "Move"), footerCommand("↵", "Open")}
 			if selected, ok := m.selected(); ok && selected.muxSessionID != "" {
-				optional = append(optional, footerCommand("^d", "Remove"))
+				optional = append(optional, footerCommand("^r", "Remove"))
 			}
 			controls := []string{}
 			for _, candidate := range optional {
@@ -745,14 +745,18 @@ func (m dashboardModel) renderFooter(width int) string {
 		if m.sessionSortRecent {
 			sortLabel = "Recent"
 		}
-		candidates := []string{footerCommand("^j/k/n/p", "Move"), footerCommand("↵", "Open"), footerCommand("^f", m.sessionFilter.label()), footerCommand("^r", sortLabel)}
+		candidates := []string{footerCommand("^j/k/n/p", "Move"), footerCommand("↵", "Open"), footerCommand("^f", m.sessionFilter.label()), footerCommand("^g", sortLabel)}
 		if m.query == "" {
 			candidates = append(candidates, footerCommand("type", "Search"))
 		} else {
 			candidates = append(candidates, footerCommand("Esc", "Clear"))
 		}
 		for _, entry := range m.actionMenuEntries() {
-			candidates = append(candidates, footerCommand(entry.key, entry.footer))
+			key := entry.key
+			if entry.action == menuRemove {
+				key = "^r"
+			}
+			candidates = append(candidates, footerCommand(key, entry.footer))
 		}
 		candidates = append(candidates, footerCommand("Tab", "Next"), footerCommand("Space", "Actions"))
 		return m.prioritizedFooterWithBase(width, candidates, []string{footerCommand("?", "Help"), footerCommand("^c", "Quit")})

@@ -1524,7 +1524,7 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.action != actionNone {
 		return m.handleActionKey(msg)
 	}
-	if key == "?" {
+	if key == "?" && !m.filter {
 		m.clearActionError()
 		m.help, m.helpOffset = true, 0
 		return m, nil
@@ -1642,17 +1642,6 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.preview, m.loading = previewData{}, false
 		return m, nil
 	}
-	if key == "+" || key == "=" || key == "-" || key == "_" {
-		if !m.previewEnabled[m.tab] {
-			return m, nil
-		}
-		delta := previewSizeStep
-		if key == "-" || key == "_" {
-			delta = -delta
-		}
-		m.resizePreview(delta)
-		return m, nil
-	}
 	if key == "shift+left" || key == "shift+right" {
 		if m.hasRightPanel() {
 			m.previewFocused = true
@@ -1719,6 +1708,17 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.preview, m.loading = previewData{}, false
 		return m, command
+	}
+	if key == "+" || key == "=" || key == "-" || key == "_" {
+		if !m.previewEnabled[m.tab] {
+			return m, nil
+		}
+		delta := previewSizeStep
+		if key == "-" || key == "_" {
+			delta = -delta
+		}
+		m.resizePreview(delta)
+		return m, nil
 	}
 	if m.tab != tabSessions && len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
 		index := int(key[0] - '1')
@@ -2089,7 +2089,7 @@ func (m dashboardModel) helpLines() []string {
 		"g/G, Home/End Top/bottom in diff or help",
 		"h/l           Pan long lines",
 		"Ctrl+v        Toggle this tab's runtime preview",
-		"+/-           Resize preview by 10%",
+		"+/-           Resize preview in Agents/Worktrees",
 		"s             Toggle agent scope",
 		"t             Open theme picker",
 		"Theme picker  Type filters; j/k browses",

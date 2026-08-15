@@ -116,6 +116,33 @@ func TestWorktreeAddParserSupportsDetachAndJSON(t *testing.T) {
 	}
 }
 
+func TestWorktreeListsDegradeWithoutTmux(t *testing.T) {
+	repo, bin := t.TempDir(), t.TempDir()
+	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.com"}, {"commit", "--allow-empty", "-qm", "base"}} {
+		if output, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\necho 'no server running on /tmp/tmux-test' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	invalidateTmuxPaneCache()
+
+	for name, load := range map[string]func() ([]item, error){
+		"resource list": func() ([]item, error) { return cliItems("worktrees", repo) },
+		"legacy list":   func() ([]item, error) { return collectItemsFor(repo) },
+	} {
+		items, err := load()
+		if err != nil || len(items) == 0 || items[0].kind != "worktree" {
+			t.Fatalf("%s without tmux = %#v, %v", name, items, err)
+		}
+	}
+}
+
 func TestWorktreeAddRequiresTmuxBeforeCreation(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

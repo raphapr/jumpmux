@@ -922,6 +922,52 @@ func TestSessionSearchFooterFits(t *testing.T) {
 	}
 }
 
+func TestSessionFootersShowActualBindings(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height, model.tab = 180, 20, tabSessions
+	model.sessions = []item{{kind: "tmux-session", target: "live", title: "live", muxSessionID: "$1"}}
+	footer := ansi.Strip(model.renderFooter(model.width))
+	for _, want := range []string{"^g Grouped", "^r Remove"} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("session footer missing %q: %s", want, footer)
+		}
+	}
+	if strings.Contains(footer, "^r Grouped") || strings.Contains(footer, "^d Remove") {
+		t.Fatalf("session footer shows stale bindings: %s", footer)
+	}
+
+	model.filter, model.query = true, "l"
+	model.filterInputs[tabSessions].SetValue("l")
+	footer = ansi.Strip(model.renderFooter(model.width))
+	if !strings.Contains(footer, "^r Remove") || strings.Contains(footer, "^d Remove") {
+		t.Fatalf("session search footer shows stale removal binding: %s", footer)
+	}
+}
+
+func TestSearchAcceptsQuestionAndPreviewResizeKeys(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height, model.tab = 100, 20, tabSessions
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
+	model = updated.(dashboardModel)
+	if !model.filter || model.query != "+" {
+		t.Fatalf("plus did not start Session search: filter=%v query=%q", model.filter, model.query)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	model = updated.(dashboardModel)
+	if model.help || model.query != "+?" {
+		t.Fatalf("question mark did not continue Session search: help=%v query=%q", model.help, model.query)
+	}
+
+	model = newDashboard("/repo")
+	model.width, model.height, model.filter = 100, 20, true
+	model.filterInputs[tabAgents].Focus()
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	model = updated.(dashboardModel)
+	if model.help || model.query != "?" {
+		t.Fatalf("question mark did not enter filter: help=%v query=%q", model.help, model.query)
+	}
+}
+
 func TestDashboardNavigationPreviewModesAndWideLayout(t *testing.T) {
 	model := newDashboard("/repo")
 	model.width, model.height = 80, 20
@@ -1008,16 +1054,16 @@ func TestSessionsReservedKeysAndPreviewPaging(t *testing.T) {
 
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
 	model = updated.(dashboardModel)
-	if !model.help || model.query != "" {
-		t.Fatalf("Sessions ? did not open Help before search: %#v", model)
+	if model.help || model.query != "?" {
+		t.Fatalf("Sessions ? was not inserted into search: %#v", model)
 	}
-	model.help = false
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
 	model = updated.(dashboardModel)
-	if model.actionMenu || model.query != " " {
+	if model.actionMenu || model.query != "? " {
 		t.Fatalf("Sessions Space was not inserted into search: %#v", model)
 	}
-	model.filter = false
+	model.filter, model.query = false, ""
+	model.filterInputs[tabSessions].SetValue("")
 	model.preview = previewData{target: "dev", kind: "tmux-session", lines: make([]string, 100)}
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 	model = updated.(dashboardModel)

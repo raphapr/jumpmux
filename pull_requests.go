@@ -104,6 +104,9 @@ func listPullRequests(repo string) (map[string][]pullRequest, bool) {
 	}
 
 	values = parsePullRequests(output)
+	if values == nil {
+		return nil, false
+	}
 	for branch := range values {
 		for index := range values[branch] {
 			values[branch][index].IdentityAvailable = identityAvailable
@@ -184,7 +187,7 @@ func gitCommonDir(repo string) (string, error) {
 func parsePullRequests(output []byte) map[string][]pullRequest {
 	var listed []pullRequest
 	if json.Unmarshal(output, &listed) != nil {
-		return map[string][]pullRequest{}
+		return nil
 	}
 	result := make(map[string][]pullRequest, len(listed))
 	for _, pr := range listed {

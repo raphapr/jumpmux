@@ -79,6 +79,27 @@ printf '%%7\0374321\037%s\037Pi\037$1\037dev\037@2\037feature\037pi\037%s\036\n'
 	}
 }
 
+func TestWorktreeRemovalRefusesLaunchWorktreeWithoutTmux(t *testing.T) {
+	parent := t.TempDir()
+	repo, worktree := filepath.Join(parent, "repo"), filepath.Join(parent, "feature")
+	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "feature", worktree}} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\necho 'no server running on /tmp/tmux-test' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := removeWorktree(worktree, worktree, backendGit); err == nil || !strings.Contains(err.Error(), "current worktree") {
+		t.Fatalf("launch worktree removal = %v", err)
+	}
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("current worktree was mutated: %v", err)
+	}
+}
+
 func TestCleanupPrunableWorktreeRevalidatesAndPrunes(t *testing.T) {
 	parent := t.TempDir()
 	repo, stale := filepath.Join(parent, "repo"), filepath.Join(parent, "stale")
@@ -344,6 +365,23 @@ func TestNativeGitRebaseAndMergeActions(t *testing.T) {
 	}
 	if _, err := os.Stat(worktree); err != nil {
 		t.Fatalf("native merge removed worktree: %v", err)
+	}
+}
+
+func TestNativeGitMergeRequiresDefaultBranch(t *testing.T) {
+	parent := t.TempDir()
+	repo, worktree := filepath.Join(parent, "repo"), filepath.Join(parent, "feature")
+	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "feature", worktree}, {"-C", worktree, "commit", "--allow-empty", "-qm", "feature"}, {"-C", repo, "switch", "-qc", "other"}} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	if err := updateWorktree(worktree, "feature", "merge", false, backendGit); err == nil || !strings.Contains(err.Error(), "primary worktree is not on main") {
+		t.Fatalf("merge from wrong primary branch = %v", err)
+	}
+	head, err := exec.Command("git", "-C", repo, "branch", "--show-current").Output()
+	if err != nil || strings.TrimSpace(string(head)) != "other" {
+		t.Fatalf("primary branch changed: %q, %v", head, err)
 	}
 }
 

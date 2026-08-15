@@ -197,21 +197,18 @@ func listLiveTmuxSessions(includeServer bool) ([]tmuxSession, error) {
 	sessionsByID := map[string]tmuxSession{}
 	for _, record := range tmuxRecords(output) {
 		parts := strings.Split(record, tmuxFieldSeparator)
-		if len(parts) != 7 && len(parts) != 8 {
+		if len(parts) != 8 {
 			return nil, errors.New("tmux returned a malformed pane record")
 		}
-		lastAttached, offset := time.Time{}, 0
-		if len(parts) == 8 {
-			if parts[3] != "" && parts[3] != "0" {
-				seconds, err := strconv.ParseInt(parts[3], 10, 64)
-				if err != nil || seconds < 0 {
-					return nil, errors.New("tmux returned a malformed pane record")
-				}
-				lastAttached = time.Unix(seconds, 0)
+		lastAttached := time.Time{}
+		if parts[3] != "" && parts[3] != "0" {
+			seconds, err := strconv.ParseInt(parts[3], 10, 64)
+			if err != nil || seconds < 0 {
+				return nil, errors.New("tmux returned a malformed pane record")
 			}
-			offset = 1
+			lastAttached = time.Unix(seconds, 0)
 		}
-		if !validTmuxSessionID(parts[0]) || parts[1] == "" || (parts[3+offset] != "0" && parts[3+offset] != "1") || (parts[4+offset] != "0" && parts[4+offset] != "1") || !validTmuxPaneID(parts[5+offset]) {
+		if !validTmuxSessionID(parts[0]) || parts[1] == "" || (parts[4] != "0" && parts[4] != "1") || (parts[5] != "0" && parts[5] != "1") || !validTmuxPaneID(parts[6]) {
 			return nil, errors.New("tmux returned a malformed pane record")
 		}
 		windows, err := strconv.Atoi(parts[2])
@@ -225,11 +222,11 @@ func listLiveTmuxSessions(includeServer bool) ([]tmuxSession, error) {
 		if !exists {
 			session = tmuxSession{id: parts[0], name: parts[1], windows: windows, lastAttached: lastAttached, current: parts[1] == current}
 		}
-		if parts[3+offset] == "1" && parts[4+offset] == "1" {
+		if parts[4] == "1" && parts[5] == "1" {
 			if session.pane != "" {
 				return nil, errors.New("tmux returned multiple active panes for a session")
 			}
-			session.pane, session.path = parts[5+offset], parts[6+offset]
+			session.pane, session.path = parts[6], parts[7]
 		}
 		sessionsByID[parts[0]] = session
 	}
