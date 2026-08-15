@@ -158,6 +158,23 @@ const (
 	actionRunning
 )
 
+func actionConfirmationKey(action dashboardAction) string {
+	switch action {
+	case actionRemoveWorktree:
+		return "r"
+	case actionRemoveSession:
+		return "D"
+	case actionCleanupWorktree:
+		return "x"
+	case actionRebaseWorktree:
+		return "b"
+	case actionMergeWorktree:
+		return "m"
+	default:
+		return ""
+	}
+}
+
 const (
 	menuOpen menuAction = iota
 	menuAddWorktree
@@ -1937,35 +1954,33 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, command
 		}
 	case actionRemoveWorktree, actionRemoveSession, actionCleanupWorktree, actionRebaseWorktree, actionMergeWorktree:
-		switch key {
-		case "enter", "D":
-			if (m.action == actionRemoveSession) != (key == "D") {
-				return m, nil
-			}
-			action, target, backend := m.action, m.actionTarget, m.actionBackend
-			m.action, m.err = actionRunning, nil
-			return m, func() tea.Msg {
-				if action == actionRemoveSession {
-					return worktreeActionMsg{action: action, notice: "Removed session " + target.title, err: removeTmuxSession(target)}
-				}
-				if action == actionCleanupWorktree {
-					return worktreeActionMsg{action: action, notice: "Cleaned up stale worktree record", err: cleanupPrunableWorktree(m.cwd, target)}
-				}
-				if action == actionRebaseWorktree || action == actionMergeWorktree {
-					operation, notice := "rebase", "Rebased "+target.branch
-					if action == actionMergeWorktree {
-						operation, notice = "merge", "Merged "+target.branch
-					}
-					return worktreeActionMsg{action: action, notice: notice, err: updateWorktree(target.cwd, target.branch, operation, backend)}
-				}
-				return worktreeActionMsg{action: action, notice: "Removed worktree " + m.displayWorktree(target), err: removeWorktree(m.cwd, target.cwd, backend)}
-			}
-		case "esc":
+		if key == "esc" {
 			if m.action == actionRemoveSession {
 				m.sessionSelectionAfterRemove = ""
 			}
 			m.action, m.actionTarget, m.actionBackend = actionNone, item{}, ""
 			return m, m.resumeRefreshes()
+		}
+		if key != actionConfirmationKey(m.action) {
+			return m, nil
+		}
+		action, target, backend := m.action, m.actionTarget, m.actionBackend
+		m.action, m.err = actionRunning, nil
+		return m, func() tea.Msg {
+			if action == actionRemoveSession {
+				return worktreeActionMsg{action: action, notice: "Removed session " + target.title, err: removeTmuxSession(target)}
+			}
+			if action == actionCleanupWorktree {
+				return worktreeActionMsg{action: action, notice: "Cleaned up stale worktree record", err: cleanupPrunableWorktree(m.cwd, target)}
+			}
+			if action == actionRebaseWorktree || action == actionMergeWorktree {
+				operation, notice := "rebase", "Rebased "+target.branch
+				if action == actionMergeWorktree {
+					operation, notice = "merge", "Merged "+target.branch
+				}
+				return worktreeActionMsg{action: action, notice: notice, err: updateWorktree(target.cwd, target.branch, operation, backend)}
+			}
+			return worktreeActionMsg{action: action, notice: "Removed worktree " + m.displayWorktree(target), err: removeWorktree(m.cwd, target.cwd, backend)}
 		}
 	}
 	return m, nil
@@ -2090,7 +2105,8 @@ func (m dashboardModel) helpLines() []string {
 		"Agents        o Open · d Diff · p PR · y Copy PR · m Mark seen",
 		"Worktrees     a Add · o Open · d Diff · p PR · y Copy PR",
 		"              b Rebase · m Merge · x Cleanup · r Remove",
-		"Sessions      O Open · Y Copy name · R Rename · D Remove (D confirms) · P Previous",
+		"Sessions      O Open · Y Copy name · R Rename · D Remove · P Previous",
+		"Confirm       Repeat b/m/x/r/D · Esc cancels",
 		"Click         Select row",
 		"Double-click  Open row",
 		"Mouse wheel   Scroll table or preview",

@@ -66,7 +66,7 @@ The extension reports each pane's lifecycle state for the dashboard.
 | `Esc` while filtering                     | Clear and close the filter                                                   |
 | Agents: `o`, `d`, `p`, `y`, `m`           | Open, diff, open PR, copy PR URL, or mark an unseen completion seen          |
 | Worktrees: `a`, `o`, `d`, `p`, `y`        | Add, open, diff, open PR, or copy PR URL                                     |
-| Worktrees: `b`, `m`, `x`, `r`             | Rebase, merge, clean up, or remove when applicable                           |
+| Worktrees: `b`, `m`, `x`, `r`             | Rebase, merge, clean up, or remove; repeat the key to confirm                |
 | Sessions: `O`, `Y`, `R`, `D`, `P`         | Open, copy, rename, remove (`D` confirms), or switch to the previous session |
 | `PgUp` / `PgDn`                           | Page diff/Help, or the Session preview                                       |
 | `Ctrl+u` / `Ctrl+d`                       | Page the focused preview, diff panel, or Help                                |

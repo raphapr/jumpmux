@@ -593,7 +593,7 @@ func (m dashboardModel) removePreviewLines() []string {
 			"Commits may be rewritten. Conflicts leave the rebase open.",
 			"This does not fetch or remove the worktree.",
 			"",
-			"Enter Rebase    Esc Cancel",
+			actionConfirmationKey(m.action) + " Rebase    Esc Cancel",
 		}
 	}
 	if m.action == actionMergeWorktree {
@@ -609,7 +609,7 @@ func (m dashboardModel) removePreviewLines() []string {
 			"Worktrunk may stage and commit uncommitted changes.",
 			"This uses the local default branch and keeps the worktree.",
 			"",
-			"Enter Merge    Esc Cancel",
+			actionConfirmationKey(m.action) + " Merge    Esc Cancel",
 		}
 	}
 	if m.action == actionCleanupWorktree {
@@ -620,7 +620,7 @@ func (m dashboardModel) removePreviewLines() []string {
 			"Git removes all stale unlocked worktree records.",
 			"It does not remove a live worktree or unlock a locked one.",
 			"",
-			"Enter Prune    Esc Cancel",
+			actionConfirmationKey(m.action) + " Clean up    Esc Cancel",
 		}
 	}
 	if m.action == actionRemoveSession {
@@ -629,7 +629,7 @@ func (m dashboardModel) removePreviewLines() []string {
 			"",
 			"This kills the live tmux session. Configured entries stay in config.toml.",
 			"",
-			"D Remove    Esc Cancel",
+			actionConfirmationKey(m.action) + " Remove    Esc Cancel",
 		}
 	}
 	behavior := "Native Git removes the worktree and keeps its branch."
@@ -642,7 +642,7 @@ func (m dashboardModel) removePreviewLines() []string {
 		"",
 		behavior,
 		"",
-		"Enter Remove    Esc Cancel",
+		actionConfirmationKey(m.action) + " Remove    Esc Cancel",
 	}
 }
 
@@ -672,9 +672,9 @@ func (m dashboardModel) renderFooter(width int) string {
 		input.SetCursor(input.Position())
 		return padANSI(prefix+input.View()+suffix, width)
 	case actionRemoveWorktree, actionRemoveSession, actionCleanupWorktree, actionRebaseWorktree, actionMergeWorktree:
-		name, verb, key := m.displayWorktree(m.actionTarget), "Remove", "Enter"
+		name, verb, key := m.displayWorktree(m.actionTarget), "Remove", actionConfirmationKey(m.action)
 		if m.action == actionRemoveSession {
-			name, key = m.actionTarget.title, "D"
+			name = m.actionTarget.title
 		}
 		switch m.action {
 		case actionCleanupWorktree:
