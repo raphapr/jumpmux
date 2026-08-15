@@ -11,14 +11,16 @@ jumpmux is a Go 1.24 Bubble Tea dashboard for Git worktrees, live Pi agents, and
 
 ## Code Map
 
-- `main.go`: CLI commands, shared item data, Git worktree discovery, and process helpers.
+- `main.go`: entry point, shared item data, Git discovery, and process helpers.
+- `cli.go`: resource command parsing, output, and confirmed CLI actions.
 - `dashboard.go`: Bubble Tea state, updates, actions, preview loading, and navigation.
 - `dashboard_view.go`: dashboard layout and rendering.
 - `dashboard_format.go`: cells, status formatting, ANSI handling, and icons.
+- `config.go`, `scope.go`, `theme.go`, `preview_size.go`: persisted user settings.
 - `tmux_sessions.go`: session configuration, discovery, activation, rename, and removal.
 - `live_agents.go`: Pi lifecycle state and tmux status integration.
 - `worktree_actions.go`: confirmed worktree mutations and safety checks.
-- `pull_requests.go`: GitHub PR and CI lookup/cache logic.
+- `pull_requests.go`, `git_cache.go`: GitHub status lookup and persisted Git/PR caches.
 - `extension/jumpmux-status.ts`: embedded Pi lifecycle extension.
 
 ## Change Rules
