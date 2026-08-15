@@ -77,7 +77,8 @@ func (m dashboardModel) refreshState() string {
 		return ""
 	}
 	inFlight := [...]bool{m.agentsInFlight, m.worktreesInFlight, m.sessionsInFlight}[m.tab]
-	if inFlight {
+	loaded := [...]bool{m.agentsLoaded, m.worktreesLoaded, m.sessionsLoaded}[m.tab]
+	if inFlight && !loaded {
 		return "refreshing"
 	}
 	viewErr := [...]error{m.agentErr, m.worktreeErr, m.sessionsErr}[m.tab]

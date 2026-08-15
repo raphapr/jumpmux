@@ -756,6 +756,9 @@ func refreshWorktreePR(cwd string, items []item, generation uint64) tea.Cmd {
 func refreshWorktreeMux(items []item, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		items = append([]item(nil), items...)
+		for index := range items {
+			items[index].current = false
+		}
 		err := attachTmuxWorktrees(items)
 		return worktreeDataMsg{stage: worktreeMuxStage, generation: generation, worktrees: items, err: err}
 	}
@@ -2255,10 +2258,11 @@ func mergeWorktreeData(current, incoming []item, stage worktreeStage) []item {
 		}
 		result := make([]item, 0, len(incoming))
 		for _, fresh := range incoming {
+			fresh.current = false // The later tmux stage owns the active-client marker.
 			if old, ok := existing[fresh.target]; ok {
 				branchChanged := old.branch != fresh.branch
 				old.kind, old.cwd, old.branch, old.title = fresh.kind, fresh.cwd, fresh.branch, fresh.title
-				old.current, old.locked, old.prunable = fresh.current, fresh.locked, fresh.prunable
+				old.locked, old.prunable = fresh.locked, fresh.prunable
 				if branchChanged {
 					old.prNumber, old.prState, old.prDraft, old.prCheck, old.prLoaded = 0, "", false, "", false
 					old.dirty, old.gitLoaded = false, false

@@ -64,9 +64,9 @@ func TestDashboardRefreshIsIncremental(t *testing.T) {
 	}
 }
 
-func TestWorktreeCurrentMarkerReplacesStaleAsyncState(t *testing.T) {
+func TestWorktreeCurrentMarkerWaitsForTmuxRefresh(t *testing.T) {
 	current := []item{
-		{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main", current: true},
+		{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main"},
 		{kind: "worktree", target: "/repo/nested", cwd: "/repo/nested", branch: "nested", current: true},
 	}
 	fresh := []item{
@@ -74,9 +74,21 @@ func TestWorktreeCurrentMarkerReplacesStaleAsyncState(t *testing.T) {
 		{kind: "worktree", target: "/repo/nested", cwd: "/repo/nested", branch: "nested"},
 	}
 	merged := mergeWorktreeData(current, fresh, worktreeListStage)
-	if merged[0].current != true || merged[1].current {
-		t.Fatalf("worktree list accumulated stale current markers: %#v", merged)
+	if merged[0].current || !merged[1].current {
+		t.Fatalf("worktree list moved the current marker before tmux refresh: %#v", merged)
 	}
+	merged = mergeWorktreeData(merged, fresh, worktreeMuxStage)
+	if !merged[0].current || merged[1].current {
+		t.Fatalf("tmux refresh did not replace the current marker: %#v", merged)
+	}
+
+	t.Setenv("PATH", t.TempDir())
+	invalidateTmuxPaneCache()
+	message := refreshWorktreeMux(fresh, 1)().(worktreeDataMsg)
+	if message.err == nil || slices.ContainsFunc(message.worktrees, func(item item) bool { return item.current }) {
+		t.Fatalf("failed tmux refresh restored a Git current marker: %#v, %v", message.worktrees, message.err)
+	}
+
 	attachAgentsToWorktrees(merged, []item{{cwd: "/repo/nested", current: true, title: "agent"}})
 	if merged[0].sessionTitle != "" || merged[1].sessionTitle != "agent" || merged[1].current {
 		t.Fatalf("nested agent was not attached only to its deepest worktree: %#v", merged)
@@ -1120,8 +1132,15 @@ func TestModeLabelMovesToHeader(t *testing.T) {
 		t.Fatalf("default mode rendered: header=%q footer=%q", browseHeader, ansi.Strip(model.renderFooter(model.width)))
 	}
 
-	model.agentsInFlight = false
+	if state := model.refreshState(); state != "refreshing" {
+		t.Fatalf("initial refresh state = %q", state)
+	}
+	model.agentsLoaded = true
 	model.lastRefresh[tabAgents] = model.now
+	if state := model.refreshState(); state != "" {
+		t.Fatalf("background refresh state = %q", state)
+	}
+	model.agentsInFlight = false
 	if header := ansi.Strip(model.renderHeader(model.width)); strings.Contains(header, "updated") {
 		t.Fatalf("healthy refresh rendered: %q", header)
 	}
