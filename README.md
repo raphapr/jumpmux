@@ -33,57 +33,62 @@ go install github.com/raphapr/jumpmux@latest
 jumpmux setup
 ```
 
-`jumpmux setup` installs `jumpmux-status.ts` in Pi's global extensions directory. Restart Pi or run `/reload` in each open Pi session.
+`jumpmux setup` installs or updates `jumpmux-status.ts` in Pi's global extensions directory. Run it again after upgrading jumpmux, then restart Pi or run `/reload` in each open Pi session.
 
-The extension reports the current pane's agent state.
+The extension reports each pane's lifecycle state for the dashboard.
 
 ## Keys
 
-| Key                                       | Action                                                                 |
-| ----------------------------------------- | ---------------------------------------------------------------------- |
-| Mouse click / double-click                | Select / focus an agent, worktree, or tmux session                     |
-| Mouse wheel                               | Scroll the table, focused panel, or Help                               |
-| `j`/`k`, arrows                           | Move in Agents/Worktrees, browse themes, or scroll a diff/help panel   |
-| `g`/`Home`, `G`/`End`                     | First/last row in Agents and Worktrees; top/bottom in diff or Help     |
-| `Ctrl+j` / `Ctrl+k` / `Ctrl+n` / `Ctrl+p` | Move the selection in Sessions                                         |
-| `Home` / `End`                            | First/last Session row                                                 |
-| `1`–`9`                                   | Open that numbered row in Agents or Worktrees                          |
-| `Tab` / `Shift+Tab`                       | Next / previous tab                                                    |
-| `Enter`                                   | Focus the selected agent/worktree or switch/create a tmux session      |
-| `/`                                       | Filter Agents or Worktrees                                             |
-| Type                                      | Search Sessions immediately                                            |
-| `Ctrl+f`                                  | Cycle Sessions through All, Live, Inactive, Configured, and Discovered |
-| `Ctrl+r`                                  | Toggle Sessions between grouped and most-recently-attached order       |
-| `Shift+Left` / `Shift+Right`              | Focus the left or right preview/diff panel                             |
-| `Space`                                   | Open valid actions for the selected row                                |
-| `G` / `End` in a paused live preview      | Resume bottom-follow                                                   |
-| `s`                                       | Toggle agent scope between all and current tmux session                |
-| `t`                                       | Open the theme picker                                                  |
-| `Enter` in the theme picker               | Apply the selected theme                                               |
-| `Esc` in the theme picker                 | Restore the previous theme and close                                   |
-| Type in the theme picker                  | Filter theme names                                                     |
-| `Enter` while filtering                   | Accept an Agents/Worktrees filter or open a Session                    |
-| `Esc` while filtering                     | Clear and close the filter                                             |
-| `d`                                       | Open the selected Git diff from Agents or Worktrees                    |
-| `a`                                       | Add a worktree and open it in a new tmux window                        |
-| `r`                                       | Remove a worktree after confirmation                                   |
-| `Ctrl+d`                                  | Remove a live tmux session after confirmation (Sessions only)          |
-| `o`                                       | Open the selected PR from Agents or Worktrees                          |
-| `PgUp` / `PgDn`                           | Page diff/Help, or the Session preview                                 |
-| `Ctrl+u` / `Ctrl+d`                       | Page the focused preview, diff panel, or Help (except Sessions)        |
-| `h` / `l`, left/right                     | Pan long preview or diff lines                                         |
-| `Ctrl+v`                                  | Toggle the current tab's runtime preview without saving configuration  |
-| `+` / `-`                                 | Change preview height by 10%                                           |
-| `?`                                       | Open Help                                                              |
-| `Esc`                                     | Close a view, cancel an action, clear a filter, or quit the dashboard  |
-| `q`                                       | Quit the dashboard or Help; close the diff view                        |
-| `Ctrl+C`                                  | Quit from any state                                                    |
+| Key                                       | Action                                                                       |
+| ----------------------------------------- | ---------------------------------------------------------------------------- |
+| Mouse click / double-click                | Select / focus an agent, worktree, or tmux session                           |
+| Mouse wheel                               | Scroll the table, focused panel, or Help                                     |
+| `j`/`k`, arrows                           | Move in Agents/Worktrees, browse themes, or scroll a diff/help panel         |
+| `g`/`Home`, `G`/`End`                     | First/last row in Agents and Worktrees; top/bottom in diff or Help           |
+| `Ctrl+j` / `Ctrl+k` / `Ctrl+n` / `Ctrl+p` | Move the selection in Sessions                                               |
+| `Home` / `End`                            | First/last Session row                                                       |
+| `1`–`9`                                   | Open that numbered row in Agents or Worktrees                                |
+| `Tab` / `Shift+Tab`                       | Next / previous tab                                                          |
+| `Enter`                                   | Focus the selected agent/worktree or switch/create a tmux session            |
+| `/`                                       | Filter Agents or Worktrees                                                   |
+| Type, except `O` / `Y` / `R` / `D` / `P`  | Search Sessions immediately                                                  |
+| `Ctrl+f`                                  | Cycle Sessions through All, Live, Inactive, Configured, and Discovered       |
+| `Ctrl+r`                                  | Toggle Sessions between grouped and most-recently-attached order             |
+| `Shift+Left` / `Shift+Right`              | Focus the left or right preview/diff panel                                   |
+| `Space`                                   | Open actions; press the shown key or `Enter` to run one                      |
+| `G` / `End` in a paused live preview      | Resume bottom-follow                                                         |
+| `s`                                       | Toggle agent scope between all and current tmux session                      |
+| `t`                                       | Open the theme picker                                                        |
+| `Enter` in the theme picker               | Apply the selected theme                                                     |
+| `Esc` in the theme picker                 | Restore the previous theme and close                                         |
+| Type in the theme picker                  | Filter theme names                                                           |
+| `Enter` while filtering                   | Accept an Agents/Worktrees filter or open a Session                          |
+| `Esc` while filtering                     | Clear and close the filter                                                   |
+| Agents: `o`, `d`, `p`, `y`, `m`           | Open, diff, open PR, copy PR URL, or mark an unseen completion seen          |
+| Worktrees: `a`, `o`, `d`, `p`, `y`        | Add, open, diff, open PR, or copy PR URL                                     |
+| Worktrees: `b`, `m`, `x`, `r`             | Rebase, merge, clean up, or remove when applicable                           |
+| Sessions: `O`, `Y`, `R`, `D`, `P`         | Open, copy, rename, remove (`D` confirms), or switch to the previous session |
+| `PgUp` / `PgDn`                           | Page diff/Help, or the Session preview                                       |
+| `Ctrl+u` / `Ctrl+d`                       | Page the focused preview, diff panel, or Help                                |
+| `h` / `l`, left/right                     | Pan long preview or diff lines                                               |
+| `Ctrl+v`                                  | Toggle the current tab's runtime preview without saving configuration        |
+| `+` / `-`                                 | Change preview height by 10%                                                 |
+| `?`                                       | Open Help                                                                    |
+| `Esc`                                     | Close a view, cancel an action, clear a filter, or quit the dashboard        |
+| `q`                                       | Quit the dashboard or Help; close the diff view                              |
+| `Ctrl+C`                                  | Quit from any state                                                          |
 
 ## Dashboard behavior
 
 ### Agents
 
-The Pi extension writes agent status records. Before displaying a record, jumpmux checks its pane with `tmux list-panes`. Set `JUMPMUX_STATE_DIR` to change the status directory. `jumpmux setup` honors `PI_CODING_AGENT_DIR`.
+The Pi extension writes agent status records. Before displaying a record, jumpmux checks its pane with `tmux list-panes`. It reports configured `agents.question_tools`, including `ask_user_question` by default, as a question state until their result arrives. Set `JUMPMUX_STATE_DIR` to change the status directory. `jumpmux setup` honors `PI_CODING_AGENT_DIR`.
+
+`jumpmux agent list` shows live Pi agents, and `jumpmux agent open <session-id|pane-id>` focuses one. Session IDs that identify more than one pane are ambiguous; use a pane ID.
+
+A completion is seen when its pane is focused or explicitly marked seen from the dashboard. On an unseen completed agent, press `m` directly or choose Mark seen from `Space`. Acknowledgement clears its tmux completion marker.
+
+`jumpmux worktree add <branch> [--detach] [--json]` creates a normal worktree. Without `--detach` or `--json`, it opens a new tmux shell in the worktree. `--detach` prints its path, and `--json` returns the worktree resource.
 
 The preview captures up to 200 lines from the selected pane every 500 ms while the terminal has focus. It includes the tmux session name, preserves SGR colors, and strips Pi's prompt and footer. Scrolling up shows `PAUSED line/total`. Press `G` or `End` to follow new output again. When focus returns, jumpmux refreshes the data and selected preview.
 
@@ -114,11 +119,11 @@ Session icons:
 - ``: discovered
 - Plain mode: `L`, `C`, and `R`
 
-Live previews capture the active pane every 500 ms, including alternate-screen programs such as `btop`. Inactive configured entries show a creation hint.
+Live previews capture the active pane every 500 ms, including alternate-screen programs such as `btop`. Inactive configured entries show a creation hint. Sessions do not yet aggregate agent attention; acknowledged completion is shown in the Agents and Worktrees tabs.
 
 jumpmux merges rows with the same name. Configured paths take precedence; live-only rows use the active pane path. Rows appear in three groups: live, configured, and discovered. Each group sorts by name. Press `Ctrl+r` to sort by the `Last` column until jumpmux exits. Searches sort by fuzzy match score.
 
-Press `Space` for copy, rename, PR, rebase, merge, cleanup, and removal actions available on the selected row. Worktree rebase and merge use the configured worktree backend against its local default branch: Worktrunk when selected or available in `auto`, otherwise native Git. Merge keeps the worktree. `Ctrl+d` removes a live session after confirmation. Removing a live session does not delete its configured entry.
+Press `Space` for actions available on the selected row. Press the shown key from the table or menu, or select an action and press `Enter`. The Sessions `P` action switches to the previous session even when no row is selected. Worktree actions include add, open, diff, PR, copy, rebase, merge, cleanup, and removal. Worktree rebase and merge use the configured worktree backend against its local default branch: Worktrunk when selected or available in `auto`, otherwise native Git. Merge keeps the worktree. Removing a live session does not delete its configured entry.
 
 ### Git
 
@@ -142,24 +147,29 @@ Press `t` to open the theme picker and browse these color schemes:
 
 Built-in themes adapt to the terminal profile. Catppuccin themes use fixed palettes. jumpmux saves the selected theme in its configuration file.
 
-Agent status uses `` for working and `` for done, with `W` and `D` in plain mode. Set `nerdfont = false` to replace Nerd Font Git, PR, check, and stale icons with text symbols. `JUMPMUX_PLAIN=1` overrides the setting for one launch.
+Dashboard agent status uses `` for working, `` for an interactive question, `` for acknowledged completion, and ` ` for completion that still needs attention, with `W`, `?`, `D`, and `D U` in plain mode. Question status uses warning styling and takes precedence over working and done tmux window markers. Status cells use icons rather than completion labels. Set `nerdfont = false` to replace Nerd Font Git, PR, check, agent, and stale icons with text symbols. `JUMPMUX_PLAIN=1` overrides the setting for one launch.
 
 ## Usage
 
+CLI resource commands use singular nouns. `--tab` values use plural tab names.
+
 ```console
-jumpmux                 # open the dashboard with the saved scope
-jumpmux --session       # start with agents from the current tmux session
-jumpmux -t sessions     # open the Sessions tab (`--tab` also works)
-jumpmux sessions list   # print sessions (`--json` for scripts)
-jumpmux sessions open dev
-jumpmux sessions last   # switch to the previous tmux session
-jumpmux agents list
-jumpmux worktrees list
-jumpmux --list          # print available contexts
-jumpmux setup           # install or update the Pi extension
+jumpmux                    # open the dashboard with the saved scope
+jumpmux -t sessions        # open the Sessions tab (`--tab` also works)
+jumpmux session list       # print sessions (`--json` for scripts)
+jumpmux session open dev
+jumpmux session last       # switch to the previous tmux session
+jumpmux agent list
+jumpmux agent open <session-id|pane-id>
+jumpmux worktree add feature/example --detach --json
+jumpmux worktree list
+jumpmux --list             # print available contexts
+jumpmux setup              # install or update the Pi extension
 jumpmux --version
 jumpmux --help
 ```
+
+Worktree `remove`, `cleanup`, `rebase`, and `merge`, plus Session `remove`, ask for confirmation. For non-interactive use, append `--yes` as the final argument.
 
 Run the full package during development:
 
@@ -190,6 +200,9 @@ theme = "default"
 default_scope = "all"
 nerdfont = true
 
+[agents]
+question_tools = ["ask_user_question"]
+
 [preview]
 agents = true
 worktrees = true
@@ -206,8 +219,9 @@ path = "~/src/api"
 
 - `worktree_backend` accepts `auto`, `wt`, or `git`.
 - `theme` accepts any scheme listed above.
-- `default_scope` accepts `all` or `session`. `--session` overrides it for that launch.
+- `default_scope` accepts `all` or `session`.
 - `nerdfont` accepts `true` or `false` and defaults to `true`.
+- `agents.question_tools` contains tool-name suffixes that show question attention while running. It defaults to `["ask_user_question"]`; use `[]` to disable it. Run `jumpmux setup` and reload Pi after changing it.
 - `[preview]` controls the preview panel independently for `agents`, `worktrees`, and `sessions`. Each defaults to `true`.
 
 `auto` uses Worktrunk when `wt` is on `PATH`, then falls back to `git worktree`. The Worktrunk backend calls `wt switch --create` and `wt remove`. The Git backend creates branches under `<repo>__worktrees/` from the default branch and keeps branches after worktree removal.
