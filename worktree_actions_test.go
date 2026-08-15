@@ -159,9 +159,9 @@ func TestRemovalUsesConfirmedBackend(t *testing.T) {
 	if err := atomicWrite(config, []byte("worktree_backend = \"wt\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if command == nil || updated.(dashboardModel).action != actionRunning {
-		t.Fatal("second r did not start removal")
+		t.Fatal("Enter did not start removal")
 	}
 	message := command().(worktreeActionMsg)
 	if message.err != nil {
@@ -457,7 +457,7 @@ func TestWorktreeRebaseAndMergeMenuActions(t *testing.T) {
 	}
 }
 
-func TestDestructiveActionsRepeatTheirMnemonic(t *testing.T) {
+func TestDestructiveActionsUseEnterConfirmation(t *testing.T) {
 	tests := []struct {
 		name   string
 		action dashboardAction
@@ -465,7 +465,6 @@ func TestDestructiveActionsRepeatTheirMnemonic(t *testing.T) {
 		label  string
 	}{
 		{"remove worktree", actionRemoveWorktree, "r", "Remove"},
-		{"remove session", actionRemoveSession, "r", "Remove"},
 		{"cleanup worktree", actionCleanupWorktree, "x", "Clean up"},
 		{"rebase worktree", actionRebaseWorktree, "b", "Rebase"},
 		{"merge worktree", actionMergeWorktree, "m", "Merge"},
@@ -476,20 +475,20 @@ func TestDestructiveActionsRepeatTheirMnemonic(t *testing.T) {
 			model.width, model.height, model.action = 100, 20, test.action
 			model.actionTarget = item{kind: "worktree", title: "dev", branch: "feature", cwd: "/feature"}
 
-			if preview := strings.Join(model.removePreviewLines(), "\n"); !strings.Contains(preview, test.key+" "+test.label+"    Esc Cancel") {
+			if preview := strings.Join(model.removePreviewLines(), "\n"); !strings.Contains(preview, "Enter "+test.label+"    Esc Cancel") {
 				t.Fatalf("confirmation preview = %q", preview)
 			}
-			if footer := ansi.Strip(model.renderFooter(model.width)); !strings.Contains(footer, test.key+" "+test.label) {
+			if footer := ansi.Strip(model.renderFooter(model.width)); !strings.Contains(footer, "Enter "+test.label) {
 				t.Fatalf("confirmation footer = %q", footer)
 			}
-			updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			updated, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(test.key)})
 			model = updated.(dashboardModel)
 			if model.action != test.action || command != nil {
-				t.Fatalf("Enter confirmed %s", test.name)
+				t.Fatalf("%s confirmed %s", test.key, test.name)
 			}
-			updated, command = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(test.key)})
+			updated, command = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			if updated.(dashboardModel).action != actionRunning || command == nil {
-				t.Fatalf("%s did not confirm %s", test.key, test.name)
+				t.Fatalf("Enter did not confirm %s", test.name)
 			}
 		})
 	}
@@ -511,18 +510,18 @@ func TestRemovalConfirmationPreviewAndInput(t *testing.T) {
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	model = updated.(dashboardModel)
 	preview := ansi.Strip(model.renderPreview(model.width))
-	for _, expected := range []string{"Branch: feature", "Path:   /feature", "Native Git removes the worktree and keeps its branch.", "r Remove    Esc Cancel"} {
+	for _, expected := range []string{"Branch: feature", "Path:   /feature", "Native Git removes the worktree and keeps its branch.", "Enter Remove    Esc Cancel"} {
 		if !strings.Contains(preview, expected) {
 			t.Fatalf("removal preview missing %q:\n%s", expected, preview)
 		}
 	}
-	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	if updated.(dashboardModel).action != actionRemoveWorktree || command != nil {
-		t.Fatal("Enter confirmed worktree removal")
+		t.Fatal("r confirmed worktree removal")
 	}
-	updated, command = updated.(dashboardModel).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	updated, command = updated.(dashboardModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if updated.(dashboardModel).action != actionRunning || command == nil {
-		t.Fatal("second r did not confirm removal")
+		t.Fatal("Enter did not confirm removal")
 	}
 	model.action = actionRemoveWorktree
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})

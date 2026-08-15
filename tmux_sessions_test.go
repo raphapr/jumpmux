@@ -521,7 +521,7 @@ func TestSessionTabSwitchClosesSearchAndPreservesQuery(t *testing.T) {
 }
 
 func TestRemovedSessionActionsBecomeSearchKeys(t *testing.T) {
-	for _, key := range []rune{'Y', 'R', 'D'} {
+	for _, key := range []rune{'r', 'Y', 'R', 'D'} {
 		model := newDashboard("/repo")
 		model.tab = tabSessions
 		model.sessions = []item{{kind: "tmux-session", target: "dev", title: "dev", muxSessionID: "$1"}}
@@ -578,12 +578,12 @@ func TestSessionRemoveShortcutConfirms(t *testing.T) {
 	model := newDashboard("/repo")
 	model.tab, model.sessionsLoaded = tabSessions, true
 	model.sessions = []item{{kind: "tmux-session", target: "dev", title: "dev", muxSessionID: "$1"}}
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
 	model = updated.(dashboardModel)
 	if model.action != actionRemoveSession || model.actionTarget.target != "dev" {
 		t.Fatalf("remove session mode = %#v target=%#v", model.action, model.actionTarget)
 	}
-	if view := ansi.Strip(model.View()); !strings.Contains(view, "Remove session") || !strings.Contains(view, "kills the live tmux session") || !strings.Contains(view, "Remove dev?") || !strings.Contains(view, "r Remove") || !strings.Contains(view, "Esc Cancel") {
+	if view := ansi.Strip(model.View()); !strings.Contains(view, "Remove session") || !strings.Contains(view, "kills the live tmux session") || !strings.Contains(view, "Remove dev?") || !strings.Contains(view, "Enter Remove") || !strings.Contains(view, "Esc Cancel") {
 		t.Fatalf("remove confirmation missing:\n%s", view)
 	}
 }

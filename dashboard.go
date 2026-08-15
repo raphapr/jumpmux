@@ -158,23 +158,6 @@ const (
 	actionRunning
 )
 
-func actionConfirmationKey(action dashboardAction) string {
-	switch action {
-	case actionRemoveWorktree:
-		return "r"
-	case actionRemoveSession:
-		return "r"
-	case actionCleanupWorktree:
-		return "x"
-	case actionRebaseWorktree:
-		return "b"
-	case actionMergeWorktree:
-		return "m"
-	default:
-		return ""
-	}
-}
-
 const (
 	menuOpen menuAction = iota
 	menuAddWorktree
@@ -393,7 +376,7 @@ func (m dashboardModel) actionMenuEntries() []actionMenuEntry {
 	if m.tab == tabSessions {
 		entries := []actionMenuEntry{{menuOpen, "Open", "O", "Open"}}
 		if selected.muxSessionID != "" {
-			entries = append(entries, actionMenuEntry{menuRemove, "Remove session", "r", "Remove"})
+			entries = append(entries, actionMenuEntry{menuRemove, "Remove session", "ctrl+r", "Remove"})
 		}
 		return append(entries, actionMenuEntry{menuPreviousSession, "Previous session", "P", "Previous"})
 	}
@@ -1563,6 +1546,9 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.tab == tabSessions && key == "ctrl+r" {
+		return m.executeAction(menuRemove)
+	}
+	if m.tab == tabSessions && key == "ctrl+g" {
 		m.clearActionError()
 		target := m.selectedTarget()
 		m.sessionSortRecent = !m.sessionSortRecent
@@ -1947,7 +1933,7 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.actionNoSquash = !m.actionNoSquash
 			return m, nil
 		}
-		if key != actionConfirmationKey(m.action) {
+		if key != "enter" {
 			return m, nil
 		}
 		action, target, backend, noSquash := m.action, m.actionTarget, m.actionBackend, m.actionNoSquash
@@ -2091,17 +2077,17 @@ func (m dashboardModel) helpLines() []string {
 		"Agents        o Open · d Diff · p PR · y Copy PR · f Fork · m Mark seen",
 		"Worktrees     a Add · o Open · d Diff · p PR · y Copy PR",
 		"              b Rebase · m Merge · x Cleanup · r Remove",
-		"Sessions      O Open · r Remove · P Previous",
-		"Confirm       Repeat b/m/x/r · s toggles Worktrunk squash · Esc cancels",
+		"Sessions      O Open · Ctrl+r Remove · P Previous",
+		"Confirm       Enter confirms · Esc cancels · s toggles Worktrunk merge squash",
 		"Click         Select row",
 		"Double-click  Open row",
 		"Mouse wheel   Scroll table or preview",
 		"Tab/Shift+Tab Switch tabs",
 		"/             Filter (Agents/Worktrees)",
-		"Type          Search Sessions (except O/r/P)",
+		"Type          Search Sessions (except O/P)",
 		"Space         Show applicable actions; shown keys run actions",
 		"Ctrl+f        Cycle Session filter",
-		"Ctrl+r        Toggle grouped/recent Session order",
+		"Ctrl+g        Toggle grouped/recent Session order",
 		"Enter / Esc   Open / clear session search",
 		"Shift+←/→     Focus split panel",
 		"PgUp/PgDn     Page diff/help; preview in Sessions",

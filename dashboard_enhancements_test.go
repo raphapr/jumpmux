@@ -56,7 +56,7 @@ func TestSessionsUseSourceActivityLastAndRecentOrder(t *testing.T) {
 		t.Fatalf("session icons/last column missing:\n%s", view)
 	}
 	model.index = 1
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlG})
 	model = updated.(dashboardModel)
 	if rows := model.rows(); rows[0].target != "live" {
 		t.Fatalf("recent sessions = %#v", rows)
@@ -247,13 +247,17 @@ func TestActionMenuKeysAreUniqueVisibleAndDispatchDirectly(t *testing.T) {
 			}
 			keys[entry.key] = true
 
+			key := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(entry.key)}
+			if entry.key == "ctrl+r" {
+				key = tea.KeyMsg{Type: tea.KeyCtrlR}
+			}
 			menu := makeModel()
 			menu.actionMenu = true
-			updated, menuCommand := menu.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(entry.key)})
+			updated, menuCommand := menu.Update(key)
 			menu = updated.(dashboardModel)
 
 			direct := makeModel()
-			updated, directCommand := direct.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(entry.key)})
+			updated, directCommand := direct.Update(key)
 			direct = updated.(dashboardModel)
 			if menu.actionMenu || direct.actionMenu || menu.action != direct.action || menu.diff != direct.diff || menu.chosen != direct.chosen || (menuCommand == nil) != (directCommand == nil) {
 				t.Fatalf("%s key %q diverged: menu=%#v direct=%#v", name, entry.key, menu, direct)

@@ -592,7 +592,7 @@ func (m dashboardModel) removePreviewLines() []string {
 			"Commits may be rewritten. Conflicts leave the rebase open.",
 			"This does not fetch or remove the worktree.",
 			"",
-			actionConfirmationKey(m.action) + " Rebase    Esc Cancel",
+			"Enter Rebase    Esc Cancel",
 		}
 	}
 	if m.action == actionMergeWorktree {
@@ -610,7 +610,7 @@ func (m dashboardModel) removePreviewLines() []string {
 			note,
 			"Target: local default branch",
 			"",
-			actionConfirmationKey(m.action) + " Merge    Esc Cancel",
+			"Enter Merge    Esc Cancel",
 		}
 	}
 	if m.action == actionCleanupWorktree {
@@ -621,7 +621,7 @@ func (m dashboardModel) removePreviewLines() []string {
 			"Git removes all stale unlocked worktree records.",
 			"It does not remove a live worktree or unlock a locked one.",
 			"",
-			actionConfirmationKey(m.action) + " Clean up    Esc Cancel",
+			"Enter Clean up    Esc Cancel",
 		}
 	}
 	if m.action == actionRemoveSession {
@@ -630,7 +630,7 @@ func (m dashboardModel) removePreviewLines() []string {
 			"",
 			"This kills the live tmux session. Configured entries stay in config.toml.",
 			"",
-			actionConfirmationKey(m.action) + " Remove    Esc Cancel",
+			"Enter Remove    Esc Cancel",
 		}
 	}
 	behavior := "Native Git removes the worktree and keeps its branch."
@@ -643,7 +643,7 @@ func (m dashboardModel) removePreviewLines() []string {
 		"",
 		behavior,
 		"",
-		actionConfirmationKey(m.action) + " Remove    Esc Cancel",
+		"Enter Remove    Esc Cancel",
 	}
 }
 
@@ -668,7 +668,7 @@ func (m dashboardModel) renderFooter(width int) string {
 		input.SetCursor(input.Position())
 		return padANSI(prefix+input.View()+suffix, width)
 	case actionRemoveWorktree, actionRemoveSession, actionCleanupWorktree, actionRebaseWorktree, actionMergeWorktree:
-		name, verb, key := m.displayWorktree(m.actionTarget), "Remove", actionConfirmationKey(m.action)
+		name, verb, key := m.displayWorktree(m.actionTarget), "Remove", "Enter"
 		if m.action == actionRemoveSession {
 			name = m.actionTarget.title
 		}
