@@ -151,7 +151,7 @@ func TestActionMenuUsesSidebarAndOmitsWorktreeCopyActions(t *testing.T) {
 	}
 }
 
-func TestAgentActionMenuOnlyAcknowledgesUnseenCompletion(t *testing.T) {
+func TestAgentActionMenu(t *testing.T) {
 	model := newDashboard("/repo")
 	model.tab, model.actionMenu = tabAgents, true
 	model.agents = []item{{kind: "session", target: "%7", pane: "%7", status: "done", agentSessionID: "session-id"}}
@@ -161,11 +161,11 @@ func TestAgentActionMenuOnlyAcknowledgesUnseenCompletion(t *testing.T) {
 		labels[index] = entries[index].label
 	}
 	joined := strings.Join(labels, ",")
-	if !strings.Contains(joined, "Mark seen") || strings.Contains(joined, "Prompt") {
+	if !strings.Contains(joined, "Fork to new window") || !strings.Contains(joined, "Mark seen") || strings.Contains(joined, "Prompt") {
 		t.Fatalf("agent action menu = %s", joined)
 	}
-	if actionMenuGroup(menuMarkAgentSeen) != "Attention" {
-		t.Fatalf("agent action group = %q", actionMenuGroup(menuMarkAgentSeen))
+	if actionMenuGroup(menuForkAgent) != "Create" || actionMenuGroup(menuMarkAgentSeen) != "Attention" {
+		t.Fatalf("agent action groups = fork %q seen %q", actionMenuGroup(menuForkAgent), actionMenuGroup(menuMarkAgentSeen))
 	}
 
 	model.actionMenuIndex = slices.IndexFunc(entries, func(entry actionMenuEntry) bool { return entry.action == menuMarkAgentSeen })
@@ -177,11 +177,16 @@ func TestAgentActionMenuOnlyAcknowledgesUnseenCompletion(t *testing.T) {
 
 	model = newDashboard("/repo")
 	model.tab = tabAgents
-	model.agents = []item{{kind: "session", target: "%7", pane: "%7", status: "working"}}
+	model.agents = []item{{kind: "session", target: "%7", pane: "%7", status: "working", agentSessionID: "session-id"}}
+	foundFork := false
 	for _, entry := range model.actionMenuEntries() {
+		foundFork = foundFork || entry.action == menuForkAgent
 		if entry.action == menuMarkAgentSeen {
 			t.Fatalf("working agent exposed control action %#v", entry)
 		}
+	}
+	if !foundFork {
+		t.Fatal("working agent has no fork action")
 	}
 }
 
@@ -276,7 +281,7 @@ func TestActionMenuKeysAreUniqueVisibleAndDispatchDirectly(t *testing.T) {
 	check("agent", func() dashboardModel {
 		model := newDashboard("/repo")
 		model.tab = tabAgents
-		model.agents = []item{{kind: "session", target: "%1", pane: "%1", status: "done", prNumber: 1, prURL: "https://example.test/pr/1"}}
+		model.agents = []item{{kind: "session", target: "%1", pane: "%1", cwd: "/repo", status: "done", agentSessionID: "session-id", muxWindowName: "feature", prNumber: 1, prURL: "https://example.test/pr/1"}}
 		return model
 	})
 	check("session", func() dashboardModel {

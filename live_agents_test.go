@@ -129,6 +129,35 @@ func TestAgentPreviewFollowsBottomUntilScrolled(t *testing.T) {
 	}
 }
 
+func TestForkAgentOpensWindowInCurrentTmuxSession(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$TMUX_LOG\"\nif test \"$1\" = display-message; then printf '$9\\n'; fi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(t.TempDir(), "tmux.log")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX_LOG", log)
+	t.Setenv("TMUX", "/tmp/tmux,1,0")
+	cwd := t.TempDir()
+	if err := forkAgent(item{cwd: cwd, agentSessionID: "session-id", muxWindowName: "feature"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command := string(data); !strings.Contains(command, "display-message -p #{client_session}") || !strings.Contains(command, "new-window -t $9: -c "+cwd+" -n feature pi --fork session-id") {
+		t.Fatalf("fork commands:\n%s", command)
+	}
+	if err := forkAgent(item{}); err == nil || !strings.Contains(err.Error(), "no Pi session") {
+		t.Fatalf("missing session ID = %v", err)
+	}
+	t.Setenv("TMUX", "")
+	if err := forkAgent(item{agentSessionID: "session-id"}); err == nil || !strings.Contains(err.Error(), "inside tmux") {
+		t.Fatalf("fork outside tmux = %v", err)
+	}
+}
+
 func TestLiveAgentLifecycle(t *testing.T) {
 	bin := t.TempDir()
 	script := `#!/bin/sh

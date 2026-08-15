@@ -51,7 +51,7 @@ The extension reports each pane's lifecycle state for the dashboard.
 | `Tab` / `Shift+Tab`                       | Next / previous tab                                                          |
 | `Enter`                                   | Focus the selected agent/worktree or switch/create a tmux session            |
 | `/`                                       | Filter Agents or Worktrees                                                   |
-| Type, except `O` / `Y` / `R` / `D` / `P`  | Search Sessions immediately                                                  |
+| Type, except `O` / `r` / `P`              | Search Sessions immediately                                                  |
 | `Ctrl+f`                                  | Cycle Sessions through All, Live, Inactive, Configured, and Discovered       |
 | `Ctrl+r`                                  | Toggle Sessions between grouped and most-recently-attached order             |
 | `Shift+Left` / `Shift+Right`              | Focus the left or right preview/diff panel                                   |
@@ -64,10 +64,10 @@ The extension reports each pane's lifecycle state for the dashboard.
 | Type in the theme picker                  | Filter theme names                                                           |
 | `Enter` while filtering                   | Accept an Agents/Worktrees filter or open a Session                          |
 | `Esc` while filtering                     | Clear and close the filter                                                   |
-| Agents: `o`, `d`, `p`, `y`, `m`           | Open, diff, open PR, copy PR URL, or mark an unseen completion seen          |
+| Agents: `o`, `d`, `p`, `y`, `f`, `m`      | Open, diff, open PR, copy PR URL, fork, or mark an unseen completion seen     |
 | Worktrees: `a`, `o`, `d`, `p`, `y`        | Add, open, diff, open PR, or copy PR URL                                     |
 | Worktrees: `b`, `m`, `x`, `r`             | Rebase, merge, clean up, or remove; repeat the key to confirm                |
-| Sessions: `O`, `Y`, `R`, `D`, `P`         | Open, copy, rename, remove (`D` confirms), or switch to the previous session |
+| Sessions: `O`, `r`, `P`                   | Open, remove (`r` confirms), or switch to the previous session               |
 | `PgUp` / `PgDn`                           | Page diff/Help, or the Session preview                                       |
 | `Ctrl+u` / `Ctrl+d`                       | Page the focused preview, diff panel, or Help                                |
 | `h` / `l`, left/right                     | Pan long preview or diff lines                                               |
@@ -86,7 +86,7 @@ The Pi extension writes agent status records. Before displaying a record, jumpmu
 
 `jumpmux agent list` shows live Pi agents, and `jumpmux agent open <session-id|pane-id>` focuses one. Session IDs that identify more than one pane are ambiguous; use a pane ID.
 
-A completion is seen when its pane is focused or explicitly marked seen from the dashboard. On an unseen completed agent, press `m` directly or choose Mark seen from `Space`. Acknowledgement clears its tmux completion marker.
+Press `f` to fork the selected agent into a new window in the current tmux session. A completion is seen when its pane is focused or explicitly marked seen from the dashboard. On an unseen completed agent, press `m` directly or choose Mark seen from `Space`. Acknowledgement clears its tmux completion marker.
 
 `jumpmux worktree add <branch> [--detach] [--json]` creates a normal worktree. Without `--detach` or `--json`, it opens a new tmux shell in the worktree. `--detach` prints its path, and `--json` returns the worktree resource.
 

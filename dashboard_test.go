@@ -1029,20 +1029,20 @@ func TestSessionsReservedKeysAndPreviewPaging(t *testing.T) {
 	if model.action != actionNone {
 		t.Fatalf("Ctrl+D action = %d, want paging only", model.action)
 	}
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	model = updated.(dashboardModel)
 	if model.action != actionRemoveSession {
-		t.Fatalf("D action = %d, want remove session", model.action)
+		t.Fatalf("r action = %d, want remove session", model.action)
 	}
 	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(dashboardModel)
 	if model.action != actionRemoveSession || command != nil {
-		t.Fatalf("Enter confirmed uppercase Session action: action=%d command=%v", model.action, command != nil)
+		t.Fatalf("Enter confirmed Session removal: action=%d command=%v", model.action, command != nil)
 	}
-	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	model = updated.(dashboardModel)
 	if model.action != actionRunning || command == nil {
-		t.Fatalf("second D did not confirm Session removal: action=%d command=%v", model.action, command != nil)
+		t.Fatalf("second r did not confirm Session removal: action=%d command=%v", model.action, command != nil)
 	}
 }
 

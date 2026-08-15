@@ -151,7 +151,6 @@ const (
 	actionAddWorktree
 	actionRemoveWorktree
 	actionRemoveSession
-	actionRenameSession
 	actionCleanupWorktree
 	actionRebaseWorktree
 	actionMergeWorktree
@@ -164,7 +163,7 @@ func actionConfirmationKey(action dashboardAction) string {
 	case actionRemoveWorktree:
 		return "r"
 	case actionRemoveSession:
-		return "D"
+		return "r"
 	case actionCleanupWorktree:
 		return "x"
 	case actionRebaseWorktree:
@@ -181,10 +180,9 @@ const (
 	menuAddWorktree
 	menuDiff
 	menuPR
-	menuCopySessionName
 	menuCopyPRURL
+	menuForkAgent
 	menuMarkAgentSeen
-	menuRename
 	menuCleanup
 	menuRebase
 	menuMerge
@@ -200,10 +198,9 @@ type actionMenuEntry struct {
 }
 
 type worktreeActionMsg struct {
-	action       dashboardAction
-	notice       string
-	selectTarget string
-	err          error
+	action dashboardAction
+	notice string
+	err    error
 }
 
 type worktreeStage uint8
@@ -394,9 +391,9 @@ func (m dashboardModel) actionMenuEntries() []actionMenuEntry {
 		}
 	}
 	if m.tab == tabSessions {
-		entries := []actionMenuEntry{{menuOpen, "Open", "O", "Open"}, {menuCopySessionName, "Copy session name", "Y", "Copy"}}
+		entries := []actionMenuEntry{{menuOpen, "Open", "O", "Open"}}
 		if selected.muxSessionID != "" {
-			entries = append(entries, actionMenuEntry{menuRename, "Rename session", "R", "Rename"}, actionMenuEntry{menuRemove, "Remove session", "D", "Remove"})
+			entries = append(entries, actionMenuEntry{menuRemove, "Remove session", "r", "Remove"})
 		}
 		return append(entries, actionMenuEntry{menuPreviousSession, "Previous session", "P", "Previous"})
 	}
@@ -411,6 +408,9 @@ func (m dashboardModel) actionMenuEntries() []actionMenuEntry {
 	}
 	if gitItem.prURL != "" {
 		entries = append(entries, actionMenuEntry{menuCopyPRURL, "Copy PR URL", "y", "Copy"})
+	}
+	if m.tab == tabAgents && selected.agentSessionID != "" {
+		entries = append(entries, actionMenuEntry{menuForkAgent, "Fork to new window", "f", "Fork"})
 	}
 	if m.tab == tabAgents && selected.status == "done" && !selected.seen {
 		entries = append(entries, actionMenuEntry{menuMarkAgentSeen, "Mark seen", "m", "Seen"})
@@ -463,23 +463,21 @@ func (m dashboardModel) executeAction(action menuAction) (tea.Model, tea.Cmd) {
 				return worktreeActionMsg{notice: fmt.Sprintf("Opened PR #%d", pr.prNumber), err: openPullRequest(selected.cwd, pr.prNumber)}
 			}
 		}
-	case menuCopySessionName, menuCopyPRURL:
+	case menuCopyPRURL:
 		if ok {
-			value, label := selected.title, "session name"
-			if action == menuCopyPRURL {
-				value, label = m.gitItem(selected).prURL, "PR URL"
-			}
 			return m, func() tea.Msg {
-				return worktreeActionMsg{notice: "Copied " + label, err: clipboard.WriteAll(value)}
+				return worktreeActionMsg{notice: "Copied PR URL", err: clipboard.WriteAll(m.gitItem(selected).prURL)}
+			}
+		}
+	case menuForkAgent:
+		if ok {
+			return m, func() tea.Msg {
+				return worktreeActionMsg{notice: "Forked agent into new window", err: forkAgent(selected)}
 			}
 		}
 	case menuMarkAgentSeen:
 		if ok {
 			return m, m.beginMarkAgentSeen(selected)
-		}
-	case menuRename:
-		if ok {
-			return m, m.beginRename(selected)
 		}
 	case menuCleanup:
 		if ok {
@@ -524,17 +522,6 @@ func (m *dashboardModel) beginAddWorktree() tea.Cmd {
 	}
 	m.action, m.actionBackend, m.err = actionAddWorktree, backend, nil
 	m.actionTextInput.SetValue("")
-	m.lastClickTarget, m.lastClickAt = "", time.Time{}
-	return m.actionTextInput.Focus()
-}
-
-func (m *dashboardModel) beginRename(selected item) tea.Cmd {
-	if selected.muxSessionID == "" {
-		m.err = errors.New("the selected session is not running")
-		return nil
-	}
-	m.action, m.actionTarget, m.err = actionRenameSession, selected, nil
-	m.actionTextInput.SetValue(selected.title)
 	m.lastClickTarget, m.lastClickAt = "", time.Time{}
 	return m.actionTextInput.Focus()
 }
@@ -1372,11 +1359,8 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.worktreeGeneration++
 			return m, tea.Batch(refreshWorktreeList(m.cwd, m.worktreeGeneration), m.resumeRefreshes())
 		}
-		if msg.action == actionRemoveSession || msg.action == actionRenameSession {
+		if msg.action == actionRemoveSession {
 			m.restoreSessionSelection = msg.err == nil
-			if msg.action == actionRenameSession && msg.err == nil {
-				m.sessionSelectionAfterRemove = msg.selectTarget
-			}
 			if msg.err != nil {
 				m.sessionSelectionAfterRemove = ""
 			}
@@ -1392,7 +1376,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.worktreeGeneration++
 			return m, refreshWorktreeList(m.cwd, m.worktreeGeneration)
 		}
-		if msg.err == nil && (msg.action == actionRemoveSession || msg.action == actionRenameSession) {
+		if msg.err == nil && msg.action == actionRemoveSession {
 			m.sessionsInFlight = true
 			m.sessionGeneration++
 			return m, refreshSessions(m.sessionGeneration)
@@ -1428,7 +1412,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.preview, m.loading = previewData{}, false
 		return m, command
 	}
-	if m.action == actionAddWorktree || m.action == actionRenameSession {
+	if m.action == actionAddWorktree {
 		var command tea.Cmd
 		m.actionTextInput, command = m.actionTextInput.Update(msg)
 		return m, command
@@ -1924,7 +1908,7 @@ func (m dashboardModel) handleActionMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	switch m.action {
-	case actionAddWorktree, actionRenameSession:
+	case actionAddWorktree:
 		switch key {
 		case "esc":
 			m.action, m.actionBackend = actionNone, ""
@@ -1936,13 +1920,10 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if value == "" {
 				return m, nil
 			}
-			action, target, backend := m.action, m.actionTarget, m.actionBackend
+			action, backend := m.action, m.actionBackend
 			m.action, m.err = actionRunning, nil
 			m.actionTextInput.Blur()
 			return m, func() tea.Msg {
-				if action == actionRenameSession {
-					return worktreeActionMsg{action: action, notice: "Renamed session to " + value, selectTarget: value, err: renameTmuxSession(target, value)}
-				}
 				created, err := addWorktree(m.cwd, value, backend)
 				if err == nil {
 					err = openTmuxWorktree(created)
@@ -2107,17 +2088,17 @@ func (m dashboardModel) helpLines() []string {
 		"Session icons  " + dashboardIcon(" live,  configured,  discovered", "L live, C configured, R discovered"),
 		"Enter         Open selected row",
 		"1–9           Open row (Agents/Worktrees)",
-		"Agents        o Open · d Diff · p PR · y Copy PR · m Mark seen",
+		"Agents        o Open · d Diff · p PR · y Copy PR · f Fork · m Mark seen",
 		"Worktrees     a Add · o Open · d Diff · p PR · y Copy PR",
 		"              b Rebase · m Merge · x Cleanup · r Remove",
-		"Sessions      O Open · Y Copy name · R Rename · D Remove · P Previous",
-		"Confirm       Repeat b/m/x/r/D · s toggles Worktrunk squash · Esc cancels",
+		"Sessions      O Open · r Remove · P Previous",
+		"Confirm       Repeat b/m/x/r · s toggles Worktrunk squash · Esc cancels",
 		"Click         Select row",
 		"Double-click  Open row",
 		"Mouse wheel   Scroll table or preview",
 		"Tab/Shift+Tab Switch tabs",
 		"/             Filter (Agents/Worktrees)",
-		"Type          Search Sessions (except O/Y/R/D/P)",
+		"Type          Search Sessions (except O/r/P)",
 		"Space         Show applicable actions; shown keys run actions",
 		"Ctrl+f        Cycle Session filter",
 		"Ctrl+r        Toggle grouped/recent Session order",

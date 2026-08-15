@@ -404,9 +404,6 @@ func (m dashboardModel) renderPreview(width int) string {
 		}
 		return renderPanel(title, m.removePreviewLines(), width, height, 0, 0, false, true)
 	}
-	if m.action == actionRenameSession {
-		return renderPanel("Rename session", []string{"Session: " + safeText(m.actionTarget.title), "", "Enter a new live tmux session name."}, width, height, 0, 0, false, true)
-	}
 	selected, hasSelection := m.selected()
 	if !hasSelection {
 		loaded := m.agentsLoaded
@@ -566,13 +563,13 @@ func actionMenuGroup(action menuAction) string {
 	switch action {
 	case menuOpen, menuDiff, menuPR, menuPreviousSession:
 		return "Open"
-	case menuAddWorktree:
+	case menuAddWorktree, menuForkAgent:
 		return "Create"
-	case menuCopySessionName, menuCopyPRURL:
+	case menuCopyPRURL:
 		return "Copy"
 	case menuMarkAgentSeen:
 		return "Attention"
-	case menuRename, menuRebase, menuMerge, menuCleanup:
+	case menuRebase, menuMerge, menuCleanup:
 		return "Manage"
 	case menuRemove:
 		return "Danger"
@@ -658,18 +655,13 @@ func (m dashboardModel) renderFooter(width int) string {
 		return padANSI("  "+footerCommand("j/k", "Move")+" "+footerCommand("key", "Run")+" "+footerCommand("Enter", "Run")+" "+footerCommand("Esc", "Cancel"), width)
 	}
 	switch m.action {
-	case actionAddWorktree, actionRenameSession:
+	case actionAddWorktree:
 		input := m.actionTextInput
 		styleTextInput(&input)
-		label, actionLabel := "branch: ", "Create"
-		switch m.action {
-		case actionRenameSession:
-			label, actionLabel = "name: ", "Rename"
-		}
-		prefix := "  " + textStyle.Render(label)
-		create := footerCommand("Enter", actionLabel)
+		prefix := "  " + textStyle.Render("branch: ")
+		create := footerCommand("Enter", "Create")
 		if width < 60 {
-			create = footerCommand("↵", actionLabel)
+			create = footerCommand("↵", "Create")
 		}
 		suffix := "  " + create + " " + footerCommand("Esc", "Cancel")
 		input.Width = max(0, width-ansi.StringWidth(prefix)-ansi.StringWidth(suffix)-1)

@@ -465,7 +465,7 @@ func TestDestructiveActionsRepeatTheirMnemonic(t *testing.T) {
 		label  string
 	}{
 		{"remove worktree", actionRemoveWorktree, "r", "Remove"},
-		{"remove session", actionRemoveSession, "D", "Remove"},
+		{"remove session", actionRemoveSession, "r", "Remove"},
 		{"cleanup worktree", actionCleanupWorktree, "x", "Clean up"},
 		{"rebase worktree", actionRebaseWorktree, "b", "Rebase"},
 		{"merge worktree", actionMergeWorktree, "m", "Merge"},

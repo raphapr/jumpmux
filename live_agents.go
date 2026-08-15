@@ -371,6 +371,29 @@ func jumpTmuxPane(selected item) error {
 	return focusTmuxPane(selected)
 }
 
+func forkAgent(selected item) error {
+	if os.Getenv("TMUX") == "" {
+		return errors.New("run jumpmux inside tmux to fork an agent")
+	}
+	if selected.agentSessionID == "" {
+		return errors.New("the selected agent has no Pi session")
+	}
+	session := activeTmuxSession()
+	if session == "" {
+		return errors.New("cannot determine the current tmux session")
+	}
+	args := []string{"new-window", "-t", session + ":", "-c", selected.cwd}
+	if selected.muxWindowName != "" {
+		args = append(args, "-n", selected.muxWindowName)
+	}
+	args = append(args, "pi", "--fork", selected.agentSessionID)
+	if _, err := tmuxOutput(args...); err != nil {
+		return err
+	}
+	invalidateTmuxPaneCache()
+	return nil
+}
+
 func requireTmuxWorktreeWindow() error {
 	if os.Getenv("TMUX") == "" {
 		return errors.New("run jumpmux inside tmux to open a worktree window")
