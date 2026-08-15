@@ -16,6 +16,7 @@ type jumpmuxConfig struct {
 	theme           colorScheme
 	defaultScope    scopeMode
 	nerdFont        bool
+	questionTools   []string
 	preview         [tabCount]bool
 	hasTheme        bool
 	hasDefaultScope bool
@@ -27,8 +28,13 @@ type configFile struct {
 	Theme           *string        `toml:"theme"`
 	DefaultScope    *string        `toml:"default_scope"`
 	NerdFont        *bool          `toml:"nerdfont"`
+	Agents          *agentsConfig  `toml:"agents"`
 	Preview         *previewConfig `toml:"preview"`
 	Sessions        any            `toml:"sessions"`
+}
+
+type agentsConfig struct {
+	QuestionTools []string `toml:"question_tools"`
 }
 
 type previewConfig struct {
@@ -38,7 +44,11 @@ type previewConfig struct {
 }
 
 func loadConfig() (jumpmuxConfig, error) {
-	config := jumpmuxConfig{worktreeBackend: backendAuto, preview: [tabCount]bool{true, true, true}}
+	config := jumpmuxConfig{
+		worktreeBackend: backendAuto,
+		questionTools:   []string{"ask_user_question"},
+		preview:         [tabCount]bool{true, true, true},
+	}
 	path, err := configPath()
 	if err != nil {
 		return config, err
@@ -68,8 +78,8 @@ func loadConfig() (jumpmuxConfig, error) {
 			if len(key) == 0 {
 				continue
 			}
-			if key[0] == "preview" {
-				return config, fmt.Errorf("%s: preview uses unsupported %q", path, key[len(key)-1])
+			if key[0] == "agents" || key[0] == "preview" {
+				return config, fmt.Errorf("%s: %s uses unsupported %q", path, key[0], key[len(key)-1])
 			}
 			return config, fmt.Errorf("%s: uses unsupported %q", path, key[0])
 		}
@@ -96,6 +106,14 @@ func loadConfig() (jumpmuxConfig, error) {
 	}
 	if file.NerdFont != nil {
 		config.nerdFont, config.hasNerdFont = *file.NerdFont, true
+	}
+	if file.Agents != nil && file.Agents.QuestionTools != nil {
+		for index, name := range file.Agents.QuestionTools {
+			if name == "" || strings.TrimSpace(name) != name {
+				return config, fmt.Errorf("agents.question_tools[%d] must be a non-empty tool-name suffix without surrounding whitespace", index)
+			}
+		}
+		config.questionTools = file.Agents.QuestionTools
 	}
 	if file.Preview != nil {
 		for tab, enabled := range []*bool{file.Preview.Agents, file.Preview.Worktrees, file.Preview.Sessions} {

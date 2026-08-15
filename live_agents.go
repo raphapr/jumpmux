@@ -27,7 +27,10 @@ const (
 	plainJumpmuxStatusFormat  = "#{?@jumpmux_status, #{@jumpmux_status},}"
 	boldJumpmuxStatusFormat   = "#{?@jumpmux_status, #[bold]#{@jumpmux_status}#[default],}"
 	narrowJumpmuxStatusFormat = "#{?@jumpmux_status, #[nobold]#{@jumpmux_status}#[default],}"
-	jumpmuxFocusHook          = "pane-focus-in[987654]"
+	jumpmuxSelectPaneHook     = "after-select-pane[987654]"
+	jumpmuxSelectWindowHook   = "after-select-window[987654]"
+	jumpmuxClientSessionHook  = "client-session-changed[987654]"
+	jumpmuxClientFocusHook    = "client-focus-in[987654]"
 	tmuxTimeout               = 2 * time.Second
 )
 
@@ -38,8 +41,12 @@ var tmuxPaneCache struct {
 	err   error
 }
 
+var (
+	errAgentChanged          = errors.New("the selected agent changed; refresh and try again")
+	errAgentStateUnavailable = errors.New("agent state is unavailable")
+)
+
 type agentState struct {
-	Version     int       `json:"version"`
 	Pane        string    `json:"pane"`
 	PanePID     string    `json:"pane_pid"`
 	PaneCommand string    `json:"pane_command"`
@@ -48,6 +55,7 @@ type agentState struct {
 	Cwd         string    `json:"cwd"`
 	Title       string    `json:"title,omitempty"`
 	Status      string    `json:"status"`
+	Seen        bool      `json:"seen,omitempty"`
 	Updated     time.Time `json:"updated"`
 }
 
@@ -64,7 +72,18 @@ type tmuxPane struct {
 	Worktree       string
 }
 
-func setupPIExtension() (string, error) {
+func setupPIExtension(questionTools []string) (string, error) {
+	encoded, err := json.Marshal(questionTools)
+	if err != nil {
+		return "", err
+	}
+	const toolsLine = `const interactiveToolSuffixes = new Set(["ask_user_question"]);`
+	source := string(piExtension)
+	if !strings.Contains(source, toolsLine) {
+		return "", errors.New("pi extension question-tools marker is missing")
+	}
+	source = strings.Replace(source, toolsLine, fmt.Sprintf("const interactiveToolSuffixes = new Set(%s);", encoded), 1)
+
 	base := os.Getenv("PI_CODING_AGENT_DIR")
 	if base == "" {
 		home, err := os.UserHomeDir()
@@ -74,7 +93,7 @@ func setupPIExtension() (string, error) {
 		base = filepath.Join(home, ".pi", "agent")
 	}
 	path := filepath.Join(base, "extensions", "jumpmux-status.ts")
-	if err := atomicWrite(path, piExtension, 0o644); err != nil {
+	if err := atomicWrite(path, []byte(source), 0o644); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -85,7 +104,7 @@ func setAgentStatus(args []string) error {
 		return errors.New("agent-status requires status, session ID, session file, cwd, and title")
 	}
 	status, sessionID, sessionFile, cwd, title := args[0], args[1], args[2], args[3], args[4]
-	if status != "working" && status != "done" && status != "update" && status != "closed" {
+	if status != "started" && status != "working" && status != "question" && status != "done" && status != "update" && status != "closed" {
 		return fmt.Errorf("invalid agent status %q", status)
 	}
 	pane := os.Getenv("TMUX_PANE")
@@ -96,25 +115,36 @@ func setAgentStatus(args []string) error {
 	if err != nil {
 		return err
 	}
-	legacyPath, err := legacyAgentStatePath(pane)
-	if err != nil {
-		return err
+	focused := false
+	if status == "done" {
+		visibility, err := tmuxOutput("display-message", "-p", "-t", pane, "#{pane_active}\t#{window_active}\t#{session_attached}")
+		fields := strings.Fields(visibility)
+		focused = err == nil && len(fields) == 3 && fields[0] == "1" && fields[1] == "1" && fields[2] != "0"
 	}
 	return withTmuxWindowLock(pane, func() error {
-		if status == "closed" {
-			statusErr := clearTmuxStatusLocked(pane)
-			removeErr := removeAgentState(path)
-			return errors.Join(statusErr, removeErr, removeAgentState(legacyPath))
-		}
-
-		state := agentState{Status: "done"}
+		state := agentState{}
 		if data, err := os.ReadFile(path); err == nil {
 			_ = json.Unmarshal(data, &state)
-		} else if data, err := os.ReadFile(legacyPath); err == nil {
-			_ = json.Unmarshal(data, &state)
 		}
-		if status != "update" {
-			state.Status = status
+		if status == "closed" {
+			if state.SessionID == "" || state.SessionID != sessionID {
+				return nil // A previous Pi process must not erase its replacement.
+			}
+			statusErr := clearTmuxStatusLocked(pane)
+			return errors.Join(statusErr, removeAgentState(path))
+		}
+		newSession := state.SessionID != "" && state.SessionID != sessionID
+		if newSession && status != "started" {
+			return nil // Late working/done/update events belong to the old process.
+		}
+		if newSession {
+			state = agentState{}
+		}
+		if status == "started" && (state.SessionID == "" || newSession) {
+			// A newly started idle session is not completed work.
+			state.Status, state.Seen = "done", true
+		} else if status != "started" && status != "update" {
+			state.Status, state.Seen = status, status == "done" && focused
 		}
 		live, err := tmuxOutput("display-message", "-p", "-t", pane, "#{pane_pid}\t#{pane_current_command}")
 		if err != nil {
@@ -124,7 +154,6 @@ func setAgentStatus(args []string) error {
 		if len(paneFields) != 2 {
 			return errors.New("tmux returned incomplete pane identity")
 		}
-		state.Version = 1
 		state.Pane = pane
 		state.PanePID = paneFields[0]
 		state.PaneCommand = paneFields[1]
@@ -134,18 +163,18 @@ func setAgentStatus(args []string) error {
 		state.Title = title
 		state.Updated = time.Now()
 		var statusErr error
-		if status == "working" || status == "done" {
-			statusErr = setTmuxStatusLocked(pane, status)
+		if status == "started" || status == "working" || status == "question" || status == "done" {
+			if state.Status == "done" && state.Seen {
+				statusErr = clearTmuxStatusLocked(pane)
+			} else {
+				statusErr = setTmuxStatusLocked(pane, state.Status)
+			}
 		}
 		data, err := json.Marshal(state)
 		if err != nil {
 			return err
 		}
-		writeErr := atomicWrite(path, append(data, '\n'), 0o600)
-		if writeErr == nil {
-			writeErr = removeAgentState(legacyPath)
-		}
-		return errors.Join(statusErr, writeErr)
+		return errors.Join(statusErr, atomicWrite(path, append(data, '\n'), 0o600))
 	})
 }
 
@@ -159,18 +188,11 @@ func listLiveAgents() ([]item, error) {
 	for _, pane := range panes {
 		path, err := agentStatePath(pane.ID)
 		if err != nil {
-			continue
+			return nil, err
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			legacyPath, legacyErr := legacyAgentStatePath(pane.ID)
-			if legacyErr != nil {
-				continue
-			}
-			data, err = os.ReadFile(legacyPath)
-			if err != nil {
-				continue
-			}
+			continue
 		}
 		var state agentState
 		if json.Unmarshal(data, &state) != nil || state.Pane != pane.ID || state.PanePID == "" || state.PanePID != pane.PID || state.PaneCommand != pane.CurrentCommand {
@@ -199,6 +221,8 @@ func listLiveAgents() ([]item, error) {
 			updated:        state.Updated,
 			current:        pane.ID == activePane,
 			status:         state.Status,
+			seen:           state.Seen,
+			agentSessionID: state.SessionID,
 			pane:           pane.ID,
 			muxSessionID:   pane.SessionID,
 			muxSessionName: pane.SessionName,
@@ -207,7 +231,10 @@ func listLiveAgents() ([]item, error) {
 		})
 	}
 	sort.Slice(agents, func(i, j int) bool {
-		if agents[i].status != agents[j].status {
+		if (agents[i].status == "question") != (agents[j].status == "question") {
+			return agents[i].status == "question"
+		}
+		if (agents[i].status == "working") != (agents[j].status == "working") {
 			return agents[i].status == "working"
 		}
 		return agents[i].updated.After(agents[j].updated)
@@ -344,9 +371,16 @@ func jumpTmuxPane(selected item) error {
 	return focusTmuxPane(selected)
 }
 
-func openTmuxWorktree(selected item) error {
+func requireTmuxWorktreeWindow() error {
 	if os.Getenv("TMUX") == "" {
 		return errors.New("run jumpmux inside tmux to open a worktree window")
+	}
+	return nil
+}
+
+func openTmuxWorktree(selected item) error {
+	if err := requireTmuxWorktreeWindow(); err != nil {
+		return err
 	}
 	name := selected.branch
 	if name == "" {
@@ -391,6 +425,10 @@ func withTmuxWindowLock(pane string, action func() error) error {
 	if id == "" || strings.Trim(id, "0123456789") != "" {
 		return fmt.Errorf("tmux returned invalid window ID %q", window)
 	}
+	return withAgentLock("window", id, action)
+}
+
+func withAgentLock(kind, suffix string, action func() error) error {
 	stateDir, err := agentStateDir()
 	if err != nil {
 		return err
@@ -399,7 +437,11 @@ func withTmuxWindowLock(pane string, action func() error) error {
 	if err != nil {
 		return err
 	}
-	lock := filepath.Join(stateDir, "locks", "window-"+server+"-"+id+".lock")
+	name := kind + "-" + server
+	if suffix != "" {
+		name += "-" + suffix
+	}
+	lock := filepath.Join(stateDir, "locks", name+".lock")
 	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		return err
 	}
@@ -418,7 +460,7 @@ func withTmuxWindowLock(pane string, action func() error) error {
 			return err
 		}
 		if time.Now().After(deadline) {
-			return errors.New("timed out waiting for tmux status lock")
+			return fmt.Errorf("timed out waiting for tmux %s lock", kind)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -428,7 +470,10 @@ func withTmuxWindowLock(pane string, action func() error) error {
 
 func setTmuxStatusLocked(pane, status string) error {
 	icon := workingIcon
-	if status == "done" {
+	switch status {
+	case "question":
+		icon = questionIcon
+	case "done":
 		icon = doneIcon
 	}
 	if err := ensureTmuxStatusFormat(pane); err != nil {
@@ -453,7 +498,14 @@ func clearFocusedPaneStatus(pane string) error {
 		if err != nil || strings.TrimSpace(status) != doneIcon {
 			return nil
 		}
-		return clearTmuxStatusLocked(pane)
+		marked, err := markAgentSeenLocked(pane, "")
+		if err == nil && marked {
+			return nil
+		}
+		if err == nil || errors.Is(err, errAgentChanged) || errors.Is(err, errAgentStateUnavailable) {
+			return clearTmuxStatusLocked(pane)
+		}
+		return err
 	})
 }
 
@@ -470,30 +522,56 @@ func syncTmuxWindowStatus(pane string) error {
 	} else if _, err = tmuxOutput("set-option", "-w", "-t", pane, "@jumpmux_status", icon); err != nil {
 		return err
 	}
-	return syncTmuxFocusHook(pane, output)
+	return withAgentLock("hooks", "", func() error {
+		allStatuses, err := tmuxOutput("list-panes", "-a", "-F", "#{@jumpmux_pane_status}")
+		if err != nil {
+			return err
+		}
+		return syncTmuxFocusHooks(allStatuses)
+	})
 }
 
-func syncTmuxFocusHook(pane, statuses string) error {
+func syncTmuxFocusHooks(statuses string) error {
+	hooks := []string{jumpmuxSelectPaneHook, jumpmuxSelectWindowHook, jumpmuxClientSessionHook, jumpmuxClientFocusHook}
 	if strings.Contains(statuses, doneIcon) {
 		binary, err := os.Executable()
 		if err != nil {
 			return err
 		}
-		hook := fmt.Sprintf("run-shell %q", binary+" pane-focused #{pane_id}")
-		_, err = tmuxOutput("set-hook", "-w", "-t", pane, jumpmuxFocusHook, hook)
-		return err
+		stateDir, err := agentStateDir()
+		if err != nil {
+			return err
+		}
+		hook := shellArg(binary) + " pane-focused #{pane_id} " + shellArg(stateDir)
+		command := fmt.Sprintf("run-shell %q", hook)
+		for _, hook := range hooks {
+			if _, err := tmuxOutput("set-hook", "-g", hook, command); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	_, err := tmuxOutput("set-hook", "-uw", "-t", pane, jumpmuxFocusHook)
-	return err
+	for _, hook := range hooks {
+		if _, err := tmuxOutput("set-hook", "-gu", hook); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func shellArg(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func windowStatusIcon(statuses string) string {
 	icon := ""
 	for _, status := range strings.Split(strings.TrimSpace(statuses), "\n") {
-		if status == workingIcon {
-			return workingIcon
+		if status == questionIcon {
+			return questionIcon
 		}
-		if status == doneIcon {
+		if status == workingIcon {
+			icon = workingIcon
+		} else if status == doneIcon && icon == "" {
 			icon = doneIcon
 		}
 	}
@@ -560,14 +638,15 @@ func tmuxUnavailable(err error) bool {
 }
 
 func agentStateDir() (string, error) {
-	if dir := os.Getenv("JUMPMUX_STATE_DIR"); dir != "" {
-		return dir, nil
+	dir := os.Getenv("JUMPMUX_STATE_DIR")
+	if dir == "" {
+		cache, err := os.UserCacheDir()
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(cache, "jumpmux", "agents")
 	}
-	cache, err := os.UserCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(cache, "jumpmux", "agents"), nil
+	return filepath.Abs(dir)
 }
 
 func agentStatePath(pane string) (string, error) {
@@ -586,18 +665,6 @@ func agentStatePath(pane string) (string, error) {
 	return filepath.Join(dir, server, id+".json"), nil
 }
 
-func legacyAgentStatePath(pane string) (string, error) {
-	id, err := tmuxPaneID(pane)
-	if err != nil {
-		return "", err
-	}
-	dir, err := agentStateDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, id+".json"), nil
-}
-
 func tmuxPaneID(pane string) (string, error) {
 	id := strings.TrimPrefix(pane, "%")
 	if id == "" || strings.Trim(id, "0123456789") != "" {
@@ -614,10 +681,79 @@ func tmuxServerIdentity() (string, error) {
 		}
 	}
 	if socket == "" {
-		return "legacy", nil
+		return "", errors.New("cannot determine tmux server identity")
 	}
 	sum := sha256.Sum256([]byte(socket))
 	return hex.EncodeToString(sum[:8]), nil
+}
+
+func markAgentSeen(agent item) (bool, error) {
+	marked := false
+	err := withTmuxWindowLock(agent.pane, func() error {
+		var err error
+		marked, err = markAgentSeenLocked(agent.pane, agent.agentSessionID)
+		return err
+	})
+	return marked, err
+}
+
+func markAgentSeenLocked(pane, sessionID string) (bool, error) {
+	panes, err := listTmuxPanes()
+	if err != nil {
+		return false, err
+	}
+	var current tmuxPane
+	for _, candidate := range panes {
+		if candidate.ID == pane {
+			current = candidate
+			break
+		}
+	}
+	if current.ID == "" {
+		return false, errors.New("the selected tmux pane is no longer open")
+	}
+	state, _, err := readAgentState(pane)
+	if err != nil {
+		return false, fmt.Errorf("%w: %v", errAgentStateUnavailable, err)
+	}
+	if state.Pane != pane || state.PanePID == "" || state.PanePID != current.PID || state.PaneCommand != current.CurrentCommand || (sessionID != "" && state.SessionID != sessionID) {
+		return false, errAgentChanged
+	}
+	if state.Status != "done" {
+		return false, nil
+	}
+	marked := !state.Seen
+	if marked {
+		state.Seen = true
+		data, err := json.Marshal(state)
+		if err != nil {
+			return false, err
+		}
+		path, err := agentStatePath(pane)
+		if err != nil {
+			return false, err
+		}
+		if err := atomicWrite(path, append(data, '\n'), 0o600); err != nil {
+			return false, err
+		}
+	}
+	return marked, clearTmuxStatusLocked(pane)
+}
+
+func readAgentState(pane string) (agentState, string, error) {
+	path, err := agentStatePath(pane)
+	if err != nil {
+		return agentState{}, "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return agentState{}, "", err
+	}
+	var state agentState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return agentState{}, "", err
+	}
+	return state, path, nil
 }
 
 func removeAgentState(path string) error {
