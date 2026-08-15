@@ -161,11 +161,11 @@ func TestAgentActionMenu(t *testing.T) {
 		labels[index] = entries[index].label
 	}
 	joined := strings.Join(labels, ",")
-	if !strings.Contains(joined, "Fork to new window") || !strings.Contains(joined, "Mark seen") || strings.Contains(joined, "Prompt") {
+	if !strings.Contains(joined, "Mark seen") || strings.Contains(joined, "Fork") || strings.Contains(joined, "Prompt") {
 		t.Fatalf("agent action menu = %s", joined)
 	}
-	if actionMenuGroup(menuForkAgent) != "Create" || actionMenuGroup(menuMarkAgentSeen) != "Attention" {
-		t.Fatalf("agent action groups = fork %q seen %q", actionMenuGroup(menuForkAgent), actionMenuGroup(menuMarkAgentSeen))
+	if actionMenuGroup(menuMarkAgentSeen) != "Attention" {
+		t.Fatalf("mark-seen action group = %q", actionMenuGroup(menuMarkAgentSeen))
 	}
 
 	model.actionMenuIndex = slices.IndexFunc(entries, func(entry actionMenuEntry) bool { return entry.action == menuMarkAgentSeen })
@@ -178,15 +178,10 @@ func TestAgentActionMenu(t *testing.T) {
 	model = newDashboard("/repo")
 	model.tab = tabAgents
 	model.agents = []item{{kind: "session", target: "%7", pane: "%7", status: "working", agentSessionID: "session-id"}}
-	foundFork := false
 	for _, entry := range model.actionMenuEntries() {
-		foundFork = foundFork || entry.action == menuForkAgent
-		if entry.action == menuMarkAgentSeen {
-			t.Fatalf("working agent exposed control action %#v", entry)
+		if entry.action == menuMarkAgentSeen || strings.Contains(entry.label, "Fork") {
+			t.Fatalf("working agent exposed removed control action %#v", entry)
 		}
-	}
-	if !foundFork {
-		t.Fatal("working agent has no fork action")
 	}
 }
 

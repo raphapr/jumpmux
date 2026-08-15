@@ -154,6 +154,18 @@ func updateWorktree(path, branch, operation string, noSquash bool, backend workt
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), worktreeMergeTimeout)
 	defer cancel()
+	root := worktrees[0].path
+	if operation == "merge" || backend == backendGit {
+		for _, dir := range []string{path, root} {
+			output, err := runActionCommand(ctx, dir, "git", "status", "--porcelain")
+			if err != nil {
+				return actionError("check worktree status", output, err)
+			}
+			if strings.TrimSpace(string(output)) != "" {
+				return fmt.Errorf("cannot %s with uncommitted changes in %s", operation, compactHome(dir))
+			}
+		}
+	}
 	if backend == backendWT {
 		args := []string{"-C", path}
 		if operation == "rebase" {
@@ -172,21 +184,11 @@ func updateWorktree(path, branch, operation string, noSquash bool, backend workt
 		return nil
 	}
 
-	root := worktrees[0].path
 	base := gitDefaultBranch(root)
 	if operation == "merge" {
 		output, err := runActionCommand(ctx, root, "git", "symbolic-ref", "--quiet", "--short", "HEAD")
 		if err != nil || strings.TrimSpace(string(output)) != base {
 			return fmt.Errorf("cannot merge: primary worktree is not on %s", base)
-		}
-	}
-	for _, dir := range []string{path, root} {
-		output, err := runActionCommand(ctx, dir, "git", "status", "--porcelain")
-		if err != nil {
-			return actionError("check worktree status", output, err)
-		}
-		if strings.TrimSpace(string(output)) != "" {
-			return fmt.Errorf("cannot %s with uncommitted changes in %s", operation, compactHome(dir))
 		}
 	}
 	if operation == "rebase" {

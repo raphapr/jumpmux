@@ -563,7 +563,7 @@ func actionMenuGroup(action menuAction) string {
 	switch action {
 	case menuOpen, menuDiff, menuPR, menuPreviousSession:
 		return "Open"
-	case menuAddWorktree, menuForkAgent:
+	case menuAddWorktree:
 		return "Create"
 	case menuMarkAgentSeen:
 		return "Attention"
@@ -594,9 +594,9 @@ func (m dashboardModel) removePreviewLines() []string {
 		}
 	}
 	if m.action == actionMergeWorktree {
-		mode, note := "off (native Git)", "Requires clean worktrees; keeps worktree."
+		mode := "off (native Git)"
 		if m.actionBackend == backendWT {
-			mode, note = "on (s toggles)", "May commit changes; keeps worktree."
+			mode = "on (s toggles)"
 			if m.actionNoSquash {
 				mode = "off (s toggles)"
 			}
@@ -605,7 +605,7 @@ func (m dashboardModel) removePreviewLines() []string {
 			"Branch: " + safeText(m.actionTarget.branch),
 			"Path:   " + safeText(compactHome(m.actionTarget.cwd)),
 			"Squash: " + mode,
-			note,
+			"Requires clean worktrees; keeps worktree.",
 			"Target: local default branch",
 			"",
 			"Enter Merge    Esc Cancel",

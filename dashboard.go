@@ -162,7 +162,6 @@ const (
 	menuAddWorktree
 	menuDiff
 	menuPR
-	menuForkAgent
 	menuMarkAgentSeen
 	menuCleanup
 	menuRebase
@@ -388,9 +387,6 @@ func (m dashboardModel) actionMenuEntries() []actionMenuEntry {
 	if gitItem.prNumber != 0 {
 		entries = append(entries, actionMenuEntry{menuPR, "Open pull request", "p", "PR"})
 	}
-	if m.tab == tabAgents && selected.agentSessionID != "" {
-		entries = append(entries, actionMenuEntry{menuForkAgent, "Fork to new window", "f", "Fork"})
-	}
 	if m.tab == tabAgents && selected.status == "done" && !selected.seen {
 		entries = append(entries, actionMenuEntry{menuMarkAgentSeen, "Mark seen", "m", "Seen"})
 	}
@@ -440,12 +436,6 @@ func (m dashboardModel) executeAction(action menuAction) (tea.Model, tea.Cmd) {
 			pr := m.gitItem(selected)
 			return m, func() tea.Msg {
 				return worktreeActionMsg{notice: fmt.Sprintf("Opened PR #%d", pr.prNumber), err: openPullRequest(selected.cwd, pr.prNumber)}
-			}
-		}
-	case menuForkAgent:
-		if ok {
-			return m, func() tea.Msg {
-				return worktreeActionMsg{notice: "Forked agent into new window", quit: true, err: forkAgent(selected)}
 			}
 		}
 	case menuMarkAgentSeen:
@@ -2067,7 +2057,7 @@ func (m dashboardModel) helpLines() []string {
 		"Session icons  " + dashboardIcon(" live,  configured,  discovered", "L live, C configured, R discovered"),
 		"Enter         Open selected row",
 		"1–9           Open row (Agents/Worktrees)",
-		"Agents        o Open · d Diff · p PR · f Fork · m Mark seen",
+		"Agents        o Open · d Diff · p PR · m Mark seen",
 		"Worktrees     a Add · o Open · d Diff · p PR",
 		"              b Rebase · m Merge · x Cleanup · r Remove",
 		"Sessions      O Open · Ctrl+r Remove · P Previous",

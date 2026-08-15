@@ -64,7 +64,7 @@ The extension reports each pane's lifecycle state for the dashboard.
 | Type in the theme picker                  | Filter theme names                                                        |
 | `Enter` while filtering                   | Accept an Agents/Worktrees filter or open a Session                       |
 | `Esc` while filtering                     | Clear and close the filter                                                |
-| Agents: `o`, `d`, `p`, `f`, `m`           | Open, diff, open PR, fork, or mark an unseen completion seen              |
+| Agents: `o`, `d`, `p`, `m`                | Open, diff, open PR, or mark an unseen completion seen                    |
 | Worktrees: `a`, `o`, `d`, `p`             | Add, open, diff, or open PR                                                |
 | Worktrees: `b`, `m`, `x`, `r`             | Rebase, merge, clean up, or remove; `Enter` confirms                      |
 | Sessions: `O`, `Ctrl+r`, `P`              | Open, remove (`Enter` confirms), or switch to the previous session        |
@@ -86,7 +86,7 @@ The Pi extension writes agent status records. Before displaying a record, jumpmu
 
 `jumpmux agent list` shows live Pi agents, and `jumpmux agent open <session-id|pane-id>` focuses one. Session IDs that identify more than one pane are ambiguous; use a pane ID.
 
-Press `f` to fork the selected agent into a new window in the current tmux session. A completion is seen when its pane is focused or explicitly marked seen from the dashboard. On an unseen completed agent, press `m` directly or choose Mark seen from `Space`. Acknowledgement clears its tmux completion marker.
+A completion is seen when its pane is focused or explicitly marked seen from the dashboard. On an unseen completed agent, press `m` directly or choose Mark seen from `Space`. Acknowledgement clears its tmux completion marker.
 
 `jumpmux worktree add <branch> [--detach] [--json]` creates a normal worktree. Without `--detach` or `--json`, it opens a new tmux shell in the worktree. `--detach` prints its path, and `--json` returns the worktree resource.
 
@@ -123,7 +123,7 @@ Live previews capture the active pane every 500 ms, including alternate-screen p
 
 jumpmux merges rows with the same name. Configured paths take precedence; live-only rows use the active pane path. Rows appear in three groups: live, configured, and discovered. Each group sorts by name. Press `Ctrl+g` to sort by the `Last` column until jumpmux exits. Searches sort by fuzzy match score.
 
-Press `Space` for actions available on the selected row. Press the shown key from the table or menu, or select an action and press `Enter`. The Sessions `P` action switches to the previous session even when no row is selected. Opening a selected row, forking an agent, adding a worktree, or switching to the previous session exits the dashboard; failures leave it open. Worktree actions include add, open, diff, PR, rebase, merge, cleanup, and removal. Worktree rebase and merge use the configured worktree backend against its local default branch: Worktrunk when selected or available in `auto`, otherwise native Git. Merge keeps the worktree. Worktrunk squashes by default; press `s` on the merge confirmation to preserve commits. Native Git always preserves commits. Removing a live session does not delete its configured entry.
+Press `Space` for actions available on the selected row. Press the shown key from the table or menu, or select an action and press `Enter`. The Sessions `P` action switches to the previous session even when no row is selected. Opening a selected row, adding a worktree, or switching to the previous session exits the dashboard; failures leave it open. Worktree actions include add, open, diff, PR, rebase, merge, cleanup, and removal. Worktree rebase and merge use the configured worktree backend against its local default branch: Worktrunk when selected or available in `auto`, otherwise native Git. Merge requires clean worktrees and keeps the worktree. Worktrunk squashes by default; press `s` on the merge confirmation to preserve commits. Native Git always preserves commits. Removing a live session does not delete its configured entry.
 
 ### Git
 
