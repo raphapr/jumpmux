@@ -365,6 +365,7 @@ func TestOpenPullRequestCommand(t *testing.T) {
 }
 
 func TestDashboardWorktreeActionModes(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/test,1,0")
 	model := newDashboard("/repo")
 	model.width, model.height, model.tab = 120, 30, 1
 	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main"}, {kind: "worktree", target: "/feature", cwd: "/feature", branch: "feature"}}
@@ -399,54 +400,22 @@ func TestDashboardWorktreeActionModes(t *testing.T) {
 	model.tab, model.index = 1, 0
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	model = updated.(dashboardModel)
-	if model.action != actionNone || model.err == nil {
-		t.Fatal("primary worktree removal was not rejected")
+	if model.action != actionNone || model.err != nil {
+		t.Fatal("primary worktree removal was exposed")
 	}
 	model.tab, model.err = 0, nil
 	footer = ansi.Strip(model.renderFooter(120))
-	if !strings.Contains(footer, "s Scope (all)") || !strings.Contains(footer, "t Theme") || strings.Contains(footer, "Refresh") {
+	if !strings.Contains(footer, "s Scope (All)") || !strings.Contains(footer, "t Theme") || strings.Contains(footer, "Refresh") {
 		t.Fatalf("agent footer = %s", footer)
 	}
 }
 
-func TestDashboardMutationReloadsConfig(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	repo := t.TempDir()
-	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.com"}, {"commit", "--allow-empty", "-qm", "base"}} {
-		if output, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, output)
-		}
-	}
-	path, err := configPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := atomicWrite(path, []byte("worktree_backend = invalid\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	model := newDashboard(repo)
-	model.width, model.height, model.tab = 120, 30, 1
-	model.action = actionAddWorktree
-	model.actionTextInput.SetValue("feature")
-	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if updated.(dashboardModel).action != actionRunning || command == nil {
-		t.Fatal("add action did not start")
-	}
-	if err := command().(worktreeActionMsg).err; err == nil || !strings.Contains(err.Error(), "must be a quoted TOML string") {
-		t.Fatalf("invalid config silently selected a backend: %v", err)
-	}
-}
-
-func TestCreatedWorktreeExitsToOpenSelection(t *testing.T) {
-	created := item{kind: "worktree", target: "/repo__worktrees/feature", cwd: "/repo__worktrees/feature", branch: "feature", title: "feature"}
+func TestCreatedWorktreeRefreshesDashboard(t *testing.T) {
 	model := newDashboard("/repo")
-	updated, command := model.Update(worktreeActionMsg{action: actionAddWorktree, notice: "Created worktree feature", created: created})
+	updated, command := model.Update(worktreeActionMsg{action: actionAddWorktree, notice: "Created worktree feature"})
 	model = updated.(dashboardModel)
-	if command == nil || model.err != nil || !model.chosen || model.selection.target != created.target {
-		t.Fatalf("created worktree selection = chosen %v selection %#v error %v", model.chosen, model.selection, model.err)
-	}
-	if _, ok := command().(tea.QuitMsg); !ok {
-		t.Fatalf("created worktree command = %#v, want tea.QuitMsg", command())
+	if command == nil || model.err != nil || model.chosen || !model.worktreesInFlight {
+		t.Fatalf("created worktree dashboard state = chosen %v refreshing %v error %v", model.chosen, model.worktreesInFlight, model.err)
 	}
 }
 

@@ -27,15 +27,40 @@ func TestParsers(t *testing.T) {
 	})
 }
 
+func TestMainHelpAndRemovedDashboardSelectors(t *testing.T) {
+	if args := os.Getenv("JUMPMUX_MAIN_TEST_ARGS"); args != "" {
+		os.Args = append([]string{"jumpmux"}, strings.Fields(args)...)
+		main()
+		return
+	}
+	run := func(args string) ([]byte, error) {
+		command := exec.Command(os.Args[0], "-test.run=^TestMainHelpAndRemovedDashboardSelectors$")
+		command.Env = append(os.Environ(), "JUMPMUX_MAIN_TEST_ARGS="+args)
+		return command.CombinedOutput()
+	}
+	help, err := run("--help")
+	if err != nil || strings.Contains(string(help), "--session") || strings.Contains(string(help), "jumpmux <agents|worktrees|sessions>") || !strings.Contains(string(help), "--tab <agents|worktrees|sessions>") || !strings.Contains(string(help), "--yes for non-interactive use") {
+		t.Fatalf("help = %q, %v", help, err)
+	}
+	for _, args := range []string{"agents", "worktrees", "sessions", "--session", "-s"} {
+		output, err := run(args)
+		if err == nil || !strings.Contains(string(output), "unknown argument") {
+			t.Fatalf("removed selector %q = %q, %v", args, output, err)
+		}
+	}
+}
+
 func TestDashboardTab(t *testing.T) {
-	for name, want := range map[string]int{"agents": tabAgents, "worktrees": tabWorktrees, "sessions": tabSessions} {
+	for name, want := range map[string]int{
+		"agents": tabAgents, "worktrees": tabWorktrees, "sessions": tabSessions,
+	} {
 		got, err := dashboardTab(name)
 		if err != nil || got != want {
 			t.Fatalf("dashboardTab(%q) = %d, %v", name, got, err)
 		}
 	}
-	if _, err := dashboardTab("other"); err == nil {
-		t.Fatal("invalid tab was accepted")
+	if _, err := dashboardTab("other"); err == nil || !strings.Contains(err.Error(), "agents, worktrees, or sessions") {
+		t.Fatalf("invalid tab error is not plural canonical: %v", err)
 	}
 }
 
@@ -51,11 +76,18 @@ func TestContextJSON(t *testing.T) {
 	}
 }
 
-func TestContextJSONDoneAgentUsesPlainIcon(t *testing.T) {
+func TestContextJSONCompletionAndQuestionIcons(t *testing.T) {
+	t.Setenv("JUMPMUX_PLAIN", "")
 	defer func() { nerdFontEnabled = true }()
 	nerdFontEnabled = false
-	if icon := contextJSON([]item{{kind: "session", status: "done"}})[0].Icon; icon != "D" {
-		t.Fatalf("done agent plain icon = %q, want D", icon)
+	entries := contextJSON([]item{{kind: "session", status: "done", seen: true}, {kind: "session", status: "done"}, {kind: "session", status: "question"}})
+	if entries[0].Icon != "D" || entries[1].Icon != "D U" || entries[2].Icon != "?" || entries[2].Status != "question" || entries[2].Attention != "question" {
+		t.Fatalf("plain agent icons = %#v", entries)
+	}
+	nerdFontEnabled = true
+	entries = contextJSON([]item{{kind: "session", status: "done", seen: true}, {kind: "session", status: "done"}, {kind: "session", status: "question"}})
+	if entries[0].Icon != doneIcon || entries[1].Icon != doneIcon+" "+unseenAgentIcon || entries[2].Icon != questionIcon {
+		t.Fatalf("Nerd Font agent icons = %#v", entries)
 	}
 }
 
@@ -77,13 +109,20 @@ func TestSessionIconPrecedenceAcrossContext(t *testing.T) {
 }
 
 func TestContextCommandValidation(t *testing.T) {
-	for _, args := range [][]string{{"sessions"}, {"sessions", "list", "--yaml"}, {"agents", "connect", "%1"}, {"sessions", "connect", "dev"}, {"sessions", "last", "extra"}, {"worktrees", "other", "x"}} {
+	for _, args := range [][]string{{"agents"}, {"worktrees"}, {"sessions"}, {"--help"}} {
+		if handled, err := contextCommand(args); handled || err != nil {
+			t.Fatalf("dashboard command %q = %t, %v", args, handled, err)
+		}
+	}
+	for _, args := range [][]string{{"agent"}, {"worktree"}, {"session"}, {"agent", "--json"}, {"session", "list", "--yaml"}, {"agent", "connect", "%1"}, {"session", "connect", "dev"}, {"session", "last", "extra"}, {"worktree", "other", "x"}} {
 		if handled, err := contextCommand(args); !handled || err == nil {
 			t.Fatalf("contextCommand(%q) = %t, %v", args, handled, err)
 		}
 	}
-	if handled, err := contextCommand([]string{"--help"}); handled || err != nil {
-		t.Fatalf("non-context command = %t, %v", handled, err)
+	for _, args := range [][]string{{"agents", "other"}, {"worktrees", "other"}, {"sessions", "other"}} {
+		if handled, err := contextCommand(args); handled || err != nil {
+			t.Fatalf("plural command %q was accepted: %t, %v", args, handled, err)
+		}
 	}
 }
 

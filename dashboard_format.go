@@ -476,8 +476,15 @@ func muxView(item item) string {
 
 func statusText(item item, now time.Time) string {
 	icon := dashboardIcon(doneIcon, "D")
-	if item.status == "working" {
+	switch item.status {
+	case "working":
 		icon = dashboardIcon(workingIcon, "W")
+	case "question":
+		icon = dashboardIcon(questionIcon, "?")
+	default:
+		if !item.seen {
+			icon += " " + dashboardIcon(unseenAgentIcon, "U")
+		}
 	}
 	if isStale(item, now) {
 		return icon + " " + dashboardIcon(staleAgentIcon, "old")
@@ -488,24 +495,25 @@ func statusText(item item, now time.Time) string {
 	return icon
 }
 
-func statusCell(item item, width int, now time.Time, background *lipgloss.AdaptiveColor) string {
-	style := successStyle
-	if isStale(item, now) {
-		style = mutedStyle
-	} else if item.status == "working" {
-		style = infoStyle
+func statusStyle(item item, now time.Time) lipgloss.Style {
+	switch {
+	case item.status == "question":
+		return warningStyle
+	case isStale(item, now):
+		return mutedStyle
+	case item.status == "working":
+		return infoStyle
+	default:
+		return successStyle
 	}
-	return renderCell(style, statusText(item, now), width, background)
+}
+
+func statusCell(item item, width int, now time.Time, background *lipgloss.AdaptiveColor) string {
+	return renderCell(statusStyle(item, now), statusText(item, now), width, background)
 }
 
 func statusView(item item, now time.Time) string {
-	style := successStyle
-	if isStale(item, now) {
-		style = mutedStyle
-	} else if item.status == "working" {
-		style = infoStyle
-	}
-	return style.Render(statusText(item, now))
+	return statusStyle(item, now).Render(statusText(item, now))
 }
 
 func agentSummaryCell(item item, width int, now time.Time, background *lipgloss.AdaptiveColor, loaded bool, err error) string {
@@ -520,13 +528,7 @@ func agentSummaryCell(item item, width int, now time.Time, background *lipgloss.
 			return renderCell(mutedStyle, "-", width, background)
 		}
 	}
-	style := successStyle
-	if isStale(item, now) {
-		style = mutedStyle
-	} else if item.status == "working" {
-		style = infoStyle
-	}
-	value := withBackground(style, background).Render(statusText(item, now)) + withBackground(textStyle, background).Render(" "+truncate(safeText(item.sessionTitle), 24))
+	value := withBackground(statusStyle(item, now), background).Render(statusText(item, now)) + withBackground(textStyle, background).Render(" "+truncate(safeText(item.sessionTitle), 24))
 	return padANSIBackground(value, width, background)
 }
 

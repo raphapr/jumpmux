@@ -83,7 +83,7 @@ func TestGitStatusCacheHydratesFirstFrame(t *testing.T) {
 		t.Fatalf("PR cache mode: info=%v err=%v", info, err)
 	}
 
-	model := newDashboardForLaunch(path, "", false)
+	model := newDashboardForLaunch(path, "")
 	agent := item{kind: "session", cwd: path}
 	if got := gitStatusText(model.gitItem(agent), model.now); !strings.Contains(got, "+7") || !strings.Contains(got, "↑1") {
 		t.Fatalf("cached agent Git status = %q", got)

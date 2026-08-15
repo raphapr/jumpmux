@@ -55,7 +55,7 @@ func TestColorSchemes(t *testing.T) {
 	if err := saveColorScheme(schemeEmberforge); err != nil {
 		t.Fatal(err)
 	}
-	model := newDashboardForLaunch("/repo", "dev", false)
+	model := newDashboardForLaunch("/repo", "dev")
 	if model.scheme != schemeEmberforge || accentColor != themePalettes[schemeEmberforge].accent {
 		t.Fatalf("loaded scheme = %s", model.scheme.slug())
 	}

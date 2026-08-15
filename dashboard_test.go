@@ -100,6 +100,13 @@ func TestWorktreeRepresentativeAgentPriority(t *testing.T) {
 	if items[0].sessionTitle != "current done" {
 		t.Fatalf("current agent did not win representative priority: %#v", items[0])
 	}
+	attachAgentsToWorktrees(items, []item{
+		{cwd: "/repo", title: "working", status: "working", current: true, updated: now},
+		{cwd: "/repo", title: "question", status: "question", updated: now.Add(-time.Hour)},
+	})
+	if items[0].sessionTitle != "question" || items[0].status != "question" {
+		t.Fatalf("question agent did not win representative priority: %#v", items[0])
+	}
 }
 
 func TestWorktreeAgentRefreshPreservesErrorsAndClearsSuccessfulEmptyResults(t *testing.T) {
@@ -209,7 +216,7 @@ func TestDashboardLayout(t *testing.T) {
 
 	view := model.View()
 	plain := ansi.Strip(view)
-	for _, expected := range []string{"[Agents 2 · all] │ Worktrees 1", "# Project", "Git", dashboardIcon(gitDiffIcon, "*"), "+12", "-3", "PR", "#42 " + dashboardIcon(checkFailureIcon, "x"), "Status", dashboardIcon(doneIcon, "D"), "Time", "Title", "┌─ ▶ Preview: repo ", "↵ Open", "? Help"} {
+	for _, expected := range []string{"[Agents 2 · All] │ Worktrees 1", "# Project", "Git", dashboardIcon(gitDiffIcon, "*"), "+12", "-3", "PR", "#42 " + dashboardIcon(checkFailureIcon, "x"), "Status", dashboardIcon(doneIcon, "D") + " " + dashboardIcon(unseenAgentIcon, "U"), "Time", "Title", "┌─ ▶ Preview: repo ", "↵ Open", "? Help"} {
 		if !strings.Contains(plain, expected) {
 			t.Fatalf("dashboard missing %q:\n%s", expected, plain)
 		}
@@ -351,7 +358,9 @@ func TestWorktreeAgentCellStatesAndPlainIcons(t *testing.T) {
 		{name: "error", loaded: true, err: errors.New("unavailable"), want: "!"},
 		{name: "empty", loaded: true, want: "-"},
 		{name: "working", item: item{sessionTitle: "agent", status: "working", updated: now}, loaded: true, want: "W " + spinnerFrame(now) + " agent"},
-		{name: "done", item: item{sessionTitle: "agent", status: "done", updated: now}, loaded: true, want: "D agent"},
+		{name: "question", item: item{sessionTitle: "agent", status: "question", updated: now}, loaded: true, want: "? agent"},
+		{name: "unseen", item: item{sessionTitle: "agent", status: "done", updated: now}, loaded: true, want: "D U agent"},
+		{name: "seen", item: item{sessionTitle: "agent", status: "done", seen: true, updated: now}, loaded: true, want: "D agent"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got := ansi.Strip(agentSummaryCell(test.item, 20, now, nil, test.loaded, test.err))
@@ -359,6 +368,9 @@ func TestWorktreeAgentCellStatesAndPlainIcons(t *testing.T) {
 				t.Fatalf("Agent cell = %q, want %q", got, test.want)
 			}
 		})
+	}
+	if got := ansi.Strip(statusCell(item{status: "done", seen: true}, 12, now, nil)); got != "D           " {
+		t.Fatalf("agent seen status = %q", got)
 	}
 }
 
@@ -937,6 +949,18 @@ func TestDashboardNavigationPreviewModesAndWideLayout(t *testing.T) {
 	if !model.filter || model.query != "g" {
 		t.Fatalf("Sessions g did not search: %#v", model)
 	}
+	model.filter, model.query = false, ""
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	model = updated.(dashboardModel)
+	if !model.filter || model.query != "o" {
+		t.Fatalf("Sessions lowercase o did not search: %#v", model)
+	}
+	model.filter, model.query = false, ""
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'O'}})
+	model = updated.(dashboardModel)
+	if !model.chosen || model.selection.target != "dev" {
+		t.Fatalf("Sessions uppercase O did not open: %#v", model)
+	}
 
 	model = newDashboard("/repo")
 	model.width, model.height, model.tab = 140, 20, tabWorktrees
@@ -978,8 +1002,23 @@ func TestSessionsReservedKeysAndPreviewPaging(t *testing.T) {
 	}
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
 	model = updated.(dashboardModel)
+	if model.action != actionNone {
+		t.Fatalf("Ctrl+D action = %d, want paging only", model.action)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	model = updated.(dashboardModel)
 	if model.action != actionRemoveSession {
-		t.Fatalf("Ctrl+D action = %d, want remove session", model.action)
+		t.Fatalf("D action = %d, want remove session", model.action)
+	}
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(dashboardModel)
+	if model.action != actionRemoveSession || command != nil {
+		t.Fatalf("Enter confirmed uppercase Session action: action=%d command=%v", model.action, command != nil)
+	}
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	model = updated.(dashboardModel)
+	if model.action != actionRunning || command == nil {
+		t.Fatalf("second D did not confirm Session removal: action=%d command=%v", model.action, command != nil)
 	}
 }
 
@@ -1038,7 +1077,7 @@ func TestDashboardFocusAndReducedMotion(t *testing.T) {
 	updated, command = model.Update(dashboardDataMsg(dashboardData{agents: []item{{kind: "session", target: "agent", cwd: "/repo"}}}))
 	model = updated.(dashboardModel)
 	if model.agentGitInFlight || command != nil {
-		t.Fatalf("blurred agent result launched Git refresh: %#v", model)
+		t.Fatalf("blurred agent update launched Git refresh: %#v", model)
 	}
 	updated, command = model.Update(worktreeDataMsg{stage: worktreeListStage, generation: model.worktreeGeneration, worktrees: []item{{kind: "worktree", target: "/repo", cwd: "/repo"}}})
 	model = updated.(dashboardModel)
@@ -1114,8 +1153,8 @@ func TestDashboardFooterAndHeaderWidths(t *testing.T) {
 		if width >= 60 && !strings.Contains(footer, "d Diff") {
 			t.Fatalf("width %d footer missing d Diff: %s", width, footer)
 		}
-		if width >= 100 && !strings.Contains(footer, "o PR") {
-			t.Fatalf("width %d footer missing o PR: %s", width, footer)
+		if width >= 100 && !strings.Contains(footer, "p PR") {
+			t.Fatalf("width %d footer missing p PR: %s", width, footer)
 		}
 		if ansi.StringWidth(footer) != width {
 			t.Fatalf("width %d footer width = %d", width, ansi.StringWidth(footer))

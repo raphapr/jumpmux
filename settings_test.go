@@ -22,7 +22,7 @@ func TestDashboardScope(t *testing.T) {
 		t.Fatalf("saved scope = %#v", config)
 	}
 
-	model := newDashboardForLaunch("/repo", "dev", false)
+	model := newDashboardForLaunch("/repo", "dev")
 	model.allAgents = []item{
 		{kind: "session", target: "%1", muxSessionName: "dev"},
 		{kind: "session", target: "%2", muxSessionName: "other"},
@@ -84,7 +84,7 @@ func TestPreviewSize(t *testing.T) {
 		t.Fatalf("settings file: %q err=%v", data, err)
 	}
 
-	loaded := newDashboardForLaunch("/repo", "", false)
+	loaded := newDashboardForLaunch("/repo", "")
 	if loaded.previewSize != 60 {
 		t.Fatalf("persisted preview size = %d", loaded.previewSize)
 	}

@@ -494,6 +494,13 @@ func switchTmuxSession(id string) error {
 	return err
 }
 
+func switchToLastTmuxSession() error {
+	if os.Getenv("TMUX") == "" {
+		return errors.New("run jumpmux inside tmux to switch sessions")
+	}
+	return switchLastTmuxSession()
+}
+
 func switchLastTmuxSession() error {
 	config, err := loadSessionsConfig()
 	if err != nil {

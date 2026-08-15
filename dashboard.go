@@ -154,32 +154,37 @@ const (
 	actionCleanupWorktree
 	actionRebaseWorktree
 	actionMergeWorktree
+	actionMarkAgentSeen
 	actionRunning
 )
 
 const (
 	menuOpen menuAction = iota
+	menuAddWorktree
 	menuDiff
 	menuPR
 	menuCopySessionName
 	menuCopyPRURL
+	menuMarkAgentSeen
 	menuRename
 	menuCleanup
 	menuRebase
 	menuMerge
 	menuRemove
+	menuPreviousSession
 )
 
 type actionMenuEntry struct {
 	action menuAction
 	label  string
+	key    string
+	footer string
 }
 
 type worktreeActionMsg struct {
 	action       dashboardAction
 	notice       string
 	selectTarget string
-	created      item
 	err          error
 }
 
@@ -361,23 +366,36 @@ func (m *dashboardModel) togglePreview() tea.Cmd {
 func (m dashboardModel) actionMenuEntries() []actionMenuEntry {
 	selected, ok := m.selected()
 	if !ok {
-		return nil
-	}
-	entries := []actionMenuEntry{{menuOpen, "Open"}}
-	if m.tab == tabSessions {
-		entries = append(entries, actionMenuEntry{menuCopySessionName, "Copy session name"})
-		if selected.muxSessionID != "" {
-			entries = append(entries, actionMenuEntry{menuRename, "Rename session"}, actionMenuEntry{menuRemove, "Remove session"})
+		switch m.tab {
+		case tabWorktrees:
+			return []actionMenuEntry{{menuAddWorktree, "Add worktree", "a", "Add"}}
+		case tabSessions:
+			return []actionMenuEntry{{menuPreviousSession, "Previous session", "P", "Previous"}}
+		default:
+			return nil
 		}
-		return entries
 	}
+	if m.tab == tabSessions {
+		entries := []actionMenuEntry{{menuOpen, "Open", "O", "Open"}, {menuCopySessionName, "Copy session name", "Y", "Copy"}}
+		if selected.muxSessionID != "" {
+			entries = append(entries, actionMenuEntry{menuRename, "Rename session", "R", "Rename"}, actionMenuEntry{menuRemove, "Remove session", "D", "Remove"})
+		}
+		return append(entries, actionMenuEntry{menuPreviousSession, "Previous session", "P", "Previous"})
+	}
+	entries := []actionMenuEntry{{menuOpen, "Open", "o", "Open"}}
 	gitItem := m.gitItem(selected)
-	entries = append(entries, actionMenuEntry{menuDiff, "View diff"})
+	if m.tab == tabWorktrees {
+		entries = append([]actionMenuEntry{{menuAddWorktree, "Add worktree", "a", "Add"}}, entries...)
+	}
+	entries = append(entries, actionMenuEntry{menuDiff, "View diff", "d", "Diff"})
 	if gitItem.prNumber != 0 {
-		entries = append(entries, actionMenuEntry{menuPR, "Open pull request"})
+		entries = append(entries, actionMenuEntry{menuPR, "Open pull request", "p", "PR"})
 	}
 	if gitItem.prURL != "" {
-		entries = append(entries, actionMenuEntry{menuCopyPRURL, "Copy PR URL"})
+		entries = append(entries, actionMenuEntry{menuCopyPRURL, "Copy PR URL", "y", "Copy"})
+	}
+	if m.tab == tabAgents && selected.status == "done" && !selected.seen {
+		entries = append(entries, actionMenuEntry{menuMarkAgentSeen, "Mark seen", "m", "Seen"})
 	}
 	if m.tab == tabWorktrees {
 		primary := len(m.worktrees) > 0 && samePath(selected.cwd, m.worktrees[0].cwd)
@@ -386,26 +404,110 @@ func (m dashboardModel) actionMenuEntries() []actionMenuEntry {
 			if base == "" {
 				base = "default branch"
 			}
-			entries = append(entries, actionMenuEntry{menuRebase, "Rebase onto " + base}, actionMenuEntry{menuMerge, "Merge into " + base})
+			entries = append(entries, actionMenuEntry{menuRebase, "Rebase onto " + base, "b", "Rebase"}, actionMenuEntry{menuMerge, "Merge into " + base, "m", "Merge"})
 		}
 		if selected.prunable && !selected.locked && !selected.current {
-			entries = append(entries, actionMenuEntry{menuCleanup, "Clean up stale record"})
+			entries = append(entries, actionMenuEntry{menuCleanup, "Clean up stale record", "x", "Clean"})
 		}
 		if !selected.current && !primary {
-			entries = append(entries, actionMenuEntry{menuRemove, "Remove worktree"})
+			entries = append(entries, actionMenuEntry{menuRemove, "Remove worktree", "r", "Remove"})
 		}
 	}
 	return entries
 }
 
+func (m dashboardModel) executeAction(action menuAction) (tea.Model, tea.Cmd) {
+	m.clearActionError()
+	selected, ok := m.selected()
+	switch action {
+	case menuAddWorktree:
+		return m, m.beginAddWorktree()
+	case menuPreviousSession:
+		m.action, m.err = actionRunning, nil
+		return m, func() tea.Msg {
+			return worktreeActionMsg{notice: "Opened previous session", err: switchToLastTmuxSession()}
+		}
+	case menuOpen:
+		if ok {
+			m.selection, m.chosen = selected, true
+			return m, tea.Quit
+		}
+	case menuDiff:
+		if ok {
+			m.diff, m.loading, m.panelFocus = true, true, panelLeft
+			m.diffRequest++
+			return m, loadDiff(selected, m.diffRequest)
+		}
+	case menuPR:
+		if ok {
+			pr := m.gitItem(selected)
+			return m, func() tea.Msg {
+				return worktreeActionMsg{notice: fmt.Sprintf("Opened PR #%d", pr.prNumber), err: openPullRequest(selected.cwd, pr.prNumber)}
+			}
+		}
+	case menuCopySessionName, menuCopyPRURL:
+		if ok {
+			value, label := selected.title, "session name"
+			if action == menuCopyPRURL {
+				value, label = m.gitItem(selected).prURL, "PR URL"
+			}
+			return m, func() tea.Msg {
+				return worktreeActionMsg{notice: "Copied " + label, err: clipboard.WriteAll(value)}
+			}
+		}
+	case menuMarkAgentSeen:
+		if ok {
+			return m, m.beginMarkAgentSeen(selected)
+		}
+	case menuRename:
+		if ok {
+			return m, m.beginRename(selected)
+		}
+	case menuCleanup:
+		if ok {
+			m.beginCleanup(selected)
+		}
+	case menuRebase, menuMerge:
+		if ok {
+			worktreeAction := actionRebaseWorktree
+			if action == menuMerge {
+				worktreeAction = actionMergeWorktree
+			}
+			m.beginWorktreeOperation(selected, worktreeAction)
+		}
+	case menuRemove:
+		if ok {
+			m.lastClickTarget, m.lastClickAt = "", time.Time{}
+			m.beginRemove(selected)
+		}
+	}
+	return m, nil
+}
+
 func (m *dashboardModel) openActionMenu() tea.Cmd {
-	if _, ok := m.selected(); !ok {
+	if _, ok := m.selected(); !ok && m.tab == tabAgents {
 		return nil
 	}
 	m.clearActionError()
 	m.actionMenu, m.actionMenuIndex = true, 0
 	m.lastClickTarget, m.lastClickAt = "", time.Time{}
 	return nil
+}
+
+func (m *dashboardModel) beginAddWorktree() tea.Cmd {
+	if err := requireTmuxWorktreeWindow(); err != nil {
+		m.err = err
+		return nil
+	}
+	backend, err := actionWorktreeBackend(backendAuto)
+	if err != nil {
+		m.err = err
+		return nil
+	}
+	m.action, m.actionBackend, m.err = actionAddWorktree, backend, nil
+	m.actionTextInput.SetValue("")
+	m.lastClickTarget, m.lastClickAt = "", time.Time{}
+	return m.actionTextInput.Focus()
 }
 
 func (m *dashboardModel) beginRename(selected item) tea.Cmd {
@@ -417,6 +519,22 @@ func (m *dashboardModel) beginRename(selected item) tea.Cmd {
 	m.actionTextInput.SetValue(selected.title)
 	m.lastClickTarget, m.lastClickAt = "", time.Time{}
 	return m.actionTextInput.Focus()
+}
+
+func (m *dashboardModel) beginMarkAgentSeen(selected item) tea.Cmd {
+	m.action, m.actionTarget, m.err = actionRunning, selected, nil
+	return func() tea.Msg {
+		marked, err := markAgentSeen(selected)
+		notice := ""
+		if marked {
+			id := selected.agentSessionID
+			if id == "" {
+				id = selected.pane
+			}
+			notice = "Marked " + id + " seen"
+		}
+		return worktreeActionMsg{action: actionMarkAgentSeen, notice: notice, err: err}
+	}
 }
 
 func (m *dashboardModel) beginCleanup(selected item) {
@@ -490,7 +608,7 @@ func (m *dashboardModel) resizeInputs() {
 	m.actionTextInput.Width = width
 }
 
-func newDashboardForLaunch(cwd, launchSession string, forceSession bool) dashboardModel {
+func newDashboardForLaunch(cwd, launchSession string) dashboardModel {
 	model := newDashboard(cwd)
 	model.gitCache = loadGitStatusCache()
 	model.prCache = loadPRStatusCache()
@@ -528,9 +646,6 @@ func newDashboardForLaunch(cwd, launchSession string, forceSession bool) dashboa
 	model.previewSize = loadPreviewSize()
 	applyColorScheme(model.scheme)
 	model.launchSession = launchSession
-	if forceSession {
-		model.scope = scopeSession
-	}
 	return model
 }
 
@@ -1228,9 +1343,13 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case worktreeActionMsg:
 		m.action, m.actionTarget, m.actionBackend, m.err = actionNone, item{}, "", msg.err
-		if msg.action == actionAddWorktree && msg.err == nil {
-			m.chosen, m.selection = true, msg.created
-			return m, tea.Quit
+		if msg.action == actionAddWorktree {
+			if msg.err == nil && msg.notice != "" {
+				m.setNotice(msg.notice)
+			}
+			m.worktreesInFlight = true
+			m.worktreeGeneration++
+			return m, tea.Batch(refreshWorktreeList(m.cwd, m.worktreeGeneration), m.resumeRefreshes())
 		}
 		if msg.action == actionRemoveSession || msg.action == actionRenameSession {
 			m.restoreSessionSelection = msg.err == nil
@@ -1243,6 +1362,9 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err == nil && msg.notice != "" {
 			m.setNotice(msg.notice)
+		}
+		if msg.action == actionMarkAgentSeen {
+			return m, m.resumeRefreshes()
 		}
 		if (msg.err == nil && (msg.action == actionRemoveWorktree || msg.action == actionCleanupWorktree)) || msg.action == actionRebaseWorktree || msg.action == actionMergeWorktree {
 			m.worktreesInFlight = true
@@ -1285,7 +1407,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.preview, m.loading = previewData{}, false
 		return m, command
 	}
-	if m.action == actionAddWorktree {
+	if m.action == actionAddWorktree || m.action == actionRenameSession {
 		var command tea.Cmd
 		m.actionTextInput, command = m.actionTextInput.Update(msg)
 		return m, command
@@ -1454,16 +1576,6 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.tab == tabSessions && key == "ctrl+d" {
-		m.clearActionError()
-		if selected, ok := m.selected(); ok {
-			m.beginRemove(selected)
-		} else {
-			m.err = errors.New("the selected session is not running")
-		}
-		m.lastClickTarget, m.lastClickAt = "", time.Time{}
-		return m, nil
-	}
 	if m.tab == tabSessions && (key == "pgup" || key == "pgdown") {
 		delta := m.previewVisibleHeight()
 		if key == "pgup" {
@@ -1602,6 +1714,12 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	for _, entry := range m.actionMenuEntries() {
+		if entry.key == key {
+			return m.executeAction(entry.action)
+		}
+	}
+
 	if m.tab == tabSessions && msg.Type == tea.KeyRunes && len(msg.Runes) > 0 {
 		m.clearActionError()
 		m.filter = true
@@ -1670,7 +1788,7 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.scope = m.scope.toggle()
 		m.err = saveScopeMode(m.scope)
 		if m.err == nil {
-			m.setNotice("Scope: " + m.scope.label())
+			m.setNotice("Scope: " + m.scope.displayLabel())
 		}
 		m.applyAgentScope()
 		m.restoreSelection(target)
@@ -1683,46 +1801,8 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.filter = true
 		m.filterInputs[m.tab].SetValue(m.query)
 		return m, m.filterInputs[m.tab].Focus()
-	case "a":
-		if m.tab == tabWorktrees {
-			m.clearActionError()
-			m.action = actionAddWorktree
-			m.actionTextInput.SetValue("")
-			m.lastClickTarget, m.lastClickAt = "", time.Time{}
-			return m, m.actionTextInput.Focus()
-		}
-	case "r":
-		m.clearActionError()
-		if selected, ok := m.selected(); ok {
-			m.beginRemove(selected)
-		}
-		m.lastClickTarget, m.lastClickAt = "", time.Time{}
-	case "o":
-		if m.tab != tabSessions {
-			m.clearActionError()
-			if selected, ok := m.selected(); ok {
-				pr := m.gitItem(selected)
-				m.err = nil
-				return m, func() tea.Msg {
-					return worktreeActionMsg{notice: fmt.Sprintf("Opened PR #%d", pr.prNumber), err: openPullRequest(selected.cwd, pr.prNumber)}
-				}
-			}
-		}
-	case "d":
-		if m.tab != tabSessions {
-			m.clearActionError()
-			if selected, ok := m.selected(); ok {
-				m.diff, m.loading, m.panelFocus = true, true, panelLeft
-				m.diffRequest++
-				return m, loadDiff(selected, m.diffRequest)
-			}
-		}
 	case "enter":
-		if selected, ok := m.selected(); ok {
-			m.clearActionError()
-			m.selection, m.chosen = selected, true
-			return m, tea.Quit
-		}
+		return m.executeAction(menuOpen)
 	case "j", "down":
 		m.move(1)
 	case "k", "up":
@@ -1786,6 +1866,14 @@ func (m dashboardModel) handleThemePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd
 func (m dashboardModel) handleActionMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	entries := m.actionMenuEntries()
+	if key != "enter" {
+		for index, entry := range entries {
+			if key == entry.key {
+				m.actionMenuIndex, key = index, "enter"
+				break
+			}
+		}
+	}
 	switch key {
 	case "esc":
 		m.actionMenu = false
@@ -1806,58 +1894,7 @@ func (m dashboardModel) handleActionMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		}
 		entry := entries[m.actionMenuIndex%len(entries)]
 		m.actionMenu = false
-		m.clearActionError()
-		switch entry.action {
-		case menuOpen:
-			if selected, ok := m.selected(); ok {
-				m.selection, m.chosen = selected, true
-				return m, tea.Quit
-			}
-		case menuDiff:
-			if selected, ok := m.selected(); ok {
-				m.diff, m.loading, m.panelFocus = true, true, panelLeft
-				m.diffRequest++
-				return m, loadDiff(selected, m.diffRequest)
-			}
-		case menuPR:
-			if selected, ok := m.selected(); ok {
-				pr := m.gitItem(selected)
-				return m, func() tea.Msg {
-					return worktreeActionMsg{notice: fmt.Sprintf("Opened PR #%d", pr.prNumber), err: openPullRequest(selected.cwd, pr.prNumber)}
-				}
-			}
-		case menuCopySessionName, menuCopyPRURL:
-			if selected, ok := m.selected(); ok {
-				value, label := selected.title, "session name"
-				if entry.action == menuCopyPRURL {
-					value, label = m.gitItem(selected).prURL, "PR URL"
-				}
-				return m, func() tea.Msg {
-					return worktreeActionMsg{notice: "Copied " + label, err: clipboard.WriteAll(value)}
-				}
-			}
-		case menuRename:
-			if selected, ok := m.selected(); ok {
-				return m, m.beginRename(selected)
-			}
-		case menuCleanup:
-			if selected, ok := m.selected(); ok {
-				m.beginCleanup(selected)
-			}
-		case menuRebase, menuMerge:
-			if selected, ok := m.selected(); ok {
-				action := actionRebaseWorktree
-				if entry.action == menuMerge {
-					action = actionMergeWorktree
-				}
-				m.beginWorktreeOperation(selected, action)
-			}
-		case menuRemove:
-			if selected, ok := m.selected(); ok {
-				m.beginRemove(selected)
-			}
-		}
-		return m, nil
+		return m.executeAction(entry.action)
 	default:
 		return m, nil
 	}
@@ -1869,7 +1906,7 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case actionAddWorktree, actionRenameSession:
 		switch key {
 		case "esc":
-			m.action = actionNone
+			m.action, m.actionBackend = actionNone, ""
 			m.actionTextInput.SetValue("")
 			m.actionTextInput.Blur()
 			return m, m.resumeRefreshes()
@@ -1878,15 +1915,18 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if value == "" {
 				return m, nil
 			}
-			action, target := m.action, m.actionTarget
+			action, target, backend := m.action, m.actionTarget, m.actionBackend
 			m.action, m.err = actionRunning, nil
 			m.actionTextInput.Blur()
 			return m, func() tea.Msg {
 				if action == actionRenameSession {
 					return worktreeActionMsg{action: action, notice: "Renamed session to " + value, selectTarget: value, err: renameTmuxSession(target, value)}
 				}
-				created, err := addWorktree(m.cwd, value, backendAuto)
-				return worktreeActionMsg{action: action, notice: "Created worktree " + value, created: created, err: err}
+				created, err := addWorktree(m.cwd, value, backend)
+				if err == nil {
+					err = openTmuxWorktree(created)
+				}
+				return worktreeActionMsg{action: action, notice: "Created worktree " + value, err: err}
 			}
 		default:
 			var command tea.Cmd
@@ -1895,7 +1935,10 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case actionRemoveWorktree, actionRemoveSession, actionCleanupWorktree, actionRebaseWorktree, actionMergeWorktree:
 		switch key {
-		case "enter":
+		case "enter", "D":
+			if (m.action == actionRemoveSession) != (key == "D") {
+				return m, nil
+			}
 			action, target, backend := m.action, m.actionTarget, m.actionBackend
 			m.action, m.err = actionRunning, nil
 			return m, func() tea.Msg {
@@ -2041,25 +2084,23 @@ func (m dashboardModel) helpLines() []string {
 		"Session icons  " + dashboardIcon(" live,  configured,  discovered", "L live, C configured, R discovered"),
 		"Enter         Open selected row",
 		"1–9           Open row (Agents/Worktrees)",
+		"Agents        o Open · d Diff · p PR · y Copy PR · m Mark seen",
+		"Worktrees     a Add · o Open · d Diff · p PR · y Copy PR",
+		"              b Rebase · m Merge · x Cleanup · r Remove",
+		"Sessions      O Open · Y Copy name · R Rename · D Remove (D confirms) · P Previous",
 		"Click         Select row",
 		"Double-click  Open row",
 		"Mouse wheel   Scroll table or preview",
 		"Tab/Shift+Tab Switch tabs",
 		"/             Filter (Agents/Worktrees)",
-		"Type          Search Sessions (g/G stay searchable)",
-		"Space         Selected-item actions",
+		"Type          Search Sessions (except O/Y/R/D/P)",
+		"Space         Show applicable actions; shown keys run actions",
 		"Ctrl+f        Cycle Session filter",
 		"Ctrl+r        Toggle grouped/recent Session order",
 		"Enter / Esc   Open / clear session search",
-		"d             Open Git diff (Agents/Worktrees)",
 		"Shift+←/→     Focus split panel",
-		"a             Add worktree (Worktrees)",
-		"r             Remove worktree (Worktrees)",
-		"Ctrl+d        Remove live session (Sessions)",
-		"o             Open pull request (Agents/Worktrees)",
 		"PgUp/PgDn     Page diff/help; preview in Sessions",
 		"Ctrl+u/d      Page preview, diff, or help",
-		"              (Ctrl+d only removes in Sessions)",
 		"G/End         Resume a paused live preview",
 		"g/G, Home/End Top/bottom in diff or help",
 		"h/l           Pan long lines",

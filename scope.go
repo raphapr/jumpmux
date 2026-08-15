@@ -27,6 +27,13 @@ func (scope scopeMode) label() string {
 	return "all"
 }
 
+func (scope scopeMode) displayLabel() string {
+	if scope == scopeSession {
+		return "Session"
+	}
+	return "All"
+}
+
 func scopeModeFromLabel(value string) scopeMode {
 	if value == scopeSession.label() {
 		return scopeSession

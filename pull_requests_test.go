@@ -24,7 +24,7 @@ func TestLegacyPRCacheInfersBranchFromGitCache(t *testing.T) {
 	if err := atomicWrite(cachePath, []byte(`{"/repo":{"number":23,"state":"OPEN"}}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	model := newDashboardForLaunch(path, "", false)
+	model := newDashboardForLaunch(path, "")
 	if got := model.agentGit[path]; got.branch != "feature" || got.prNumber != 23 {
 		t.Fatalf("legacy PR cache was not migrated: %#v", got)
 	}
@@ -342,17 +342,17 @@ func TestPRCacheMatchesLoadedBranch(t *testing.T) {
 	if err := savePRStatusCache(map[string]item{path: {cwd: path, branch: "feature", prLoaded: true, prNumber: 23, prState: "OPEN"}}); err != nil {
 		t.Fatal(err)
 	}
-	model := newDashboardForLaunch(path, "", false)
+	model := newDashboardForLaunch(path, "")
 	updated, _ := model.Update(worktreeDataMsg{stage: worktreeListStage, generation: model.worktreeGeneration, worktrees: []item{{kind: "worktree", target: path, cwd: path, branch: "feature"}}})
 	if got := updated.(dashboardModel).worktrees[0].prNumber; got != 23 {
 		t.Fatalf("matching cached PR = %d", got)
 	}
-	model = newDashboardForLaunch(path, "", false)
+	model = newDashboardForLaunch(path, "")
 	updated, _ = model.Update(worktreeDataMsg{stage: worktreeListStage, generation: model.worktreeGeneration, worktrees: []item{{kind: "worktree", target: path, cwd: path, branch: "other"}}})
 	if got := updated.(dashboardModel).worktrees[0].prNumber; got != 0 {
 		t.Fatalf("stale cached PR applied to another branch: %d", got)
 	}
-	model = newDashboardForLaunch(path, "", false)
+	model = newDashboardForLaunch(path, "")
 	model.allAgents = []item{{kind: "session", cwd: path}}
 	updated, _ = model.Update(agentGitMsg{{cwd: path, branch: "other", gitLoaded: true}})
 	if got := updated.(dashboardModel).agentGit[path].prNumber; got != 0 {

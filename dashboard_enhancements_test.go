@@ -114,7 +114,7 @@ func TestActionMenuKeepsSelectionVisible(t *testing.T) {
 	model.worktrees = []item{{kind: "worktree", cwd: "/repo", branch: "feature", prNumber: 42, prURL: "https://example.test/pr/42", prunable: true}}
 	model.actionMenuIndex = slices.IndexFunc(model.actionMenuEntries(), func(entry actionMenuEntry) bool { return entry.action == menuCleanup })
 	view := ansi.Strip(model.renderActionMenu(40, 5))
-	if !strings.Contains(view, "  Clean up stale record") || strings.Contains(view, "▌") {
+	if !strings.Contains(view, "  [x] Clean up stale record") || strings.Contains(view, "▌") {
 		t.Fatalf("selected action is not visible without a marker:\n%s", view)
 	}
 }
@@ -126,7 +126,7 @@ func TestActionMenuUsesSidebarAndOmitsWorktreeCopyActions(t *testing.T) {
 	model.index = 1
 	model.worktreesInFlight = true
 	view := ansi.Strip(model.View())
-	for _, expected := range []string{"WORKTREE ACTIONS", "feature", "/feature", "OPEN", "MANAGE", "DANGER", "Rebase onto main", "Merge into main", "Navigate · ↵ Run · Esc"} {
+	for _, expected := range []string{"WORKTREE ACTIONS", "feature", "/feature", "CREATE", "OPEN", "MANAGE", "[a] Add worktree", "Rebase onto main", "Merge into main", "Navigate · key/↵ Run · Esc"} {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("action sidebar missing %q:\n%s", expected, view)
 		}
@@ -148,6 +148,40 @@ func TestActionMenuUsesSidebarAndOmitsWorktreeCopyActions(t *testing.T) {
 	model.width = 80
 	if model.actionSidebar() {
 		t.Fatal("narrow action menu did not fall back to stacked layout")
+	}
+}
+
+func TestAgentActionMenuOnlyAcknowledgesUnseenCompletion(t *testing.T) {
+	model := newDashboard("/repo")
+	model.tab, model.actionMenu = tabAgents, true
+	model.agents = []item{{kind: "session", target: "%7", pane: "%7", status: "done", agentSessionID: "session-id"}}
+	entries := model.actionMenuEntries()
+	labels := make([]string, len(entries))
+	for index := range entries {
+		labels[index] = entries[index].label
+	}
+	joined := strings.Join(labels, ",")
+	if !strings.Contains(joined, "Mark seen") || strings.Contains(joined, "Prompt") {
+		t.Fatalf("agent action menu = %s", joined)
+	}
+	if actionMenuGroup(menuMarkAgentSeen) != "Attention" {
+		t.Fatalf("agent action group = %q", actionMenuGroup(menuMarkAgentSeen))
+	}
+
+	model.actionMenuIndex = slices.IndexFunc(entries, func(entry actionMenuEntry) bool { return entry.action == menuMarkAgentSeen })
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(dashboardModel)
+	if command == nil || model.action != actionRunning {
+		t.Fatalf("mark-seen action did not start: action=%d command=%v", model.action, command != nil)
+	}
+
+	model = newDashboard("/repo")
+	model.tab = tabAgents
+	model.agents = []item{{kind: "session", target: "%7", pane: "%7", status: "working"}}
+	for _, entry := range model.actionMenuEntries() {
+		if entry.action == menuMarkAgentSeen {
+			t.Fatalf("working agent exposed control action %#v", entry)
+		}
 	}
 }
 
@@ -192,6 +226,107 @@ func TestActionMenuPausesAndResumesRefreshes(t *testing.T) {
 	model = updated.(dashboardModel)
 	if command == nil || model.actionMenu || !model.agentsInFlight || !model.worktreesInFlight || !model.sessionsInFlight || model.previewRequest == 1 {
 		t.Fatalf("closing actions did not resume refreshes: menu=%v agents=%v worktrees=%v sessions=%v preview=%d", model.actionMenu, model.agentsInFlight, model.worktreesInFlight, model.sessionsInFlight, model.previewRequest)
+	}
+}
+
+func TestActionMenuKeysAreUniqueVisibleAndDispatchDirectly(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TMUX", "/tmp/test,1,0")
+	check := func(name string, makeModel func() dashboardModel) {
+		t.Helper()
+		entries := makeModel().actionMenuEntries()
+		keys := map[string]bool{}
+		for _, entry := range entries {
+			if entry.key == "" || entry.footer == "" || keys[entry.key] {
+				t.Fatalf("%s action metadata = %#v", name, entries)
+			}
+			keys[entry.key] = true
+
+			menu := makeModel()
+			menu.actionMenu = true
+			updated, menuCommand := menu.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(entry.key)})
+			menu = updated.(dashboardModel)
+
+			direct := makeModel()
+			updated, directCommand := direct.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(entry.key)})
+			direct = updated.(dashboardModel)
+			if menu.actionMenu || direct.actionMenu || menu.action != direct.action || menu.diff != direct.diff || menu.chosen != direct.chosen || (menuCommand == nil) != (directCommand == nil) {
+				t.Fatalf("%s key %q diverged: menu=%#v direct=%#v", name, entry.key, menu, direct)
+			}
+		}
+	}
+	worktree := func() dashboardModel {
+		model := newDashboard("/repo")
+		model.tab, model.width = tabWorktrees, 40
+		model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main"}, {kind: "worktree", target: "/feature", cwd: "/feature", branch: "feature", prNumber: 1, prURL: "https://example.test/pr/1"}}
+		model.index = 1
+		return model
+	}
+	check("worktree", worktree)
+	check("prunable worktree", func() dashboardModel {
+		model := newDashboard("/repo")
+		model.tab = tabWorktrees
+		model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main"}, {kind: "worktree", target: "/gone", cwd: "/gone", branch: "gone", prunable: true}}
+		model.index = 1
+		return model
+	})
+	if view := ansi.Strip(func() string { model := worktree(); model.actionMenu = true; return model.renderActionMenu(40, 12) }()); !strings.Contains(view, "[a] Add worktree") || strings.Contains(view, "Open new window") || strings.Contains(view, "Run worktree command") {
+		t.Fatalf("unexpected narrow action menu:\n%s", view)
+	}
+	check("agent", func() dashboardModel {
+		model := newDashboard("/repo")
+		model.tab = tabAgents
+		model.agents = []item{{kind: "session", target: "%1", pane: "%1", status: "done", prNumber: 1, prURL: "https://example.test/pr/1"}}
+		return model
+	})
+	check("session", func() dashboardModel {
+		model := newDashboard("/repo")
+		model.tab = tabSessions
+		model.sessions = []item{{kind: "tmux-session", target: "dev", title: "dev", muxSessionID: "$1"}}
+		return model
+	})
+	check("empty sessions", func() dashboardModel {
+		model := newDashboard("/repo")
+		model.tab = tabSessions
+		return model
+	})
+}
+
+func TestSessionActionMenuDefaultsToOpen(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height, model.tab = 80, 20, tabSessions
+	model.sessions = []item{{kind: "tmux-session", target: "dev", title: "dev", muxSessionID: "$1"}}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	model = updated.(dashboardModel)
+	if !model.actionMenu || model.actionMenuEntries()[0].action != menuOpen {
+		t.Fatalf("Session action menu does not default to Open: %#v", model.actionMenuEntries())
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(dashboardModel)
+	if !model.chosen || model.selection.target != "dev" {
+		t.Fatalf("Space then Enter did not open selected Session: %#v", model)
+	}
+}
+
+func TestPreviousSessionActionRunsWithoutSelection(t *testing.T) {
+	writeFakeTmux(t, `
+case "$1" in
+  list-sessions) printf '$1\037current\037300\036\n$2\037previous\037200\036\n' ;;
+esac
+`)
+	t.Setenv("TMUX", "/tmp/test,1,0")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	model := newDashboard("/repo")
+	model.tab = tabSessions
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	model = updated.(dashboardModel)
+	if command == nil || model.action != actionRunning {
+		t.Fatalf("previous session action = %#v, command=%v", model, command != nil)
+	}
+	message, ok := command().(worktreeActionMsg)
+	if !ok || message.err != nil || message.notice != "Opened previous session" {
+		t.Fatalf("previous session result = %#v", message)
 	}
 }
 

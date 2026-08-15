@@ -565,12 +565,12 @@ func TestSessionRemoveShortcutConfirms(t *testing.T) {
 	model := newDashboard("/repo")
 	model.tab, model.sessionsLoaded = tabSessions, true
 	model.sessions = []item{{kind: "tmux-session", target: "dev", title: "dev", muxSessionID: "$1"}}
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
 	model = updated.(dashboardModel)
 	if model.action != actionRemoveSession || model.actionTarget.target != "dev" {
 		t.Fatalf("remove session mode = %#v target=%#v", model.action, model.actionTarget)
 	}
-	if view := ansi.Strip(model.View()); !strings.Contains(view, "Remove session") || !strings.Contains(view, "kills the live tmux session") || !strings.Contains(view, "Remove dev?") || !strings.Contains(view, "Enter Remove") || !strings.Contains(view, "Esc Cancel") {
+	if view := ansi.Strip(model.View()); !strings.Contains(view, "Remove session") || !strings.Contains(view, "kills the live tmux session") || !strings.Contains(view, "Remove dev?") || !strings.Contains(view, "D Remove") || !strings.Contains(view, "Esc Cancel") {
 		t.Fatalf("remove confirmation missing:\n%s", view)
 	}
 }
@@ -726,7 +726,7 @@ func TestSessionsDashboardTab(t *testing.T) {
 	}
 	model.query = ""
 	view := ansi.Strip(model.View())
-	for _, want := range []string{"Agents 0", "Worktrees 0", "[Sessions 2/2 · All]", "Session", "Path", "Win", "↵ Open"} {
+	for _, want := range []string{"Agents 0", "Worktrees 0", "[Sessions 1/2 · All]", "Session", "Path", "Win", "↵ Open"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("sessions view missing %q:\n%s", want, view)
 		}

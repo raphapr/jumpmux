@@ -103,10 +103,9 @@ func (m dashboardModel) modeLabel() string {
 		return "THEME"
 	case m.actionMenu:
 		return "ACTIONS"
+	case m.action == actionRunning:
+		return "WORKING"
 	case m.action != actionNone:
-		if m.action == actionRunning {
-			return "WORKING"
-		}
 		return "CONFIRM"
 	case m.filter:
 		return "SEARCH"
@@ -118,16 +117,22 @@ func (m dashboardModel) modeLabel() string {
 }
 
 func (m dashboardModel) tabLabels() [tabCount]string {
+	liveSessions := 0
+	for _, session := range m.sessions {
+		if session.muxSessionID != "" {
+			liveSessions++
+		}
+	}
 	labels := [tabCount]string{
 		fmt.Sprintf("Agents %d", len(m.agents)),
 		fmt.Sprintf("Worktrees %d", len(m.worktrees)),
-		fmt.Sprintf("Sessions %d", len(m.sessions)),
+		fmt.Sprintf("Sessions %d/%d", liveSessions, len(m.sessions)),
 	}
 	switch m.tab {
 	case tabAgents:
-		labels[tabAgents] = fmt.Sprintf("[Agents %d · %s]", len(m.agents), m.scope.label())
+		labels[tabAgents] = fmt.Sprintf("[Agents %d · %s]", len(m.agents), m.scope.displayLabel())
 	case tabSessions:
-		labels[tabSessions] = fmt.Sprintf("[Sessions %d/%d · %s]", len(m.rows()), len(m.sessions), m.sessionFilter.label())
+		labels[tabSessions] = fmt.Sprintf("[Sessions %d/%d · %s]", liveSessions, len(m.sessions), m.sessionFilter.label())
 	default:
 		labels[m.tab] = "[" + labels[m.tab] + "]"
 	}
@@ -140,7 +145,7 @@ func (m dashboardModel) tabLabels() [tabCount]string {
 	if m.tab == tabSessions && 2+ansi.StringWidth(strings.Join(labels[:], " │ ")) > m.width {
 		labels[tabAgents] = fmt.Sprintf("A %d", len(m.agents))
 		labels[tabWorktrees] = fmt.Sprintf("W %d", len(m.worktrees))
-		labels[tabSessions] = fmt.Sprintf("[S %d/%d %s]", len(m.rows()), len(m.sessions), m.sessionFilter.label())
+		labels[tabSessions] = fmt.Sprintf("[S %d/%d %s]", liveSessions, len(m.sessions), m.sessionFilter.label())
 	}
 	return labels
 }
@@ -487,7 +492,7 @@ func (m dashboardModel) renderActionMenu(width, height int) string {
 			if index == selected {
 				style = selectedStyle.Inherit(textStyle)
 			}
-			lines = append(lines, style.Render("  "+entry.label))
+			lines = append(lines, style.Render("  ["+entry.key+"] "+entry.label))
 		}
 		if len(lines) == 0 {
 			lines = []string{mutedStyle.Render("No actions available.")}
@@ -516,10 +521,10 @@ func (m dashboardModel) renderActionMenu(width, height int) string {
 			lines = append(lines, mutedStyle.Render(strings.ToUpper(group)))
 			lastGroup = group
 		}
-		line := "  " + entry.label
+		line := "  [" + entry.key + "] " + entry.label
 		if index == selected {
 			selectedLine = len(lines)
-			line = selectedStyle.Inherit(textStyle).Width(width - 2).Render("  " + entry.label)
+			line = selectedStyle.Inherit(textStyle).Width(width - 2).Render("  [" + entry.key + "] " + entry.label)
 		} else if entry.action == menuRemove {
 			line = dangerStyle.Render(line)
 		} else {
@@ -549,17 +554,21 @@ func renderActionSidebar(title string, lines []string, width, height, offset int
 		}
 		out = append(out, activeBorderStyle.Render("│")+padANSI(line, innerWidth)+activeBorderStyle.Render("│"))
 	}
-	hint := mutedStyle.Render(" ↑↓ Navigate · ↵ Run · Esc ")
+	hint := mutedStyle.Render(" ↑↓ Navigate · key/↵ Run · Esc ")
 	out = append(out, activeBorderStyle.Render("└")+hint+activeBorderStyle.Render(strings.Repeat("─", max(0, innerWidth-ansi.StringWidth(hint)))+"┘"))
 	return strings.Join(out, "\n")
 }
 
 func actionMenuGroup(action menuAction) string {
 	switch action {
-	case menuOpen, menuDiff, menuPR:
+	case menuOpen, menuDiff, menuPR, menuPreviousSession:
 		return "Open"
+	case menuAddWorktree:
+		return "Create"
 	case menuCopySessionName, menuCopyPRURL:
 		return "Copy"
+	case menuMarkAgentSeen:
+		return "Attention"
 	case menuRename, menuRebase, menuMerge, menuCleanup:
 		return "Manage"
 	case menuRemove:
@@ -619,7 +628,7 @@ func (m dashboardModel) removePreviewLines() []string {
 			"",
 			"This kills the live tmux session. Configured entries stay in config.toml.",
 			"",
-			"Enter Remove    Esc Cancel",
+			"D Remove    Esc Cancel",
 		}
 	}
 	behavior := "Native Git removes the worktree and keeps its branch."
@@ -641,14 +650,15 @@ func (m dashboardModel) renderFooter(width int) string {
 		return m.renderThemePickerFooter(width)
 	}
 	if m.actionMenu {
-		return padANSI("  "+footerCommand("j/k", "Move")+" "+footerCommand("Enter", "Run")+" "+footerCommand("Esc", "Cancel"), width)
+		return padANSI("  "+footerCommand("j/k", "Move")+" "+footerCommand("key", "Run")+" "+footerCommand("Enter", "Run")+" "+footerCommand("Esc", "Cancel"), width)
 	}
 	switch m.action {
 	case actionAddWorktree, actionRenameSession:
 		input := m.actionTextInput
 		styleTextInput(&input)
 		label, actionLabel := "branch: ", "Create"
-		if m.action == actionRenameSession {
+		switch m.action {
+		case actionRenameSession:
 			label, actionLabel = "name: ", "Rename"
 		}
 		prefix := "  " + textStyle.Render(label)
@@ -661,9 +671,9 @@ func (m dashboardModel) renderFooter(width int) string {
 		input.SetCursor(input.Position())
 		return padANSI(prefix+input.View()+suffix, width)
 	case actionRemoveWorktree, actionRemoveSession, actionCleanupWorktree, actionRebaseWorktree, actionMergeWorktree:
-		name, verb := m.displayWorktree(m.actionTarget), "Remove"
+		name, verb, key := m.displayWorktree(m.actionTarget), "Remove", "Enter"
 		if m.action == actionRemoveSession {
-			name = m.actionTarget.title
+			name, key = m.actionTarget.title, "D"
 		}
 		switch m.action {
 		case actionCleanupWorktree:
@@ -673,7 +683,7 @@ func (m dashboardModel) renderFooter(width int) string {
 		case actionMergeWorktree:
 			verb = "Merge"
 		}
-		return padANSI("  "+warningStyle.Render(verb+" "+safeText(name)+"?")+"  "+footerCommand("Enter", verb)+" "+footerCommand("Esc", "Cancel"), width)
+		return padANSI("  "+warningStyle.Render(verb+" "+safeText(name)+"?")+"  "+footerCommand(key, verb)+" "+footerCommand("Esc", "Cancel"), width)
 	case actionRunning:
 		return padANSI("  "+infoStyle.Render("Working…"), width)
 	}
@@ -738,23 +748,18 @@ func (m dashboardModel) renderFooter(width int) string {
 		} else {
 			candidates = append(candidates, footerCommand("Esc", "Clear"))
 		}
-		candidates = append(candidates, footerCommand("?", "Help"), footerCommand("Tab", "Next"))
-		if selected, ok := m.selected(); ok && selected.muxSessionID != "" {
-			candidates = append(candidates, footerCommand("^d", "Remove"))
+		for _, entry := range m.actionMenuEntries() {
+			candidates = append(candidates, footerCommand(entry.key, entry.footer))
 		}
-		candidates = append(candidates, footerCommand("Space", "Actions"))
-		return m.prioritizedFooterWithBase(width, candidates, []string{footerCommand("^c", "Quit")})
+		candidates = append(candidates, footerCommand("Tab", "Next"), footerCommand("Space", "Actions"))
+		return m.prioritizedFooterWithBase(width, candidates, []string{footerCommand("?", "Help"), footerCommand("^c", "Quit")})
 	}
-	candidates := []string{footerCommand("↵", "Open"), footerCommand("d", "Diff")}
-	switch m.tab {
-	case tabWorktrees:
-		candidates = append(candidates, footerCommand("a", "Add"), footerCommand("r", "Remove"))
-	}
-	if selected, ok := m.selected(); ok && m.gitItem(selected).prNumber != 0 {
-		candidates = append(candidates, footerCommand("o", "PR"))
+	candidates := []string{footerCommand("↵", "Open")}
+	for _, entry := range m.actionMenuEntries() {
+		candidates = append(candidates, footerCommand(entry.key, entry.footer))
 	}
 	if m.tab == tabAgents {
-		candidates = append(candidates, footerToggle("s", "Scope ("+m.scope.label()+")", m.scope == scopeSession))
+		candidates = append(candidates, footerToggle("s", "Scope ("+m.scope.displayLabel()+")", m.scope == scopeSession))
 	}
 	candidates = append(candidates, footerCommand("/", filterLabel), footerCommand("Tab", nextTab), footerCommand("t", "Theme"), footerCommand("Space", "Actions"))
 	return m.prioritizedFooter(width, candidates)
