@@ -2,7 +2,7 @@
 
 jumpmux is a terminal dashboard for Git worktrees, Pi agents, and tmux sessions.
 
-It is inspired by [Workmux](https://github.com/raine/workmux), but takes a more opinionated approach.
+It is inspired by [workmux](https://github.com/raine/workmux) and [sesh](https://github.com/joshmedeski/sesh).
 
 ## Tabs
 
