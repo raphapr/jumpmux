@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -163,7 +162,6 @@ const (
 	menuAddWorktree
 	menuDiff
 	menuPR
-	menuCopyPRURL
 	menuForkAgent
 	menuMarkAgentSeen
 	menuCleanup
@@ -183,6 +181,7 @@ type actionMenuEntry struct {
 type worktreeActionMsg struct {
 	action dashboardAction
 	notice string
+	quit   bool
 	err    error
 }
 
@@ -389,9 +388,6 @@ func (m dashboardModel) actionMenuEntries() []actionMenuEntry {
 	if gitItem.prNumber != 0 {
 		entries = append(entries, actionMenuEntry{menuPR, "Open pull request", "p", "PR"})
 	}
-	if gitItem.prURL != "" {
-		entries = append(entries, actionMenuEntry{menuCopyPRURL, "Copy PR URL", "y", "Copy"})
-	}
 	if m.tab == tabAgents && selected.agentSessionID != "" {
 		entries = append(entries, actionMenuEntry{menuForkAgent, "Fork to new window", "f", "Fork"})
 	}
@@ -426,7 +422,7 @@ func (m dashboardModel) executeAction(action menuAction) (tea.Model, tea.Cmd) {
 	case menuPreviousSession:
 		m.action, m.err = actionRunning, nil
 		return m, func() tea.Msg {
-			return worktreeActionMsg{notice: "Opened previous session", err: switchToLastTmuxSession()}
+			return worktreeActionMsg{notice: "Opened previous session", quit: true, err: switchToLastTmuxSession()}
 		}
 	case menuOpen:
 		if ok {
@@ -446,16 +442,10 @@ func (m dashboardModel) executeAction(action menuAction) (tea.Model, tea.Cmd) {
 				return worktreeActionMsg{notice: fmt.Sprintf("Opened PR #%d", pr.prNumber), err: openPullRequest(selected.cwd, pr.prNumber)}
 			}
 		}
-	case menuCopyPRURL:
-		if ok {
-			return m, func() tea.Msg {
-				return worktreeActionMsg{notice: "Copied PR URL", err: clipboard.WriteAll(m.gitItem(selected).prURL)}
-			}
-		}
 	case menuForkAgent:
 		if ok {
 			return m, func() tea.Msg {
-				return worktreeActionMsg{notice: "Forked agent into new window", err: forkAgent(selected)}
+				return worktreeActionMsg{notice: "Forked agent into new window", quit: true, err: forkAgent(selected)}
 			}
 		}
 	case menuMarkAgentSeen:
@@ -1334,6 +1324,9 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case worktreeActionMsg:
 		m.action, m.actionTarget, m.actionBackend, m.actionNoSquash, m.err = actionNone, item{}, "", false, msg.err
+		if msg.err == nil && msg.quit {
+			return m, tea.Quit
+		}
 		if msg.action == actionAddWorktree {
 			if msg.err == nil && msg.notice != "" {
 				m.setNotice(msg.notice)
@@ -1914,7 +1907,7 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if err == nil {
 					err = openTmuxWorktree(created)
 				}
-				return worktreeActionMsg{action: action, notice: "Created worktree " + value, err: err}
+				return worktreeActionMsg{action: action, notice: "Created worktree " + value, quit: true, err: err}
 			}
 		default:
 			var command tea.Cmd
@@ -2074,8 +2067,8 @@ func (m dashboardModel) helpLines() []string {
 		"Session icons  " + dashboardIcon(" live,  configured,  discovered", "L live, C configured, R discovered"),
 		"Enter         Open selected row",
 		"1–9           Open row (Agents/Worktrees)",
-		"Agents        o Open · d Diff · p PR · y Copy PR · f Fork · m Mark seen",
-		"Worktrees     a Add · o Open · d Diff · p PR · y Copy PR",
+		"Agents        o Open · d Diff · p PR · f Fork · m Mark seen",
+		"Worktrees     a Add · o Open · d Diff · p PR",
 		"              b Rebase · m Merge · x Cleanup · r Remove",
 		"Sessions      O Open · Ctrl+r Remove · P Previous",
 		"Confirm       Enter confirms · Esc cancels · s toggles Worktrunk merge squash",

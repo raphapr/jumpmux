@@ -413,12 +413,26 @@ func TestDashboardWorktreeActionModes(t *testing.T) {
 	}
 }
 
-func TestCreatedWorktreeRefreshesDashboard(t *testing.T) {
+func TestSuccessfulNavigationQuitsDashboard(t *testing.T) {
 	model := newDashboard("/repo")
-	updated, command := model.Update(worktreeActionMsg{action: actionAddWorktree, notice: "Created worktree feature"})
+	updated, command := model.Update(worktreeActionMsg{action: actionAddWorktree, notice: "Created worktree feature", quit: true})
 	model = updated.(dashboardModel)
-	if command == nil || model.err != nil || model.chosen || !model.worktreesInFlight {
-		t.Fatalf("created worktree dashboard state = chosen %v refreshing %v error %v", model.chosen, model.worktreesInFlight, model.err)
+	if command == nil || model.err != nil {
+		t.Fatalf("successful navigation error = %v", model.err)
+	}
+	message := command()
+	if _, ok := message.(tea.QuitMsg); !ok {
+		t.Fatalf("successful navigation command = %T", message)
+	}
+
+	failure := errors.New("create failed")
+	updated, command = newDashboard("/repo").Update(worktreeActionMsg{action: actionAddWorktree, quit: true, err: failure})
+	model = updated.(dashboardModel)
+	if command == nil || !errors.Is(model.err, failure) {
+		t.Fatalf("failed navigation error = %v", model.err)
+	}
+	if _, ok := command().(tea.QuitMsg); ok {
+		t.Fatal("failed navigation quit the dashboard")
 	}
 }
 

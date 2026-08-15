@@ -242,6 +242,9 @@ func TestActionMenuKeysAreUniqueVisibleAndDispatchDirectly(t *testing.T) {
 		entries := makeModel().actionMenuEntries()
 		keys := map[string]bool{}
 		for _, entry := range entries {
+			if strings.Contains(entry.label, "Copy") {
+				t.Fatalf("%s exposed copy action %#v", name, entry)
+			}
 			if entry.key == "" || entry.footer == "" || keys[entry.key] {
 				t.Fatalf("%s action metadata = %#v", name, entries)
 			}

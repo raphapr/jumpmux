@@ -565,8 +565,6 @@ func actionMenuGroup(action menuAction) string {
 		return "Open"
 	case menuAddWorktree, menuForkAgent:
 		return "Create"
-	case menuCopyPRURL:
-		return "Copy"
 	case menuMarkAgentSeen:
 		return "Attention"
 	case menuRebase, menuMerge, menuCleanup:
