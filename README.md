@@ -1,6 +1,6 @@
 # jumpmux
 
-jumpmux is a terminal dashboard for Git worktrees, Pi agents, and tmux sessions.
+jumpmux brings Git worktrees, Pi agents, and tmux sessions into one TUI for navigation and management.
 
 Inspired by [workmux](https://github.com/raine/workmux) and [sesh](https://github.com/joshmedeski/sesh).
 
@@ -75,6 +75,6 @@ jumpmux
 
 ## Scope
 
-jumpmux makes Git worktrees, Pi agents, and tmux sessions visible and easy to navigate in one TUI. It reads agent, Git, PR, session, and tmux state; switches panes and sessions; creates tmux windows and configured sessions; manages worktrees; and opens PRs.
+jumpmux is a opinionated TUI for navigating and managing Git worktrees, Pi agents, and tmux sessions. It reads related state, switches sessions, manages worktrees, and opens PRs.
 
-jumpmux does not orchestrate agents, assign tasks, or manage multi-agent workflows. It supports only Pi agents and tmux.
+It does not orchestrate agents or multi-agent workflows. Also, it supports only Pi as AI agent and tmux as terminal multiplexer.
