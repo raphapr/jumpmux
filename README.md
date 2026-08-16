@@ -4,25 +4,34 @@ jumpmux is a terminal dashboard for Git worktrees, Pi agents, and tmux sessions.
 
 Inspired by [workmux](https://github.com/raine/workmux) and [sesh](https://github.com/joshmedeski/sesh).
 
-## Tabs
-
-- **Agents:** Open Pi panes with Project, Worktree, Git, PR, Status, Time, and Title columns.
-- **Worktrees:** Worktrees from the current repository with Project, Worktree, Git, PR, Mux, Age, and Agent columns.
-- **Sessions:** Configured locations, discovered repositories, and live tmux sessions with Session, Path, Windows, and Last-attached columns.
-
 ## Features
 
-### Agents
+<details>
+<summary><strong>Agents</strong></summary>
+
+Open Pi panes with Project, Worktree, Git, PR, Status, Time, and Title columns.
 
 ![Agents tab showing Pi agent status and a live pane preview](docs/images/agents.png)
 
-### Worktrees
+</details>
+
+<details>
+<summary><strong>Worktrees</strong></summary>
+
+View worktrees from the current repository with Project, Worktree, Git, PR, Mux, Age, and Agent columns.
 
 ![Worktrees tab showing repository status and Git history](docs/images/worktrees.png)
 
-### Sessions
+</details>
+
+<details>
+<summary><strong>Sessions</strong></summary>
+
+Browse configured locations, discovered repositories, and live tmux sessions with Session, Path, Windows, and Last-attached columns.
 
 ![Sessions tab showing configured and live tmux sessions](docs/images/sessions.png)
+
+</details>
 
 ## Requirements
 
