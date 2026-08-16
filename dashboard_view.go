@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -796,9 +797,85 @@ func (m dashboardModel) renderFooterError(width int, err error) string {
 	}
 	separator := borderStyle.Render(" │ ")
 	available := max(1, width-2-ansi.StringWidth(strings.Join(helpQuit, separator))-ansi.StringWidth(separator))
-	prefix := dashboardIcon("󰅙", "!") + " Error: "
-	message := dangerStyle.Render(ansi.Truncate(prefix+safeText(err.Error()), available, "…"))
+	prefix := dashboardIcon("󰅙", "!") + " "
+	message := dangerStyle.Render(ansi.Truncate(prefix+m.dashboardErrorText(err), available, "…"))
 	return padANSI("  "+strings.Join(append([]string{message}, helpQuit...), separator), width)
+}
+
+func (m dashboardModel) dashboardErrorText(err error) string {
+	text := safeText(err.Error())
+	switch text {
+	case "":
+		return "Something went wrong"
+	case "worktree_backend is wt but wt is not installed":
+		return "Install `wt` or select Git"
+	case "the selected worktree is not safe to clean up":
+		return "This worktree cannot be cleaned up"
+	case "the selected worktree cannot be rebased or merged":
+		return "This worktree cannot be updated"
+	case "cannot remove dirty worktree":
+		return "Commit or stash changes before removing"
+	case "the selected worktree changed; refresh and try again":
+		return "Worktree changed. Refresh and retry"
+	case "selected row has no pull request":
+		return "Pull request no longer available"
+	case "the selected session is not running":
+		return "Session is not running"
+	case "the selected tmux session is no longer open":
+		return "Session closed. Refresh to update"
+	case "the selected tmux session changed; refresh and try again", "tmux renamed a different session; refresh and try again":
+		return "Session changed. Refresh and retry"
+	case "cannot remove the current tmux session":
+		return "Cannot remove current session"
+	case "cannot determine the current tmux session", "tmux returned an invalid current session ID":
+		return "Could not identify current session"
+	case "no last session found":
+		return "No previous session"
+	case "session name is unchanged":
+		return "Enter a different session name"
+	case "a tmux session already uses that name":
+		return "That session name is already in use"
+	case "the selected agent changed; refresh and try again":
+		return "Agent changed. Refresh and retry"
+	case "the selected tmux pane is no longer open":
+		return "Pane closed. Refresh to update"
+	case "tmux returned malformed session history":
+		return "Could not read tmux session history"
+	case "tmux returned inconsistent session metadata", "tmux returned multiple active panes for a session", "tmux returned a session without an active pane":
+		return "Could not read tmux sessions"
+	case "tmux returned incomplete session identity":
+		return "Could not create tmux session"
+	case "tmux returned incomplete window identity":
+		return "Could not create tmux window"
+	}
+	switch {
+	case strings.HasPrefix(text, "created worktree ") && strings.HasSuffix(text, " was not found"):
+		return "Created worktree not found. Refresh and retry"
+	case strings.HasPrefix(text, "cannot remove worktree open in tmux pane "):
+		return "Close tmux pane " + strings.TrimPrefix(text, "cannot remove worktree open in tmux pane ") + " before removing"
+	case strings.HasPrefix(text, "cannot rebase with uncommitted changes in "):
+		return "Commit or stash changes in " + strings.TrimPrefix(text, "cannot rebase with uncommitted changes in ") + " first"
+	case strings.HasPrefix(text, "cannot merge with uncommitted changes in "):
+		return "Commit or stash changes in " + strings.TrimPrefix(text, "cannot merge with uncommitted changes in ") + " first"
+	case strings.HasPrefix(text, "cannot merge: primary worktree is not on "):
+		return "Switch the primary worktree to " + strings.TrimPrefix(text, "cannot merge: primary worktree is not on ") + " first"
+	case strings.HasPrefix(text, "agent state is unavailable"):
+		return "Agent state unavailable. Refresh and retry"
+	case strings.HasPrefix(text, "run jumpmux inside tmux to "):
+		return "Run jumpmux inside tmux"
+	case text == "tmux returned a malformed pane record" && m.tab == tabSessions:
+		return "Could not read tmux sessions"
+	case text == "tmux returned a malformed pane record":
+		return "Could not read tmux panes"
+	case strings.HasPrefix(text, "tmux returned invalid window ID "):
+		return "Could not create tmux window"
+	}
+	if strings.HasPrefix(text, "tmux ") || strings.HasPrefix(text, "git ") || strings.HasPrefix(text, "jumpmux ") || strings.HasPrefix(text, "wt ") {
+		return text
+	}
+	runes := []rune(text)
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
 }
 
 func dashboardIcon(nerd, plain string) string {

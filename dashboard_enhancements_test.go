@@ -185,6 +185,37 @@ func TestAgentActionMenu(t *testing.T) {
 	}
 }
 
+func TestDashboardErrorText(t *testing.T) {
+	tests := []struct {
+		name string
+		tab  int
+		err  string
+		want string
+	}{
+		{"backend", tabWorktrees, "worktree_backend is wt but wt is not installed", "Install `wt` or select Git"},
+		{"stale worktree", tabWorktrees, "the selected worktree changed; refresh and try again", "Worktree changed. Refresh and retry"},
+		{"dirty merge", tabWorktrees, "cannot merge with uncommitted changes in ~/repo", "Commit or stash changes in ~/repo first"},
+		{"wrong branch", tabWorktrees, "cannot merge: primary worktree is not on main", "Switch the primary worktree to main first"},
+		{"open pane", tabWorktrees, "cannot remove worktree open in tmux pane %7", "Close tmux pane %7 before removing"},
+		{"closed session", tabSessions, "the selected tmux session is no longer open", "Session closed. Refresh to update"},
+		{"agent state", tabAgents, "agent state is unavailable: missing file", "Agent state unavailable. Refresh and retry"},
+		{"tmux required", tabAgents, "run jumpmux inside tmux to jump to a pane", "Run jumpmux inside tmux"},
+		{"agent panes", tabAgents, "tmux returned a malformed pane record", "Could not read tmux panes"},
+		{"session panes", tabSessions, "tmux returned a malformed pane record", "Could not read tmux sessions"},
+		{"fallback", tabAgents, "failed action", "Failed action"},
+		{"brand", tabAgents, "tmux list-panes: failed", "tmux list-panes: failed"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			model := newDashboard("/repo")
+			model.tab = test.tab
+			if got := model.dashboardErrorText(errors.New(test.err)); got != test.want {
+				t.Fatalf("dashboard error = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestActionMenuPausesAndResumesRefreshes(t *testing.T) {
 	model := newDashboard("/repo")
 	model.tab, model.actionMenu = tabWorktrees, true
@@ -358,7 +389,7 @@ func TestPrunableCleanupAndErrorPersistence(t *testing.T) {
 	if model.err == nil {
 		t.Fatal("navigation cleared action error")
 	}
-	if footer := ansi.Strip(model.renderFooter(80)); !strings.Contains(footer, "Error:") || !strings.Contains(footer, "Esc Dismiss") {
+	if footer := ansi.Strip(model.renderFooter(80)); strings.Contains(footer, "Error:") || !strings.Contains(footer, "Failed action") || !strings.Contains(footer, "Esc Dismiss") {
 		t.Fatalf("persistent error footer = %q", footer)
 	}
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
