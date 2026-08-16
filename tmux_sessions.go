@@ -32,9 +32,9 @@ type configuredSession struct {
 }
 
 type sessionsConfig struct {
-	sessions []configuredSession
-	exclude  []*regexp.Regexp
-	discover []string
+	sessions         []configuredSession
+	exclude          []*regexp.Regexp
+	discoveryCommand []string
 }
 
 type tmuxSession struct {
@@ -57,9 +57,9 @@ type sessionsFile struct {
 }
 
 type sessionsSection struct {
-	Exclude  []string       `toml:"exclude"`
-	Discover *[]string      `toml:"discover"`
-	Entries  []sessionEntry `toml:"entries"`
+	Exclude          []string       `toml:"exclude"`
+	DiscoveryCommand *[]string      `toml:"discovery_command"`
+	Entries          []sessionEntry `toml:"entries"`
 }
 
 type sessionEntry struct {
@@ -120,18 +120,18 @@ func loadSessionsConfig() (*sessionsConfig, error) {
 		}
 		exclude = append(exclude, compiled)
 	}
-	var discover []string
-	if file.Sessions.Discover != nil {
-		discover = *file.Sessions.Discover
-		if len(discover) == 0 {
-			return nil, fmt.Errorf("sessions config %s: sessions.discover must be a non-empty array", path)
+	var discoveryCommand []string
+	if file.Sessions.DiscoveryCommand != nil {
+		discoveryCommand = *file.Sessions.DiscoveryCommand
+		if len(discoveryCommand) == 0 {
+			return nil, fmt.Errorf("sessions config %s: sessions.discovery_command must be a non-empty array", path)
 		}
-		for _, argument := range discover {
+		for _, argument := range discoveryCommand {
 			if strings.TrimSpace(argument) == "" || strings.ContainsFunc(argument, unicode.IsControl) {
-				return nil, fmt.Errorf("sessions config %s: sessions.discover must contain non-empty strings", path)
+				return nil, fmt.Errorf("sessions config %s: sessions.discovery_command must contain non-empty strings", path)
 			}
 		}
-		discover[0] = expandSessionPath(discover[0])
+		discoveryCommand[0] = expandSessionPath(discoveryCommand[0])
 	}
 
 	seen := make(map[string]bool, len(file.Sessions.Entries))
@@ -157,7 +157,7 @@ func loadSessionsConfig() (*sessionsConfig, error) {
 		seen[name] = true
 		sessions = append(sessions, configuredSession{name: name, path: filepath.Clean(location)})
 	}
-	return &sessionsConfig{sessions: sessions, exclude: exclude, discover: discover}, nil
+	return &sessionsConfig{sessions: sessions, exclude: exclude, discoveryCommand: discoveryCommand}, nil
 }
 
 func expandSessionPath(path string) string {
@@ -328,7 +328,7 @@ func listSessions(includeServer bool) ([]item, error) {
 	if config == nil {
 		config = &sessionsConfig{}
 	}
-	discovered, discoverErr := discoverSessions(config.discover)
+	discovered, discoverErr := discoverSessions(config.discoveryCommand)
 	if discoverErr != nil {
 		return nil, discoverErr
 	}

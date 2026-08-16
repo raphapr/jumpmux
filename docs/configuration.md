@@ -18,7 +18,7 @@ sessions = true
 
 [sessions]
 exclude = []
-discover = ["ghq", "list", "-p"]
+discovery_command = ["ghq", "list", "-p"]
 
 [[sessions.entries]]
 name = "api"
@@ -32,7 +32,7 @@ path = "~/src/api"
 - `agents.question_tools` contains tool-name suffixes that show question attention while running. It defaults to `["ask_user_question"]`; use `[]` to disable it. Run `jumpmux setup` and reload Pi after changing it.
 - `[preview]` controls the preview panel independently for `agents`, `worktrees`, and `sessions`. Each defaults to `true`.
 - `sessions.exclude` accepts regular expressions. Use `^name$` for an exact match.
-- `sessions.discover` runs the first array value as an executable and passes the rest as arguments. The command must print one absolute, existing directory per line. jumpmux expands a leading `~` in the executable path and runs the command without a shell.
+- `sessions.discovery_command` runs the first array value as an executable and passes the rest as arguments. The command must print one absolute, existing directory per line. jumpmux expands a leading `~` in the executable path and runs the command without a shell.
 - Each `sessions.entries` item needs a unique name and an existing path. Paths support environment variables and a leading `~`. Unknown session keys cause an error.
 
 `auto` uses Worktrunk when `wt` is on `PATH`, then falls back to `git worktree`. The Worktrunk backend delegates add, remove, rebase, and merge actions to `wt`. The Git backend creates branches under `<repo>__worktrees/` from the default branch and keeps branches after worktree removal.

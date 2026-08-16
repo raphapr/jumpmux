@@ -42,7 +42,7 @@ func TestLoadConfiguredSessions(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("PROJECT", project)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
-	data := "[sessions]\nexclude = [\"Downloads\"]\ndiscover = [\"~/bin/list-sessions\", \"--all\"]\n[[sessions.entries]]\nname = \"project\"\npath = \"$PROJECT\"\n[future]\nvalue = true\n"
+	data := "[sessions]\nexclude = [\"Downloads\"]\ndiscovery_command = [\"~/bin/list-sessions\", \"--all\"]\n[[sessions.entries]]\nname = \"project\"\npath = \"$PROJECT\"\n[future]\nvalue = true\n"
 	writeSessionsConfig(t, data)
 	if got := expandSessionPath("~/project"); got != filepath.Join(home, "project") {
 		t.Fatalf("home expansion = %q", got)
@@ -54,14 +54,15 @@ func TestLoadConfiguredSessions(t *testing.T) {
 	if !sessionExcluded(config.exclude, "Downloads") {
 		t.Fatalf("exclude = %#v, %v", config, err)
 	}
-	if len(config.discover) != 2 || config.discover[0] != filepath.Join(home, "bin", "list-sessions") || config.discover[1] != "--all" {
-		t.Fatalf("discover = %#v", config.discover)
+	if len(config.discoveryCommand) != 2 || config.discoveryCommand[0] != filepath.Join(home, "bin", "list-sessions") || config.discoveryCommand[1] != "--all" {
+		t.Fatalf("discovery command = %#v", config.discoveryCommand)
 	}
 	for _, data := range []string{
 		"[sessions]\nfuture = true\n",
 		"[sessions]\nexclude = [\"[\"]\n",
-		"[sessions]\ndiscover = []\n",
-		"[sessions]\ndiscover = [1]\n",
+		"[sessions]\ndiscovery_command = []\n",
+		"[sessions]\ndiscovery_command = [1]\n",
+		"[sessions]\ndiscover = [\"old-name\"]\n",
 		"[[sessions.entries]]\nname = \"project\"\npath = \"" + project + "\"\nstartup_command = \"make\"\n",
 		"[[sessions.entries]]\nname = \"project\"\npath = \"/missing\"\n",
 		"[[sessions.entries]]\nname = \"project\"\npath = \"" + project + "\"\n[[sessions.entries]]\nname = \"project\"\npath = \"" + project + "\"\n",
@@ -171,7 +172,7 @@ func TestListSessionsMergesDiscoveredConfiguredAndLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DISCOVERED", discovered)
-	data := "[sessions]\ndiscover = [\"" + script + "\"]\n[[sessions.entries]]\nname = \"dev\"\npath = \"" + configured + "\"\n"
+	data := "[sessions]\ndiscovery_command = [\"" + script + "\"]\n[[sessions.entries]]\nname = \"dev\"\npath = \"" + configured + "\"\n"
 	writeSessionsConfig(t, data)
 	writeFakeTmux(t, `
 case "$1" in
