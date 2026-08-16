@@ -10,6 +10,20 @@ Inspired by [workmux](https://github.com/raine/workmux) and [sesh](https://githu
 - **Worktrees:** Worktrees from the current repository with Project, Worktree, Git, PR, Mux, Age, and Agent columns.
 - **Sessions:** Configured locations, discovered repositories, and live tmux sessions with Session, Path, Windows, and Last-attached columns.
 
+## Features
+
+### Agents
+
+![Agents tab showing Pi agent status and a live pane preview](docs/images/agents.png)
+
+### Worktrees
+
+![Worktrees tab showing repository status and Git history](docs/images/worktrees.png)
+
+### Sessions
+
+![Sessions tab showing configured and live tmux sessions](docs/images/sessions.png)
+
 ## Requirements
 
 - Go 1.24+ to install from source
