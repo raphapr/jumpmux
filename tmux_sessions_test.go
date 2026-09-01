@@ -545,8 +545,8 @@ func TestSessionTypingStartsSearchAndEnterOpens(t *testing.T) {
 	}
 	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(dashboardModel)
-	if !model.chosen || model.selection.target != "beta" || command == nil {
-		t.Fatalf("search enter did not open selection: %#v", model)
+	if model.action != actionRunning || command == nil {
+		t.Fatalf("search enter did not start opening selection: %#v", model)
 	}
 }
 
@@ -566,8 +566,8 @@ func TestSessionCtrlNavigationAndNoNumberJump(t *testing.T) {
 	}
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
 	model = updated.(dashboardModel)
-	if model.chosen || model.query != "2" {
-		t.Fatalf("session number acted as jump: chosen=%v query=%q", model.chosen, model.query)
+	if model.query != "2" {
+		t.Fatalf("session number acted as jump: query=%q", model.query)
 	}
 	columns := model.columns(80, model.rows())
 	if header := ansi.Strip(model.tableHeader(80, columns)); strings.Contains(header, "#") {
@@ -584,7 +584,7 @@ func TestSessionRemoveShortcutConfirms(t *testing.T) {
 	if model.action != actionRemoveSession || model.actionTarget.target != "dev" {
 		t.Fatalf("remove session mode = %#v target=%#v", model.action, model.actionTarget)
 	}
-	if view := ansi.Strip(model.View()); !strings.Contains(view, "Remove session") || !strings.Contains(view, "kills the live tmux session") || !strings.Contains(view, "Remove dev?") || !strings.Contains(view, "Enter Remove") || !strings.Contains(view, "Esc Cancel") {
+	if view := ansi.Strip(model.View()); !strings.Contains(view, "Remove session") || !strings.Contains(view, "Will kill tmux session dev.") || !strings.Contains(view, "Configured entry stays in config.toml.") || !strings.Contains(view, "Remove dev?") || !strings.Contains(view, "Enter Remove") || !strings.Contains(view, "Esc Cancel") {
 		t.Fatalf("remove confirmation missing:\n%s", view)
 	}
 }

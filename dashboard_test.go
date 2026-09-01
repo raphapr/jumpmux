@@ -289,8 +289,12 @@ func TestCurrentRowsUseMarkerUnlessSelected(t *testing.T) {
 		}
 		model.index = 0
 		selected := model.tableRow(base, 0, model.width, columns)
-		if strings.Contains(ansi.Strip(selected), "▌") || !strings.HasPrefix(ansi.Strip(selected), "  ") {
-			t.Fatalf("tab %d selected current row retained a marker: %q", tab, selected)
+		if !strings.HasPrefix(ansi.Strip(selected), "> ") {
+			t.Fatalf("tab %d selected current row lost its selection marker: %q", tab, selected)
+		}
+		base.current = false
+		if selected := ansi.Strip(model.tableRow(base, 0, model.width, columns)); !strings.HasPrefix(selected, "> ") {
+			t.Fatalf("tab %d selected row lacks an ASCII marker: %q", tab, selected)
 		}
 	}
 }
@@ -533,13 +537,17 @@ func TestMouseClickChoosesRow(t *testing.T) {
 	click := tea.MouseMsg{X: 5, Y: 4, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
 	updated, cmd := model.Update(click)
 	got := updated.(dashboardModel)
-	if got.chosen || got.index != 1 || cmd == nil {
+	if got.index != 1 || cmd == nil {
 		t.Fatalf("single click did not select second row: %#v", got)
 	}
 	updated, cmd = got.Update(click)
 	got = updated.(dashboardModel)
-	if !got.chosen || got.selection.target != "second" || cmd == nil {
-		t.Fatalf("double click did not choose second row: %#v", got)
+	if got.action != actionRunning || cmd == nil {
+		t.Fatalf("double click did not start opening second row: %#v", got)
+	}
+	updated, cmd = got.Update(worktreeActionMsg{quit: true})
+	if cmd == nil || updated.(dashboardModel).action != actionNone {
+		t.Fatalf("successful double-click open did not quit: %#v", updated)
 	}
 }
 
@@ -634,8 +642,8 @@ func TestSmallTerminalAndFilterState(t *testing.T) {
 		}
 	}
 	model.agents = []item{{kind: "session", target: "hidden", cwd: "/repo"}}
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if updated.(dashboardModel).chosen {
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if command != nil || updated.(dashboardModel).action == actionRunning {
 		t.Fatal("tiny terminal activated a hidden row")
 	}
 
@@ -655,8 +663,22 @@ func TestSmallTerminalAndFilterState(t *testing.T) {
 		t.Fatalf("agent filter leaked to worktrees: %q", model.query)
 	}
 	updated, _ = model.switchTab(0)
-	if got := updated.(dashboardModel).query; got != "agent" {
-		t.Fatalf("agent filter was not restored: %q", got)
+	model = updated.(dashboardModel)
+	if model.query != "agent" {
+		t.Fatalf("agent filter was not restored: %q", model.query)
+	}
+
+	model.filter = true
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(dashboardModel)
+	if model.tab != tabWorktrees || model.filter {
+		t.Fatalf("Tab did not leave Agents filtering for Worktrees: %#v", model)
+	}
+	model.filter = true
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(dashboardModel)
+	if model.tab != tabSessions || model.filter {
+		t.Fatalf("Tab did not leave Worktrees filtering for Sessions: %#v", model)
 	}
 }
 
@@ -682,6 +704,11 @@ func TestDashboardEmptyAndErrorStates(t *testing.T) {
 	if view := ansi.Strip(model.View()); !strings.Contains(view, "No live agents") || strings.Contains(view, "Loading…\n") {
 		t.Fatalf("missing loaded-empty state:\n%s", view)
 	}
+	model.scope = scopeSession
+	if view := ansi.Strip(model.View()); !strings.Contains(view, "No agents in this tmux session. Press s to show all.") {
+		t.Fatalf("missing session-scoped empty state:\n%s", view)
+	}
+	model.scope = scopeAll
 	model.query = "missing"
 	if view := ansi.Strip(model.View()); !strings.Contains(view, "No matches for /missing") || !strings.Contains(view, "Filter:missing") {
 		t.Fatalf("missing filtered-empty state:\n%s", view)
@@ -731,6 +758,47 @@ func TestDashboardTextInputsAndGlobalQuit(t *testing.T) {
 		if command == nil {
 			t.Fatal("Ctrl+C was not handled globally")
 		}
+	}
+}
+
+func TestDashboardOpenQuitsOnlyAfterSuccessfulJump(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		tab  int
+		item item
+	}{
+		{"agent", tabAgents, item{kind: "session", target: "%1", pane: "%1"}},
+		{"worktree", tabWorktrees, item{kind: "worktree", target: "/repo", cwd: "/repo"}},
+		{"session", tabSessions, item{kind: "tmux-session", target: "dev"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := newDashboard("/repo")
+			model.tab = test.tab
+			switch test.tab {
+			case tabAgents:
+				model.agents = []item{test.item}
+			case tabWorktrees:
+				model.worktrees = []item{test.item}
+			case tabSessions:
+				model.sessions = []item{test.item}
+			}
+			updated, command := model.executeAction(menuOpen)
+			model = updated.(dashboardModel)
+			if model.action != actionRunning || command == nil {
+				t.Fatalf("open did not start asynchronously: %#v", model)
+			}
+			updated, quit := model.Update(worktreeActionMsg{quit: true, err: errors.New("stale target")})
+			model = updated.(dashboardModel)
+			if quit != nil || model.action != actionNone || model.err == nil {
+				t.Fatalf("failed open closed dashboard: %#v", model)
+			}
+
+			model.action, model.err = actionRunning, nil
+			updated, quit = model.Update(worktreeActionMsg{quit: true})
+			if quit == nil || updated.(dashboardModel).action != actionNone {
+				t.Fatalf("successful open did not quit: %#v", updated)
+			}
+		})
 	}
 }
 
@@ -841,6 +909,38 @@ func TestDashboardDiffOffsetsAndMinimumLayout(t *testing.T) {
 	footer := ansi.Strip(model.renderFooter(40))
 	if !strings.Contains(footer, "↵ Create") || !strings.Contains(footer, "Esc Cancel") || ansi.StringWidth(footer) != 40 {
 		t.Fatalf("minimum-width add footer = %q", footer)
+	}
+
+	for _, test := range []struct {
+		action dashboardAction
+		want   []string
+	}{
+		{actionRemoveWorktree, []string{"Will remove worktree /feature.", "The branch stays.", "Enter Remove    Esc Cancel"}},
+		{actionRemoveSession, []string{"Will kill tmux session dev.", "Configured entry stays in config.toml.", "Enter Remove    Esc Cancel"}},
+		{actionCleanupWorktree, []string{"Will prune stale worktree records.", "Live and locked worktrees stay.", "Enter Clean up    Esc Cancel"}},
+		{actionRebaseWorktree, []string{"Will rebase feature", "Commits may be rewritten.", "Enter Rebase    Esc Cancel"}},
+		{actionMergeWorktree, []string{"Will merge feature", "Needs clean worktrees; keeps it.", "Enter Merge    Esc Cancel"}},
+	} {
+		model.action, model.actionTarget = test.action, item{branch: "feature", cwd: "/feature", title: "dev"}
+		view := ansi.Strip(model.View())
+		for _, want := range test.want {
+			if !strings.Contains(view, want) {
+				t.Fatalf("40x10 %d confirmation omitted %q:\n%s", test.action, want, view)
+			}
+		}
+		for _, line := range strings.Split(view, "\n") {
+			if got := ansi.StringWidth(line); got != 40 {
+				t.Fatalf("40x10 %d confirmation width = %d: %q", test.action, got, line)
+			}
+		}
+		if got := len(strings.Split(view, "\n")); got != 10 {
+			t.Fatalf("40x10 %d confirmation height = %d", test.action, got)
+		}
+	}
+
+	model.width, model.action = 80, actionRemoveSession
+	if !model.confirmationNeedsFullHeight() || !strings.Contains(ansi.Strip(model.View()), "Will kill tmux session dev.") {
+		t.Fatalf("80x10 confirmation remained clipped:\n%s", model.View())
 	}
 }
 
@@ -1026,10 +1126,10 @@ func TestDashboardNavigationPreviewModesAndWideLayout(t *testing.T) {
 		t.Fatalf("Sessions lowercase o did not search: %#v", model)
 	}
 	model.filter, model.query = false, ""
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'O'}})
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'O'}})
 	model = updated.(dashboardModel)
-	if !model.chosen || model.selection.target != "dev" {
-		t.Fatalf("Sessions uppercase O did not open: %#v", model)
+	if model.action != actionRunning || command == nil {
+		t.Fatalf("Sessions uppercase O did not start opening: %#v", model)
 	}
 
 	model = newDashboard("/repo")

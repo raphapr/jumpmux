@@ -523,7 +523,7 @@ func TestWorktreeRebaseAndMergeMenuActions(t *testing.T) {
 	model.beginWorktreeOperation(model.worktrees[1], actionMergeWorktree)
 	model.actionBackend = backendWT
 	preview := ansi.Strip(model.renderPreview(100))
-	if model.action != actionMergeWorktree || !strings.Contains(preview, "Squash: on") || !strings.Contains(preview, "Requires clean worktrees; keeps worktree.") {
+	if model.action != actionMergeWorktree || !strings.Contains(preview, "Squash: on") || !strings.Contains(preview, "Needs clean worktrees; keeps it.") {
 		t.Fatalf("merge confirmation = action %v\n%s", model.action, preview)
 	}
 	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
@@ -587,7 +587,7 @@ func TestRemovalConfirmationPreviewAndInput(t *testing.T) {
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	model = updated.(dashboardModel)
 	preview := ansi.Strip(model.renderPreview(model.width))
-	for _, expected := range []string{"Branch: feature", "Path:   /feature", "Native Git removes the worktree and keeps its branch.", "Enter Remove    Esc Cancel"} {
+	for _, expected := range []string{"Will remove worktree /feature.", "The branch stays.", "Enter Remove    Esc Cancel"} {
 		if !strings.Contains(preview, expected) {
 			t.Fatalf("removal preview missing %q:\n%s", expected, preview)
 		}

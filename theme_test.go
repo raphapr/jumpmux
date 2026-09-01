@@ -1,6 +1,8 @@
 package main
 
 import (
+	"math"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -25,7 +27,7 @@ func TestColorSchemes(t *testing.T) {
 		slug     string
 		expected []string
 	}{
-		{schemeCatppuccinLatte, "catppuccin-latte", []string{"#EFF1F5", "#CCD0DA", "#D2D4DC", "#7287FD", "#4C4F69", "#8C8FA1", "#9CA0B0", "#7287FD", "#7287FD", "#DF8E1D", "#DC8A78", "#179299", "#1E66F5", "#40A02B", "#DF8E1D", "#D20F39", "#8839EF"}},
+		{schemeCatppuccinLatte, "catppuccin-latte", []string{"#EFF1F5", "#CCD0DA", "#D2D4DC", "#7287FD", "#4C4F69", "#8C8FA1", "#9CA0B0", "#7287FD", "#7287FD", "#DF8E1D", "#DC8A78", "#0F6F69", "#1450B8", "#2A6E1B", "#8A5500", "#D20F39", "#8839EF"}},
 		{schemeCatppuccinFrappe, "catppuccin-frappe", []string{"#303446", "#414559", "#494E63", "#BABBF1", "#C6D0F5", "#838BA7", "#737994", "#BABBF1", "#BABBF1", "#E5C890", "#F2D5CF", "#81C8BE", "#8CAAEE", "#A6D189", "#E5C890", "#E78284", "#CA9EE6"}},
 		{schemeCatppuccinMacchiato, "catppuccin-macchiato", []string{"#24273A", "#363A4F", "#404459", "#B7BDF8", "#CAD3F5", "#8087A2", "#6E738D", "#B7BDF8", "#B7BDF8", "#EED49F", "#F4DBD6", "#8BD5CA", "#8AADF4", "#A6DA95", "#EED49F", "#ED8796", "#C6A0F6"}},
 		{schemeCatppuccinMocha, "catppuccin-mocha", []string{"#1E1E2E", "#313244", "#3B3D4F", "#B4BEFE", "#CDD6F4", "#7F849C", "#6C7086", "#B4BEFE", "#B4BEFE", "#F9E2AF", "#F5E0DC", "#94E2D5", "#89B4FA", "#A6E3A1", "#F9E2AF", "#F38BA8", "#CBA6F7"}},
@@ -78,6 +80,41 @@ func TestColorSchemes(t *testing.T) {
 	}
 }
 
+func TestCatppuccinSemanticContrast(t *testing.T) {
+	for _, scheme := range []colorScheme{schemeCatppuccinLatte, schemeCatppuccinFrappe, schemeCatppuccinMacchiato, schemeCatppuccinMocha} {
+		palette := themePalettes[scheme]
+		for _, semantic := range []lipgloss.AdaptiveColor{palette.info, palette.diff, palette.success, palette.warning, palette.danger, palette.accent} {
+			if contrast := themeContrast(t, semantic.Light, palette.background.Light); contrast < 4.5 {
+				t.Fatalf("%s semantic contrast = %.2f, want >= 4.5", scheme.slug(), contrast)
+			}
+		}
+		if contrast := themeContrast(t, palette.text.Light, palette.selected.Light); contrast < 4.5 {
+			t.Fatalf("%s selected text contrast = %.2f, want >= 4.5", scheme.slug(), contrast)
+		}
+	}
+}
+
+func themeContrast(t *testing.T, foreground, background string) float64 {
+	t.Helper()
+	luminance := func(color string) float64 {
+		value, err := strconv.ParseUint(strings.TrimPrefix(color, "#"), 16, 32)
+		if err != nil {
+			t.Fatalf("parse color %q: %v", color, err)
+		}
+		channels := []float64{float64(value>>16) / 255, float64(value>>8&0xff) / 255, float64(value&0xff) / 255}
+		for index, channel := range channels {
+			if channel <= 0.04045 {
+				channels[index] = channel / 12.92
+			} else {
+				channels[index] = math.Pow((channel+0.055)/1.055, 2.4)
+			}
+		}
+		return 0.2126*channels[0] + 0.7152*channels[1] + 0.0722*channels[2]
+	}
+	foregroundLuminance, backgroundLuminance := luminance(foreground), luminance(background)
+	return (max(foregroundLuminance, backgroundLuminance) + 0.05) / (min(foregroundLuminance, backgroundLuminance) + 0.05)
+}
+
 func TestCatppuccinDashboardBackground(t *testing.T) {
 	previousProfile := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(0) // termenv.TrueColor; avoid a direct test dependency.
@@ -114,7 +151,7 @@ func TestThemePickerFiltersAndCancels(t *testing.T) {
 		t.Fatalf("filtered picker = %#v", model)
 	}
 	picker := ansi.Strip(model.View())
-	if !strings.Contains(picker, "[Agents") || !strings.Contains(picker, "catppuccin-latte") || strings.Contains(picker, "Built-in") || strings.Contains(picker, "Catppuccin\n") || strings.Contains(picker, "▌") || !strings.Contains(picker, "Apply") || !strings.Contains(picker, "Cancel") || len(strings.Split(picker, "\n")) != model.height {
+	if !strings.Contains(picker, "[Agents") || !strings.Contains(picker, "> catppuccin-latte") || strings.Contains(picker, "Built-in") || strings.Contains(picker, "Catppuccin\n") || !strings.Contains(picker, "Apply") || !strings.Contains(picker, "Cancel") || len(strings.Split(picker, "\n")) != model.height {
 		t.Fatalf("picker view = %q", picker)
 	}
 

@@ -38,8 +38,8 @@
 | `+` / `-`                                 | Resize Agents/Worktrees previews; search Sessions                      |
 | `?`                                       | Open Help; enter `?` when Sessions search is active                    |
 | `Esc`                                     | Close a view, cancel an action, clear a filter, or quit the dashboard  |
-| `q`                                       | Quit the dashboard or Help; close the diff view                        |
-| `Ctrl+C`                                  | Quit from any state                                                    |
+| `q`                                       | Quit Agents/Worktrees or Help; close a diff; search in Sessions        |
+| `Ctrl+C`                                  | Quit from any state, including Sessions search                         |
 
 ## Dashboard behavior
 

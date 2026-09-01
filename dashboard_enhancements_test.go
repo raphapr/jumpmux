@@ -114,8 +114,8 @@ func TestActionMenuKeepsSelectionVisible(t *testing.T) {
 	model.worktrees = []item{{kind: "worktree", cwd: "/repo", branch: "feature", prNumber: 42, prURL: "https://example.test/pr/42", prunable: true}}
 	model.actionMenuIndex = slices.IndexFunc(model.actionMenuEntries(), func(entry actionMenuEntry) bool { return entry.action == menuCleanup })
 	view := ansi.Strip(model.renderActionMenu(40, 5))
-	if !strings.Contains(view, "  [x] Clean up stale record") || strings.Contains(view, "▌") {
-		t.Fatalf("selected action is not visible without a marker:\n%s", view)
+	if !strings.Contains(view, "> [x] Clean up stale record") {
+		t.Fatalf("selected action is not visibly marked:\n%s", view)
 	}
 }
 
@@ -288,7 +288,7 @@ func TestActionMenuKeysAreUniqueVisibleAndDispatchDirectly(t *testing.T) {
 			direct := makeModel()
 			updated, directCommand := direct.Update(key)
 			direct = updated.(dashboardModel)
-			if menu.actionMenu || direct.actionMenu || menu.action != direct.action || menu.diff != direct.diff || menu.chosen != direct.chosen || (menuCommand == nil) != (directCommand == nil) {
+			if menu.actionMenu || direct.actionMenu || menu.action != direct.action || menu.diff != direct.diff || (menuCommand == nil) != (directCommand == nil) {
 				t.Fatalf("%s key %q diverged: menu=%#v direct=%#v", name, entry.key, menu, direct)
 			}
 		}
@@ -340,10 +340,14 @@ func TestSessionActionMenuDefaultsToOpen(t *testing.T) {
 	if !model.actionMenu || model.actionMenuEntries()[0].action != menuOpen {
 		t.Fatalf("Session action menu does not default to Open: %#v", model.actionMenuEntries())
 	}
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(dashboardModel)
-	if !model.chosen || model.selection.target != "dev" {
-		t.Fatalf("Space then Enter did not open selected Session: %#v", model)
+	if model.action != actionRunning || command == nil {
+		t.Fatalf("Space then Enter did not start opening the selected Session: %#v", model)
+	}
+	updated, command = model.Update(worktreeActionMsg{quit: true})
+	if command == nil || updated.(dashboardModel).action != actionNone {
+		t.Fatalf("successful Session open did not quit: %#v", updated)
 	}
 }
 

@@ -153,7 +153,7 @@ func padANSI(value string, width int) string {
 
 func withBackground(style lipgloss.Style, background *lipgloss.AdaptiveColor) lipgloss.Style {
 	if background != nil {
-		return style.Background(*background)
+		return style.Foreground(textColor).Background(*background)
 	}
 	return style
 }

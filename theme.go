@@ -293,7 +293,8 @@ var themePalettes = [...]themePalette{
 		accent:          adaptive("#734B91", "#B48CC8"),
 	},
 	// Terminals cannot render Catppuccin's translucent selection color, so
-	// selected preblends Overlay 2 at 25% over Base.
+	// selected preblends Overlay 2 at 25% over Base. Latte semantic colors
+	// are darkened enough to remain readable on its light background.
 	schemeCatppuccinLatte: {
 		background:      fixed("#EFF1F5"),
 		currentRow:      fixed("#CCD0DA"),
@@ -306,10 +307,10 @@ var themePalettes = [...]themePalette{
 		header:          fixed("#7287FD"),
 		keycap:          fixed("#DF8E1D"),
 		cursor:          fixed("#DC8A78"),
-		info:            fixed("#179299"),
-		diff:            fixed("#1E66F5"),
-		success:         fixed("#40A02B"),
-		warning:         fixed("#DF8E1D"),
+		info:            fixed("#0F6F69"),
+		diff:            fixed("#1450B8"),
+		success:         fixed("#2A6E1B"),
+		warning:         fixed("#8A5500"),
 		danger:          fixed("#D20F39"),
 		accent:          fixed("#8839EF"),
 	},

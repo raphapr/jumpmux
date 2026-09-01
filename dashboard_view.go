@@ -31,7 +31,9 @@ func (m dashboardModel) View() string {
 		return paintDashboardBackground(m.renderDiff(width))
 	}
 	parts := []string{m.renderHeader(width)}
-	if m.actionSidebar() {
+	if m.confirmationNeedsFullHeight() {
+		parts = append(parts, m.renderPreview(width))
+	} else if m.actionSidebar() {
 		sidebarWidth := m.actionSidebarWidth()
 		parts = append(parts, lipgloss.JoinHorizontal(lipgloss.Top, m.renderTable(width-sidebarWidth), m.renderActionMenu(sidebarWidth, m.contentHeight()+1)))
 	} else if m.wideLayout() {
@@ -203,6 +205,8 @@ func (m dashboardModel) renderTable(width int) string {
 			}
 		} else if m.tab == tabSessions && m.sessionFilter != sessionFilterAll {
 			message = "No " + strings.ToLower(m.sessionFilter.label()) + " sessions. Ctrl+f changes filter."
+		} else if m.tab == tabAgents && m.scope == scopeSession {
+			message = "No agents in this tmux session. Press s to show all."
 		} else {
 			switch m.tab {
 			case tabSessions:
@@ -308,10 +312,13 @@ func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) st
 		background = &selectedColor
 	}
 	worktreeStyle := textStyle
-	prefix := renderCell(textStyle, "  ", 2, background)
-	if index != m.index && item.current {
-		prefix = renderCell(textStyle, "▌ ", 2, background)
+	marker := "  "
+	if index == m.index {
+		marker = "> "
+	} else if item.current {
+		marker = "▌ "
 	}
+	prefix := renderCell(textStyle, marker, 2, background)
 
 	line := prefix
 	if m.tab == tabSessions {
@@ -383,8 +390,20 @@ func (m dashboardModel) matchingWorktree(session item) (item, bool) {
 	return best, best.cwd != ""
 }
 
+func (m dashboardModel) confirmationNeedsFullHeight() bool {
+	switch m.action {
+	case actionRemoveWorktree, actionRemoveSession, actionCleanupWorktree, actionRebaseWorktree, actionMergeWorktree:
+		return m.previewHeight() < len(m.removePreviewLines())+2
+	default:
+		return false
+	}
+}
+
 func (m dashboardModel) renderPreview(width int) string {
 	height := m.previewHeight()
+	if m.confirmationNeedsFullHeight() {
+		height = m.contentHeight()
+	}
 	if m.themePicker {
 		return m.renderThemePicker(width, height)
 	}
@@ -489,11 +508,11 @@ func (m dashboardModel) renderActionMenu(width, height int) string {
 	if !m.actionSidebar() {
 		lines := make([]string, 0, len(entries))
 		for index, entry := range entries {
-			style := textStyle
+			style, marker := textStyle, "  "
 			if index == selected {
-				style = selectedStyle.Inherit(textStyle)
+				style, marker = selectedStyle.Inherit(textStyle), "> "
 			}
-			lines = append(lines, style.Render("  ["+entry.key+"] "+entry.label))
+			lines = append(lines, style.Render(marker+"["+entry.key+"] "+entry.label))
 		}
 		if len(lines) == 0 {
 			lines = []string{mutedStyle.Render("No actions available.")}
@@ -525,7 +544,7 @@ func (m dashboardModel) renderActionMenu(width, height int) string {
 		line := "  [" + entry.key + "] " + entry.label
 		if index == selected {
 			selectedLine = len(lines)
-			line = selectedStyle.Inherit(textStyle).Width(width - 2).Render("  [" + entry.key + "] " + entry.label)
+			line = selectedStyle.Inherit(textStyle).Width(width - 2).Render("> [" + entry.key + "] " + entry.label)
 		} else if entry.action == menuRemove {
 			line = dangerStyle.Render(line)
 		} else {
@@ -579,18 +598,10 @@ func actionMenuGroup(action menuAction) string {
 
 func (m dashboardModel) removePreviewLines() []string {
 	if m.action == actionRebaseWorktree {
-		behavior := "Native Git requires clean worktrees and rebases onto the local default branch."
-		if m.actionBackend == backendWT {
-			behavior = "Worktrunk rebases the branch onto the local default branch."
-		}
 		return []string{
-			"Branch: " + safeText(m.actionTarget.branch),
-			"Path:   " + safeText(compactHome(m.actionTarget.cwd)),
-			"",
-			behavior,
+			"Will rebase " + safeText(m.actionTarget.branch) + " onto the local default branch.",
 			"Commits may be rewritten. Conflicts leave the rebase open.",
 			"This does not fetch or remove the worktree.",
-			"",
 			"Enter Rebase    Esc Cancel",
 		}
 	}
@@ -603,45 +614,33 @@ func (m dashboardModel) removePreviewLines() []string {
 			}
 		}
 		return []string{
-			"Branch: " + safeText(m.actionTarget.branch),
-			"Path:   " + safeText(compactHome(m.actionTarget.cwd)),
+			"Will merge " + safeText(m.actionTarget.branch) + " into the local default branch.",
+			"Needs clean worktrees; keeps it.",
 			"Squash: " + mode,
-			"Requires clean worktrees; keeps worktree.",
-			"Target: local default branch",
-			"",
 			"Enter Merge    Esc Cancel",
 		}
 	}
 	if m.action == actionCleanupWorktree {
 		return []string{
-			"Selected: " + safeText(compactHome(m.actionTarget.cwd)),
-			"",
-			"This runs git worktree prune --expire now.",
-			"Git removes all stale unlocked worktree records.",
-			"It does not remove a live worktree or unlock a locked one.",
-			"",
+			"Will prune stale worktree records.",
+			"Live and locked worktrees stay.",
 			"Enter Clean up    Esc Cancel",
 		}
 	}
 	if m.action == actionRemoveSession {
 		return []string{
-			"Session: " + safeText(m.actionTarget.title),
-			"",
-			"This kills the live tmux session. Configured entries stay in config.toml.",
-			"",
+			"Will kill tmux session " + safeText(m.actionTarget.title) + ".",
+			"Configured entry stays in config.toml.",
 			"Enter Remove    Esc Cancel",
 		}
 	}
-	behavior := "Native Git removes the worktree and keeps its branch."
+	behavior := "The branch stays."
 	if m.actionBackend == backendWT {
 		behavior = "Worktrunk removal follows wt remove semantics."
 	}
 	return []string{
-		"Branch: " + safeText(m.actionTarget.branch),
-		"Path:   " + safeText(compactHome(m.actionTarget.cwd)),
-		"",
+		"Will remove worktree " + safeText(compactHome(m.actionTarget.cwd)) + ".",
 		behavior,
-		"",
 		"Enter Remove    Esc Cancel",
 	}
 }
@@ -916,7 +915,7 @@ func (m dashboardModel) themePickerLines() ([]string, int) {
 	for index, scheme := range themes {
 		if index == m.themePickerIndex {
 			selectedLine = len(lines)
-			lines = append(lines, selectedStyle.Inherit(textStyle).Render("  "+scheme.slug()))
+			lines = append(lines, selectedStyle.Inherit(textStyle).Render("> "+scheme.slug()))
 			continue
 		}
 		lines = append(lines, "  "+mutedStyle.Render(scheme.slug()))

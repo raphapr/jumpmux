@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"sort"
@@ -110,8 +111,6 @@ type dashboardModel struct {
 	err, agentErr, worktreeErr, sessionsErr                               error
 	notice                                                                string
 	noticeUntil                                                           time.Time
-	chosen                                                                bool
-	selection                                                             item
 	lastClickTarget                                                       string
 	lastClickAt                                                           time.Time
 	action                                                                dashboardAction
@@ -183,6 +182,14 @@ type worktreeActionMsg struct {
 	quit   bool
 	err    error
 }
+
+// dashboardJumpCommand lets Bubble Tea restore the terminal before tmux takes control.
+type dashboardJumpCommand struct{ selected item }
+
+func (command dashboardJumpCommand) Run() error  { return jump(command.selected) }
+func (dashboardJumpCommand) SetStdin(io.Reader)  {}
+func (dashboardJumpCommand) SetStdout(io.Writer) {}
+func (dashboardJumpCommand) SetStderr(io.Writer) {}
 
 type worktreeStage uint8
 
@@ -422,8 +429,10 @@ func (m dashboardModel) executeAction(action menuAction) (tea.Model, tea.Cmd) {
 		}
 	case menuOpen:
 		if ok {
-			m.selection, m.chosen = selected, true
-			return m, tea.Quit
+			m.action, m.err = actionRunning, nil
+			return m, tea.Exec(dashboardJumpCommand{selected}, func(err error) tea.Msg {
+				return worktreeActionMsg{quit: true, err: err}
+			})
 		}
 	case menuDiff:
 		if ok {
@@ -1463,8 +1472,7 @@ func (m dashboardModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	doubleClick := selected.target == m.lastClickTarget && time.Since(m.lastClickAt) < 400*time.Millisecond
 	m.index, m.lastClickTarget, m.lastClickAt = index, selected.target, time.Now()
 	if doubleClick {
-		m.selection, m.chosen = selected, true
-		return m, tea.Quit
+		return m.executeAction(menuOpen)
 	}
 	return m, m.requestPreview(selected)
 }
@@ -1575,19 +1583,10 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "shift+tab":
 			return m.switchTab((m.tab - 1 + tabCount) % tabCount)
 		case "tab":
-			if m.tab == tabSessions {
-				return m.switchTab((m.tab + 1) % tabCount)
-			}
-			var command tea.Cmd
-			m.filterInputs[m.tab], command = m.filterInputs[m.tab].Update(msg)
-			return m, command
+			return m.switchTab((m.tab + 1) % tabCount)
 		case "enter":
 			if m.tab == tabSessions {
-				if selected, ok := m.selected(); ok {
-					m.selection, m.chosen = selected, true
-					return m, tea.Quit
-				}
-				return m, nil
+				return m.executeAction(menuOpen)
 			}
 			m.filter = false
 			m.filterInputs[m.tab].Blur()
@@ -1712,10 +1711,9 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.tab != tabSessions && len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
 		index := int(key[0] - '1')
-		rows := m.rows()
-		if index < len(rows) {
-			m.index, m.selection, m.chosen = index, rows[index], true
-			return m, tea.Quit
+		if index < len(m.rows()) {
+			m.index = index
+			return m.executeAction(menuOpen)
 		}
 	}
 

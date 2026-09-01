@@ -208,10 +208,6 @@ func main() {
 	}
 	_ = saveGitStatusCache(model.gitCache)
 	_ = savePRStatusCache(model.prCache)
-	if !model.chosen {
-		return
-	}
-	exitOnError(jump(model.selection))
 }
 
 func collectItemsFor(cwd string) ([]item, error) {
