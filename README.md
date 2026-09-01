@@ -38,7 +38,7 @@ Browse configured locations, discovered repositories, and live tmux sessions wit
 - Go 1.24+ to install from source
 - git
 - tmux
-- [Pi](https://pi.dev)
+- [Pi](https://pi.dev) 0.84.4+
 - Optional: [Nerd Font](https://www.nerdfonts.com/), [Worktrunk](https://worktrunk.dev/), [GitHub CLI](https://cli.github.com/)
 
 ## Install

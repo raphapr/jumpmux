@@ -45,7 +45,7 @@
 
 ### Agents
 
-The Pi extension writes agent status records. Before displaying a record, jumpmux checks its pane with `tmux list-panes`. It reports configured `agents.question_tools`, including `ask_user_question` by default, as a question state until their result arrives. Set `JUMPMUX_STATE_DIR` to change the status directory. `jumpmux setup` honors `PI_CODING_AGENT_DIR`.
+The Pi extension writes agent status records. Before displaying a record, jumpmux checks its pane with `tmux list-panes`. Pi UI prompts show as a question state until the prompt closes. Set `JUMPMUX_STATE_DIR` to change the status directory. `jumpmux setup` honors `PI_CODING_AGENT_DIR`.
 
 `jumpmux agent list` shows live Pi agents, and `jumpmux agent open <session-id|pane-id>` focuses one. Session IDs that identify more than one pane are ambiguous; use a pane ID.
 

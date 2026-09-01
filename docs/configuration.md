@@ -8,9 +8,6 @@ theme = "default"
 default_scope = "all"
 nerdfont = true
 
-[agents]
-question_tools = ["ask_user_question"]
-
 [preview]
 agents = true
 worktrees = true
@@ -29,7 +26,6 @@ path = "~/src/api"
 - `theme` accepts any scheme listed in [Themes and fonts](dashboard.md#themes-and-fonts).
 - `default_scope` accepts `all` or `session`.
 - `nerdfont` accepts `true` or `false` and defaults to `true`.
-- `agents.question_tools` contains tool-name suffixes that show question attention while running. It defaults to `["ask_user_question"]`; use `[]` to disable it. Run `jumpmux setup` and reload Pi after changing it.
 - `[preview]` controls the preview panel independently for `agents`, `worktrees`, and `sessions`. Each defaults to `true`.
 - `sessions.exclude` accepts regular expressions. Use `^name$` for an exact match.
 - `sessions.discovery_command` runs the first array value as an executable and passes the rest as arguments. The command must print one absolute, existing directory per line. jumpmux expands a leading `~` in the executable path and runs the command without a shell.

@@ -72,18 +72,7 @@ type tmuxPane struct {
 	Worktree       string
 }
 
-func setupPIExtension(questionTools []string) (string, error) {
-	encoded, err := json.Marshal(questionTools)
-	if err != nil {
-		return "", err
-	}
-	const toolsLine = `const interactiveToolSuffixes = new Set(["ask_user_question"]);`
-	source := string(piExtension)
-	if !strings.Contains(source, toolsLine) {
-		return "", errors.New("pi extension question-tools marker is missing")
-	}
-	source = strings.Replace(source, toolsLine, fmt.Sprintf("const interactiveToolSuffixes = new Set(%s);", encoded), 1)
-
+func setupPIExtension() (string, error) {
 	base := os.Getenv("PI_CODING_AGENT_DIR")
 	if base == "" {
 		home, err := os.UserHomeDir()
@@ -93,7 +82,7 @@ func setupPIExtension(questionTools []string) (string, error) {
 		base = filepath.Join(home, ".pi", "agent")
 	}
 	path := filepath.Join(base, "extensions", "jumpmux-status.ts")
-	if err := atomicWrite(path, []byte(source), 0o644); err != nil {
+	if err := atomicWrite(path, piExtension, 0o644); err != nil {
 		return "", err
 	}
 	return path, nil

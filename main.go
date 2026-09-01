@@ -164,9 +164,7 @@ func main() {
 			initialTab, err = dashboardTab(os.Args[index])
 			exitOnError(err)
 		case "setup":
-			config, err := loadConfig()
-			exitOnError(err)
-			path, err := setupPIExtension(config.questionTools)
+			path, err := setupPIExtension()
 			exitOnError(err)
 			fmt.Println("Installed Pi extension:", path)
 			fmt.Println("Restart Pi or run /reload in existing sessions.")

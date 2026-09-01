@@ -14,7 +14,7 @@ import (
 func TestPIExtensionSetup(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("PI_CODING_AGENT_DIR", root)
-	path, err := setupPIExtension([]string{"ask_user_question"})
+	path, err := setupPIExtension()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,17 +32,7 @@ func TestPIExtensionSetup(t *testing.T) {
 	if err := os.WriteFile(legacySkill, []byte("unmanaged"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := setupPIExtension([]string{"ask_user_question", "custom_prompt"}); err != nil {
-		t.Fatalf("custom setup failed: %v", err)
-	}
-	custom, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(custom), `const interactiveToolSuffixes = new Set(["ask_user_question","custom_prompt"]);`) {
-		t.Fatalf("custom question tools were not installed: %s", custom)
-	}
-	if _, err := setupPIExtension([]string{"ask_user_question"}); err != nil {
+	if _, err := setupPIExtension(); err != nil {
 		t.Fatalf("reinstall was not idempotent: %v", err)
 	}
 	data, err = os.ReadFile(path)
@@ -61,9 +51,14 @@ func TestPIExtensionSetup(t *testing.T) {
 	if !strings.Contains(string(data), `report("started", ctx)`) {
 		t.Fatal("Pi session start is incorrectly reported as completed work")
 	}
-	for _, expected := range []string{`interactiveToolSuffixes`, `toolName.endsWith(separator + suffix)`, `interactiveToolCallIDs.add(event.toolCallId)`, `interactiveToolCallIDs.delete(event.toolCallId)`, `report("question", ctx)`} {
+	for _, expected := range []string{`pi.on("ui_prompt_start"`, `report("question", ctx)`, `pi.on("ui_prompt_end"`, `ctx.isIdle() ? "done" : "working"`} {
 		if !strings.Contains(string(data), expected) {
-			t.Fatalf("Pi interactive-question lifecycle is missing %q", expected)
+			t.Fatalf("Pi UI-prompt lifecycle is missing %q", expected)
+		}
+	}
+	for _, removed := range []string{`question_tools`, `tool_call`, `tool_result`} {
+		if strings.Contains(string(data), removed) {
+			t.Fatalf("Pi extension still contains removed question-tool fallback %q", removed)
 		}
 	}
 }
