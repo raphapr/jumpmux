@@ -192,7 +192,6 @@ func TestDashboardErrorText(t *testing.T) {
 		err  string
 		want string
 	}{
-		{"backend", tabWorktrees, "worktree_backend is wt but wt is not installed", "Install `wt` or select Git"},
 		{"stale worktree", tabWorktrees, "the selected worktree changed; refresh and try again", "Worktree changed. Refresh and retry"},
 		{"dirty merge", tabWorktrees, "cannot merge with uncommitted changes in ~/repo", "Commit or stash changes in ~/repo first"},
 		{"wrong branch", tabWorktrees, "cannot merge: primary worktree is not on main", "Switch the primary worktree to main first"},

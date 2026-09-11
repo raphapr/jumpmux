@@ -74,13 +74,13 @@ Live previews capture the active pane every 500 ms, including alternate-screen p
 
 jumpmux merges rows with the same name. Configured paths take precedence; live-only rows use the active pane path. Rows appear in three groups: live, configured, and discovered. Each group sorts by name. Press `Ctrl+g` to sort by the `Last` column until jumpmux exits. Searches sort by fuzzy match score.
 
-Press `Space` for actions available on the selected row. Press the shown key from the table or menu, or select an action and press `Enter`. The Sessions `P` action switches to the previous session even when no row is selected. Opening a selected row, adding a worktree, or switching to the previous session exits the dashboard; failures leave it open. Worktree actions include add, open, diff, PR, rebase, merge, cleanup, and removal. Worktree rebase and merge use the configured worktree backend against its local default branch: Worktrunk when selected or available in `auto`, otherwise native Git. Merge requires clean worktrees and keeps the worktree. Worktrunk squashes by default; press `s` on the merge confirmation to preserve commits. Native Git always preserves commits. Removing a live session does not delete its configured entry.
+Press `Space` for actions available on the selected row. Press the shown key from the table or menu, or select an action and press `Enter`. The Sessions `P` action switches to the previous session even when no row is selected. Opening a selected row, adding a worktree, or switching to the previous session exits the dashboard; failures leave it open. Worktree actions include add, open, diff, PR, rebase, merge, cleanup, and removal. Worktree rebase and merge use native Git against the local default branch. Merge is fast-forward-only, requires clean worktrees and the primary worktree on the default branch, preserves commits, and keeps the worktree. Existing `worktree_backend` settings are unsupported and must be removed. Removing a live session does not delete its configured entry.
 
 ### Git
 
 Worktree rows use the current repository. Agent rows read Git state from each agent's working directory. Agent Git cells compactly show loading, dirty line counts, rebase or conflict state, and upstream ahead and behind counts. Worktree Git cells also show the non-default base branch and distinguish committed from uncommitted line counts.
 
-When `wt` is available, jumpmux reads the default branch from `wt list --format=json` schema 2. Otherwise, it uses Git metadata.
+jumpmux reads the default branch from local Git metadata: `origin/HEAD`, then local `main`, then local `master`. Base-dependent actions fail clearly when no usable local default branch exists; jumpmux does not fetch automatically.
 
 jumpmux loads `git_status_cache.json` before the first render, refreshes Git data in the background, and saves the cache on exit.
 

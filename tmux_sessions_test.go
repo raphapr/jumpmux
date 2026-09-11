@@ -37,6 +37,27 @@ func writeSessionsConfig(t *testing.T, data string) {
 	}
 }
 
+func TestLegacyWorktreeBackendIsRejectedBySessionsConfig(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	path, err := configPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"auto", "wt", "git"} {
+		data := []byte("worktree_backend = \"" + value + "\"\n")
+		if err := atomicWrite(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadSessionsConfig(); err == nil || !strings.Contains(err.Error(), "remove this setting") {
+			t.Fatalf("legacy %s sessions config error = %v", value, err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != string(data) {
+			t.Fatalf("legacy %s sessions config changed: %q, %v", value, got, err)
+		}
+	}
+}
+
 func TestLoadConfiguredSessions(t *testing.T) {
 	home, project := t.TempDir(), t.TempDir()
 	t.Setenv("HOME", home)

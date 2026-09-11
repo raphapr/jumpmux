@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,30 +15,10 @@ const (
 	worktreeMergeTimeout  = 30 * time.Minute
 )
 
-type worktreeBackend string
-
-const (
-	backendAuto worktreeBackend = "auto"
-	backendWT   worktreeBackend = "wt"
-	backendGit  worktreeBackend = "git"
-)
-
-func resolvedWorktreeBackend(backend worktreeBackend) (worktreeBackend, error) {
-	if backend != backendAuto {
-		if backend == backendWT {
-			if _, err := exec.LookPath("wt"); err != nil {
-				return "", errors.New("worktree_backend is wt but wt is not installed")
-			}
-		}
-		return backend, nil
+func addWorktree(repo, branch string) (item, error) {
+	if _, err := loadConfig(); err != nil {
+		return item{}, err
 	}
-	if _, err := exec.LookPath("wt"); err == nil {
-		return backendWT, nil
-	}
-	return backendGit, nil
-}
-
-func addWorktree(repo, branch string, backend worktreeBackend) (item, error) {
 	root, err := primaryWorktree(repo)
 	if err != nil {
 		return item{}, err
@@ -49,32 +28,14 @@ func addWorktree(repo, branch string, backend worktreeBackend) (item, error) {
 	if output, err := runActionCommand(ctx, root, "git", "check-ref-format", "--branch", branch); err != nil {
 		return item{}, actionError("invalid branch name", output, err)
 	}
-	backend, err = actionWorktreeBackend(backend)
+	base, err := requiredDefaultBranch(root)
 	if err != nil {
 		return item{}, err
 	}
-	if backend == backendWT {
-		output, err := runActionCommand(ctx, root, "wt", "-C", root, "switch", "--create", branch, "--no-cd", "--format=json")
-		if err != nil {
-			return item{}, actionError("add worktree", output, err)
-		}
-		items, err := listWorktreeItems(root)
-		if err != nil {
-			return item{}, err
-		}
-		for _, worktree := range items {
-			if worktree.branch == branch {
-				return worktree, nil
-			}
-		}
-		return item{}, fmt.Errorf("created worktree %q was not found", branch)
-	}
-
 	target := filepath.Join(filepath.Dir(root), filepath.Base(root)+"__worktrees", filepath.FromSlash(branch))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return item{}, err
 	}
-	base := gitDefaultBranch(root)
 	output, err := runActionCommand(ctx, root, "git", "worktree", "add", "-b", branch, target, base)
 	if err != nil {
 		return item{}, actionError("add worktree", output, err)
@@ -82,7 +43,10 @@ func addWorktree(repo, branch string, backend worktreeBackend) (item, error) {
 	return item{kind: "worktree", target: target, cwd: target, branch: branch, title: branch}, nil
 }
 
-func removeWorktree(repo, path string, backend worktreeBackend) error {
+func removeWorktree(repo, path string) error {
+	if _, err := loadConfig(); err != nil {
+		return err
+	}
 	root, err := primaryWorktree(repo)
 	if err != nil {
 		return err
@@ -100,26 +64,8 @@ func removeWorktree(repo, path string, backend worktreeBackend) error {
 	if err := validateWorktreeRemoval(path); err != nil {
 		return err
 	}
-	backend, err = actionWorktreeBackend(backend)
-	if err != nil {
-		return err
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), worktreeActionTimeout)
 	defer cancel()
-	if backend == backendWT {
-		output, err := runActionCommand(ctx, path, "git", "status", "--porcelain")
-		if err != nil {
-			return actionError("check worktree status", output, err)
-		}
-		if strings.TrimSpace(string(output)) != "" {
-			return errors.New("cannot remove dirty worktree")
-		}
-		output, err = runActionCommand(ctx, root, "wt", "-y", "-C", root, "remove", path, "--foreground")
-		if err != nil {
-			return actionError("remove worktree", output, err)
-		}
-		return nil
-	}
 	output, err := runActionCommand(ctx, root, "git", "worktree", "remove", path)
 	if err != nil {
 		return actionError("remove worktree", output, err)
@@ -127,13 +73,12 @@ func removeWorktree(repo, path string, backend worktreeBackend) error {
 	return nil
 }
 
-func updateWorktree(path, branch, operation string, noSquash bool, backend worktreeBackend) error {
+func updateWorktree(path, branch, operation string) error {
+	if _, err := loadConfig(); err != nil {
+		return err
+	}
 	if operation != "rebase" && operation != "merge" {
 		return fmt.Errorf("unsupported worktree action %q", operation)
-	}
-	backend, err := actionWorktreeBackend(backend)
-	if err != nil {
-		return err
 	}
 	worktrees, _, err := listWorktrees(path)
 	if err != nil {
@@ -155,36 +100,19 @@ func updateWorktree(path, branch, operation string, noSquash bool, backend workt
 	ctx, cancel := context.WithTimeout(context.Background(), worktreeMergeTimeout)
 	defer cancel()
 	root := worktrees[0].path
-	if operation == "merge" || backend == backendGit {
-		for _, dir := range []string{path, root} {
-			output, err := runActionCommand(ctx, dir, "git", "status", "--porcelain")
-			if err != nil {
-				return actionError("check worktree status", output, err)
-			}
-			if strings.TrimSpace(string(output)) != "" {
-				return fmt.Errorf("cannot %s with uncommitted changes in %s", operation, compactHome(dir))
-			}
-		}
-	}
-	if backend == backendWT {
-		args := []string{"-C", path}
-		if operation == "rebase" {
-			args = append(args, "step", "rebase", "--format=json")
-		} else {
-			args = append(args, "merge", "--no-remove")
-			if noSquash {
-				args = append(args, "--no-squash")
-			}
-			args = append(args, "--format=json")
-		}
-		output, err := runActionCommand(ctx, path, "wt", args...)
+	for _, dir := range []string{path, root} {
+		output, err := runActionCommand(ctx, dir, "git", "status", "--porcelain")
 		if err != nil {
-			return actionError(operation+" worktree", output, err)
+			return actionError("check worktree status", output, err)
 		}
-		return nil
+		if strings.TrimSpace(string(output)) != "" {
+			return fmt.Errorf("cannot %s with uncommitted changes in %s", operation, compactHome(dir))
+		}
 	}
-
-	base := gitDefaultBranch(root)
+	base, err := requiredDefaultBranch(root)
+	if err != nil {
+		return err
+	}
 	if operation == "merge" {
 		output, err := runActionCommand(ctx, root, "git", "symbolic-ref", "--quiet", "--short", "HEAD")
 		if err != nil || strings.TrimSpace(string(output)) != base {
@@ -206,6 +134,9 @@ func updateWorktree(path, branch, operation string, noSquash bool, backend workt
 }
 
 func cleanupPrunableWorktree(repo string, selected item) error {
+	if _, err := loadConfig(); err != nil {
+		return err
+	}
 	if !selected.prunable || selected.locked || selected.current {
 		return errors.New("the selected worktree is not safe to clean up")
 	}
@@ -234,17 +165,6 @@ func cleanupPrunableWorktree(repo string, selected item) error {
 		return actionError("clean up worktrees", output, err)
 	}
 	return nil
-}
-
-func actionWorktreeBackend(backend worktreeBackend) (worktreeBackend, error) {
-	if backend == backendAuto {
-		configured, err := loadWorktreeBackend()
-		if err != nil {
-			return "", err
-		}
-		backend = configured
-	}
-	return resolvedWorktreeBackend(backend)
 }
 
 func validateWorktreeRemoval(path string) error {

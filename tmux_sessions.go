@@ -48,12 +48,11 @@ type tmuxSession struct {
 }
 
 type sessionsFile struct {
-	Sessions        *sessionsSection `toml:"sessions"`
-	WorktreeBackend any              `toml:"worktree_backend"`
-	Theme           any              `toml:"theme"`
-	DefaultScope    any              `toml:"default_scope"`
-	NerdFont        any              `toml:"nerdfont"`
-	Preview         any              `toml:"preview"`
+	Sessions     *sessionsSection `toml:"sessions"`
+	Theme        any              `toml:"theme"`
+	DefaultScope any              `toml:"default_scope"`
+	NerdFont     any              `toml:"nerdfont"`
+	Preview      any              `toml:"preview"`
 }
 
 type sessionsSection struct {
@@ -99,6 +98,9 @@ func loadSessionsConfig() (*sessionsConfig, error) {
 		}
 		for _, detail := range unknown.Errors {
 			key := detail.Key()
+			if len(key) > 0 && key[0] == "worktree_backend" {
+				return nil, fmt.Errorf("sessions config %s: worktree_backend is no longer supported; remove this setting", path)
+			}
 			if len(key) == 0 || key[0] != "sessions" {
 				continue
 			}

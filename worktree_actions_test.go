@@ -12,41 +12,69 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-func TestWorktreeBackendConfig(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	if backend, err := loadWorktreeBackend(); err != nil || backend != backendAuto {
-		t.Fatalf("default backend = %q err=%v", backend, err)
+func TestAddWorktreeRequiresLocalDefaultBranch(t *testing.T) {
+	repo := t.TempDir()
+	if output, err := exec.Command("git", "-C", repo, "init", "-q", "-b", "trunk").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, output)
 	}
-	path, err := configPath()
+	if _, err := addWorktree(repo, "feature"); err == nil || !strings.Contains(err.Error(), "local default branch") {
+		t.Fatalf("missing default branch error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"__worktrees")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing-base add created path: %v", err)
+	}
+}
+
+func TestAddWorktreeUsesOriginHeadDefaultBranch(t *testing.T) {
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "branch", "develop"}, {"-C", repo, "update-ref", "refs/remotes/origin/develop", "refs/heads/develop"}, {"-C", repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop"}} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	if got := gitDefaultBranch(repo); got != "develop" {
+		t.Fatalf("default branch = %q, want develop", got)
+	}
+	created, err := addWorktree(repo, "feature")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Base(path) != "config.toml" {
-		t.Fatalf("config path = %s", path)
+	if output, err := exec.Command("git", "-C", created.cwd, "merge-base", "--is-ancestor", "develop", "HEAD").CombinedOutput(); err != nil {
+		t.Fatalf("worktree was not based on develop: %v\n%s", err, output)
 	}
-	if err := atomicWrite(path, []byte("# jumpmux\nworktree_backend = \"git\" # native Git\n"), 0o600); err != nil {
-		t.Fatal(err)
+}
+
+func TestAddWorktreeRejectsUnavailableOriginHead(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "repo")
+	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop"}} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
 	}
-	if backend, err := loadWorktreeBackend(); err != nil || backend != backendGit {
-		t.Fatalf("configured backend = %q err=%v", backend, err)
+	if _, err := addWorktree(repo, "feature"); err == nil || !strings.Contains(err.Error(), "not available locally") {
+		t.Fatalf("unavailable origin default error = %v", err)
 	}
-	if err := atomicWrite(path, []byte("worktree_backend = 'wt'\n"), 0o600); err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(filepath.Join(parent, "repo__worktrees")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unavailable-base add created path: %v", err)
 	}
-	if backend, err := loadWorktreeBackend(); err != nil || backend != backendWT {
-		t.Fatalf("literal-string backend = %q err=%v", backend, err)
+}
+
+func TestNativeGitUpdatesRejectUnavailableDefaultBranch(t *testing.T) {
+	parent := t.TempDir()
+	repo, worktree := filepath.Join(parent, "repo"), filepath.Join(parent, "feature")
+	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "feature", worktree}, {"-C", worktree, "commit", "--allow-empty", "-qm", "feature"}, {"-C", repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop"}} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
 	}
-	if err := atomicWrite(path, []byte("worktree_backend = invalid\n"), 0o600); err != nil {
-		t.Fatal(err)
+	for _, operation := range []string{"rebase", "merge"} {
+		if err := updateWorktree(worktree, "feature", operation); err == nil || !strings.Contains(err.Error(), "not available locally") {
+			t.Fatalf("unavailable default %s = %v", operation, err)
+		}
 	}
-	if _, err := loadWorktreeBackend(); err == nil {
-		t.Fatal("unquoted TOML backend was accepted")
-	}
-	if err := atomicWrite(path, []byte("worktree_backend = \"invalid\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadWorktreeBackend(); err == nil {
-		t.Fatal("invalid backend was accepted")
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("worktree changed: %v", err)
 	}
 }
 
@@ -70,7 +98,7 @@ printf '%%7\0374321\037%s\037Pi\037$1\037dev\037@2\037feature\037pi\037%s\036\n'
 	for _, scenario := range []struct{ panePath, marker string }{{worktree, ""}, {parent, worktree}} {
 		t.Setenv("FAKE_PANE_PATH", scenario.panePath)
 		t.Setenv("FAKE_WORKTREE", scenario.marker)
-		if err := removeWorktree(repo, worktree, backendGit); err == nil || !strings.Contains(err.Error(), "tmux pane %7") {
+		if err := removeWorktree(repo, worktree); err == nil || !strings.Contains(err.Error(), "tmux pane %7") {
 			t.Fatalf("worktree in use was removed: %v", err)
 		}
 	}
@@ -92,7 +120,7 @@ func TestWorktreeRemovalRefusesLaunchWorktreeWithoutTmux(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if err := removeWorktree(worktree, worktree, backendGit); err == nil || !strings.Contains(err.Error(), "current worktree") {
+	if err := removeWorktree(worktree, worktree); err == nil || !strings.Contains(err.Error(), "current worktree") {
 		t.Fatalf("launch worktree removal = %v", err)
 	}
 	if _, err := os.Stat(worktree); err != nil {
@@ -141,7 +169,7 @@ func TestCleanupPrunableWorktreeRevalidatesAndPrunes(t *testing.T) {
 	}
 }
 
-func TestRemovalUsesConfirmedBackend(t *testing.T) {
+func TestNativeGitActionsRejectDirtyWorktrees(t *testing.T) {
 	parent := t.TempDir()
 	repo, worktree := filepath.Join(parent, "repo"), filepath.Join(parent, "feature")
 	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "feature", worktree}} {
@@ -149,50 +177,83 @@ func TestRemovalUsesConfirmedBackend(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, output)
 		}
 	}
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	config, err := configPath()
+	if err := os.WriteFile(filepath.Join(worktree, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateWorktree(worktree, "feature", "rebase"); err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
+		t.Fatalf("dirty rebase = %v", err)
+	}
+	if err := removeWorktree(repo, worktree); err == nil {
+		t.Fatal("dirty worktree was removed")
+	}
+	if _, err := os.Stat(worktree); err != nil {
+		t.Fatalf("dirty worktree disappeared: %v", err)
+	}
+}
+
+func TestNativeGitActionsRejectDirtyPrimaryForMerge(t *testing.T) {
+	parent := t.TempDir()
+	repo, worktree := filepath.Join(parent, "repo"), filepath.Join(parent, "feature")
+	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "feature", worktree}, {"-C", worktree, "commit", "--allow-empty", "-qm", "feature"}} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateWorktree(worktree, "feature", "merge"); err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
+		t.Fatalf("dirty merge = %v", err)
+	}
+}
+
+func TestNativeGitRebaseLeavesConflictsOpen(t *testing.T) {
+	parent := t.TempDir()
+	repo, worktree := filepath.Join(parent, "repo"), filepath.Join(parent, "feature")
+	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "feature", worktree}} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	for dir, content := range map[string]string{repo: "main\n", worktree: "feature\n"} {
+		if err := os.WriteFile(filepath.Join(dir, "shared.txt"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := exec.Command("git", "-C", dir, "add", "shared.txt").CombinedOutput(); err != nil {
+			t.Fatalf("git add: %v\n%s", err, output)
+		}
+	}
+	for dir, message := range map[string]string{repo: "main", worktree: "feature"} {
+		if output, err := exec.Command("git", "-C", dir, "commit", "-m", message).CombinedOutput(); err != nil {
+			t.Fatalf("git commit: %v\n%s", err, output)
+		}
+	}
+	if err := updateWorktree(worktree, "feature", "rebase"); err == nil {
+		t.Fatal("conflicting rebase succeeded")
+	}
+	if !gitRebaseInProgress(worktree) {
+		t.Fatal("conflicting rebase was not left open")
+	}
+}
+
+func TestNativeGitMergeRejectsDivergence(t *testing.T) {
+	parent := t.TempDir()
+	repo, worktree := filepath.Join(parent, "repo"), filepath.Join(parent, "feature")
+	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "feature", worktree}, {"-C", worktree, "commit", "--allow-empty", "-qm", "feature"}, {"-C", repo, "commit", "--allow-empty", "-qm", "main-change"}} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	before, err := exec.Command("git", "-C", repo, "rev-parse", "main").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicWrite(config, []byte("worktree_backend = \"git\"\n"), 0o600); err != nil {
-		t.Fatal(err)
+	if err := updateWorktree(worktree, "feature", "merge"); err == nil {
+		t.Fatal("divergent merge succeeded")
 	}
-	bin := t.TempDir()
-	wtLog := filepath.Join(t.TempDir(), "wt.log")
-	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(bin, "wt"), []byte("#!/bin/sh\necho called >>\"$WT_LOG\"\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("WT_LOG", wtLog)
-
-	model := newDashboard(repo)
-	model.width, model.height, model.tab = 100, 20, 1
-	model.worktrees = []item{{kind: "worktree", target: repo, cwd: repo, branch: "main"}, {kind: "worktree", target: worktree, cwd: worktree, branch: "feature"}}
-	model.index = 1
-	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
-	model = updated.(dashboardModel)
-	if model.actionBackend != backendGit {
-		t.Fatalf("confirmed backend = %q", model.actionBackend)
-	}
-	if err := atomicWrite(config, []byte("worktree_backend = \"wt\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if command == nil || updated.(dashboardModel).action != actionRunning {
-		t.Fatal("Enter did not start removal")
-	}
-	message := command().(worktreeActionMsg)
-	if message.err != nil {
-		t.Fatal(message.err)
-	}
-	if _, err := os.Stat(worktree); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("native Git did not remove worktree: %v", err)
-	}
-	if _, err := os.Stat(wtLog); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("Worktrunk ran after Git confirmation: %v", err)
+	after, err := exec.Command("git", "-C", repo, "rev-parse", "main").Output()
+	if err != nil || string(before) != string(after) {
+		t.Fatalf("divergent merge changed main: before=%q after=%q err=%v", before, after, err)
 	}
 }
 
@@ -207,7 +268,14 @@ func TestNativeGitWorktreeActionsKeepBranch(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, output)
 		}
 	}
-	created, err := addWorktree(repo, "feature/test", backendGit)
+	bin := t.TempDir()
+	wtLog := filepath.Join(t.TempDir(), "wt.log")
+	if err := os.WriteFile(filepath.Join(bin, "wt"), []byte("#!/bin/sh\necho called >>\"$WT_LOG\"\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WT_LOG", wtLog)
+	created, err := addWorktree(repo, "feature/test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,12 +286,25 @@ func TestNativeGitWorktreeActionsKeepBranch(t *testing.T) {
 	if _, err := os.Stat(worktree); err != nil {
 		t.Fatalf("created worktree: %v", err)
 	}
-	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\necho 'error connecting to /tmp/tmux-1001/default (No such file or directory)' >&2\nexit 1\n"), 0o755); err != nil {
+	items, err := listWorktreeItems(repo)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("native worktree listing = %#v, %v", items, err)
+	}
+	if got := worktreeGitDetails(items); len(got) != 2 || !got[1].gitLoaded {
+		t.Fatalf("native worktree metadata = %#v", got)
+	}
+	if err := updateWorktree(worktree, "feature/test", "rebase"); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if err := removeWorktree(repo, worktree, backendGit); err != nil {
+	if err := updateWorktree(worktree, "feature/test", "merge"); err != nil {
+		t.Fatal(err)
+	}
+	tmuxBin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmuxBin, "tmux"), []byte("#!/bin/sh\necho 'error connecting to /tmp/tmux-1001/default (No such file or directory)' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmuxBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := removeWorktree(repo, worktree); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(worktree); !errors.Is(err, os.ErrNotExist) {
@@ -232,134 +313,8 @@ func TestNativeGitWorktreeActionsKeepBranch(t *testing.T) {
 	if output, err := exec.Command("git", "-C", repo, "show-ref", "--verify", "refs/heads/feature/test").CombinedOutput(); err != nil {
 		t.Fatalf("native removal deleted branch: %v\n%s", err, output)
 	}
-}
-
-func TestWorktrunkRemovalRefusesDirtyWorktree(t *testing.T) {
-	parent := t.TempDir()
-	repo, worktree := filepath.Join(parent, "repo"), filepath.Join(parent, "feature")
-	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "feature", worktree}} {
-		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, output)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(worktree, "dirty"), []byte("dirty"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	bin, log := t.TempDir(), filepath.Join(t.TempDir(), "wt.log")
-	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(bin, "wt"), []byte("#!/bin/sh\necho called >>\"$WT_LOG\"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("WT_LOG", log)
-	if err := removeWorktree(repo, worktree, backendWT); err == nil || !strings.Contains(err.Error(), "dirty") {
-		t.Fatalf("dirty worktree removal = %v", err)
-	}
-	if _, err := os.Stat(log); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("wt was invoked for dirty worktree: %v", err)
-	}
-}
-
-func TestWorktrunkActionCommands(t *testing.T) {
-	repo := t.TempDir()
-	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.com"}, {"commit", "--allow-empty", "-qm", "base"}} {
-		if output, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, output)
-		}
-	}
-	worktree := filepath.Join(filepath.Dir(repo), "feature")
-	if output, err := exec.Command("git", "-C", repo, "worktree", "add", "-qb", "feature", worktree).CombinedOutput(); err != nil {
-		t.Fatalf("add worktree: %v\n%s", err, output)
-	}
-	bin, log := t.TempDir(), filepath.Join(t.TempDir(), "wt.log")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$WT_LOG\"\n"
-	if err := os.WriteFile(filepath.Join(bin, "wt"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\necho 'error connecting to /tmp/tmux-1001/default (No such file or directory)' >&2\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("WT_LOG", log)
-	created, err := addWorktree(repo, "feature", backendWT)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if created.cwd != worktree || created.branch != "feature" {
-		t.Fatalf("created worktree = %#v", created)
-	}
-	if err := removeWorktree(repo, worktree, backendWT); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(log)
-	if err != nil {
-		t.Fatal(err)
-	}
-	commands := string(data)
-	if !strings.Contains(commands, "-C "+repo+" switch --create feature --no-cd --format=json") || !strings.Contains(commands, "-y -C "+repo+" remove ") || !strings.Contains(commands, "--foreground") {
-		t.Fatalf("worktrunk commands:\n%s", commands)
-	}
-}
-
-func TestWorktrunkRebaseAndMergeActions(t *testing.T) {
-	parent := t.TempDir()
-	repo, worktree := filepath.Join(parent, "repo"), filepath.Join(parent, "feature")
-	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "feature", worktree}} {
-		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, output)
-		}
-	}
-	bin, log := t.TempDir(), filepath.Join(t.TempDir(), "wt.log")
-	if err := os.WriteFile(filepath.Join(bin, "wt"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$WT_LOG\"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("WT_LOG", log)
-	if err := updateWorktree(worktree, "feature", "rebase", false, backendWT); err != nil {
-		t.Fatal(err)
-	}
-	if err := updateWorktree(worktree, "feature", "merge", false, backendWT); err != nil {
-		t.Fatal(err)
-	}
-	if err := updateWorktree(worktree, "feature", "merge", true, backendWT); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(log)
-	if err != nil {
-		t.Fatal(err)
-	}
-	commands := string(data)
-	for _, expected := range []string{"-C " + worktree + " step rebase --format=json", "-C " + worktree + " merge --no-remove --format=json", "-C " + worktree + " merge --no-remove --no-squash --format=json"} {
-		if !strings.Contains(commands, expected) {
-			t.Fatalf("Worktrunk log missing %q:\n%s", expected, commands)
-		}
-	}
-}
-
-func TestWorktrunkMergeRefusesUncommittedChanges(t *testing.T) {
-	parent := t.TempDir()
-	repo, worktree := filepath.Join(parent, "repo"), filepath.Join(parent, "feature")
-	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "feature", worktree}} {
-		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, output)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(worktree, "dirty"), []byte("dirty"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	bin, log := t.TempDir(), filepath.Join(t.TempDir(), "wt.log")
-	if err := os.WriteFile(filepath.Join(bin, "wt"), []byte("#!/bin/sh\necho called >>\"$WT_LOG\"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("WT_LOG", log)
-	if err := updateWorktree(worktree, "feature", "merge", false, backendWT); err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
-		t.Fatalf("dirty Worktrunk merge = %v", err)
-	}
-	if _, err := os.Stat(log); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("Worktrunk ran for dirty merge: %v", err)
+	if data, err := os.ReadFile(wtLog); err == nil && len(data) != 0 {
+		t.Fatalf("wt was invoked: %s", data)
 	}
 }
 
@@ -371,10 +326,10 @@ func TestNativeGitRebaseAndMergeActions(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, output)
 		}
 	}
-	if err := updateWorktree(worktree, "feature", "rebase", false, backendGit); err != nil {
+	if err := updateWorktree(worktree, "feature", "rebase"); err != nil {
 		t.Fatal(err)
 	}
-	if err := updateWorktree(worktree, "feature", "merge", false, backendGit); err != nil {
+	if err := updateWorktree(worktree, "feature", "merge"); err != nil {
 		t.Fatal(err)
 	}
 	mainHead, err := exec.Command("git", "-C", repo, "rev-parse", "main").Output()
@@ -401,7 +356,7 @@ func TestNativeGitMergeRequiresDefaultBranch(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, output)
 		}
 	}
-	if err := updateWorktree(worktree, "feature", "merge", false, backendGit); err == nil || !strings.Contains(err.Error(), "primary worktree is not on main") {
+	if err := updateWorktree(worktree, "feature", "merge"); err == nil || !strings.Contains(err.Error(), "primary worktree is not on main") {
 		t.Fatalf("merge from wrong primary branch = %v", err)
 	}
 	head, err := exec.Command("git", "-C", repo, "branch", "--show-current").Output()
@@ -412,7 +367,7 @@ func TestNativeGitMergeRequiresDefaultBranch(t *testing.T) {
 
 func TestOpenPullRequestCommand(t *testing.T) {
 	repo, bin, log := t.TempDir(), t.TempDir(), filepath.Join(t.TempDir(), "gh.log")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >\"$GH_LOG\"\n"
+	script := "#!/bin/sh\nprintf '%s\n' \"$*\" >\"$GH_LOG\"\n"
 	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -521,16 +476,9 @@ func TestWorktreeRebaseAndMergeMenuActions(t *testing.T) {
 	}
 	model.action = actionNone
 	model.beginWorktreeOperation(model.worktrees[1], actionMergeWorktree)
-	model.actionBackend = backendWT
 	preview := ansi.Strip(model.renderPreview(100))
-	if model.action != actionMergeWorktree || !strings.Contains(preview, "Squash: on") || !strings.Contains(preview, "Needs clean worktrees; keeps it.") {
-		t.Fatalf("merge confirmation = action %v\n%s", model.action, preview)
-	}
-	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
-	model = updated.(dashboardModel)
-	preview = ansi.Strip(model.renderPreview(100))
-	if command != nil || !model.actionNoSquash || !strings.Contains(preview, "Squash: off") {
-		t.Fatalf("no-squash confirmation = action %v noSquash=%v\n%s", model.action, model.actionNoSquash, preview)
+	if !strings.Contains(preview, "Will merge feature") || !strings.Contains(preview, "Fast-forward only") || strings.Contains(preview, "Squash") {
+		t.Fatalf("native merge confirmation = %s", preview)
 	}
 }
 
@@ -572,14 +520,6 @@ func TestDestructiveActionsUseEnterConfirmation(t *testing.T) {
 }
 
 func TestRemovalConfirmationPreviewAndInput(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	path, err := configPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := atomicWrite(path, []byte("worktree_backend = \"git\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	model := newDashboard("/repo")
 	model.width, model.height, model.tab = 100, 20, 1
 	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main"}, {kind: "worktree", target: "/feature", cwd: "/feature", branch: "feature"}}

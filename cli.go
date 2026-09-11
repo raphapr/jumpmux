@@ -252,16 +252,12 @@ func runWorktreeAdd(cwd string, args []string) error {
 	if err != nil {
 		return err
 	}
-	backend, err := actionWorktreeBackend(backendAuto)
-	if err != nil {
-		return err
-	}
 	if !options.detach && !options.json {
 		if err := requireTmuxWorktreeWindow(); err != nil {
 			return err
 		}
 	}
-	created, err := addWorktree(cwd, options.branch, backend)
+	created, err := addWorktree(cwd, options.branch)
 	if err != nil {
 		return err
 	}
@@ -351,19 +347,11 @@ func runDestructiveWorktreeCommand(cwd string, args []string) error {
 	}
 	switch args[0] {
 	case "remove":
-		backend, err := actionWorktreeBackend(backendAuto)
-		if err != nil {
-			return err
-		}
-		return removeWorktree(cwd, selected.cwd, backend)
+		return removeWorktree(cwd, selected.cwd)
 	case "cleanup":
 		return cleanupPrunableWorktree(cwd, selected)
 	case "rebase", "merge":
-		backend, err := actionWorktreeBackend(backendAuto)
-		if err != nil {
-			return err
-		}
-		return updateWorktree(selected.cwd, selected.branch, args[0], false, backend)
+		return updateWorktree(selected.cwd, selected.branch, args[0])
 	}
 	return nil
 }

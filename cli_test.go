@@ -146,13 +146,6 @@ func TestWorktreeListsDegradeWithoutTmux(t *testing.T) {
 func TestWorktreeAddRequiresTmuxBeforeCreation(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	path, err := configPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := atomicWrite(path, []byte("worktree_backend = \"git\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	if err := runWorktreeAdd(t.TempDir(), []string{"feature"}); err == nil || !strings.Contains(err.Error(), "inside tmux") {
 		t.Fatalf("worktree add outside tmux = %v", err)
 	}
@@ -189,13 +182,6 @@ fi
 	t.Setenv("TMUX", "/tmp/test,1,0")
 	t.Setenv("TMUX_META", meta)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	config, err := configPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := atomicWrite(config, []byte("worktree_backend = \"git\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	if err := runWorktreeAdd(repo, []string{"feature"}); err != nil {
 		t.Fatal(err)
 	}

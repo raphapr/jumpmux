@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -15,7 +16,7 @@ func TestDashboardConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicWrite(path, []byte("# jumpmux\nworktree_backend = \"git\"\ntheme = \"teal-drift\"\ndefault_scope = 'session'\nnerdfont = false\n[preview]\nagents = true\nworktrees = false\nsessions = false\n"), 0o600); err != nil {
+	if err := atomicWrite(path, []byte("# jumpmux\ntheme = \"teal-drift\"\ndefault_scope = 'session'\nnerdfont = false\n[preview]\nagents = true\nworktrees = false\nsessions = false\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -23,7 +24,7 @@ func TestDashboardConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.worktreeBackend != backendGit || !config.hasTheme || config.theme != schemeTealDrift || !config.hasDefaultScope || config.defaultScope != scopeSession || !config.hasNerdFont || config.nerdFont || config.preview != [tabCount]bool{true, false, false} {
+	if !config.hasTheme || config.theme != schemeTealDrift || !config.hasDefaultScope || config.defaultScope != scopeSession || !config.hasNerdFont || config.nerdFont || config.preview != [tabCount]bool{true, false, false} {
 		t.Fatalf("config = %#v", config)
 	}
 	model := newDashboardForLaunch("/repo", "")
@@ -41,7 +42,7 @@ func TestDashboardConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "# jumpmux\nworktree_backend = \"git\"\ntheme = \"emberforge\"\ndefault_scope = \"all\"\nnerdfont = false\n[preview]\nagents = true\nworktrees = false\nsessions = false\n"
+	want := "# jumpmux\ntheme = \"emberforge\"\ndefault_scope = \"all\"\nnerdfont = false\n[preview]\nagents = true\nworktrees = false\nsessions = false\n"
 	if string(data) != want {
 		t.Fatalf("saved config = %q, want %q", data, want)
 	}
@@ -60,6 +61,34 @@ func TestDashboardConfigRejectsInvalidPreferences(t *testing.T) {
 		if _, err := loadConfig(); err == nil {
 			t.Fatalf("invalid config was accepted: %q", config)
 		}
+	}
+}
+
+func TestLegacyWorktreeBackendIsRejected(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	path, err := configPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"auto", "wt", "git"} {
+		data := []byte("worktree_backend = \"" + value + "\"\n")
+		if err := atomicWrite(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "remove this setting") {
+			t.Fatalf("legacy %s config error = %v", value, err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != string(data) {
+			t.Fatalf("legacy %s config changed: %q, %v", value, got, err)
+		}
+	}
+	valid := []byte("# worktree_backend is retired\nsessions = \"worktree_backend\"\n")
+	if err := atomicWrite(path, valid, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadConfig(); err != nil {
+		t.Fatalf("unrelated legacy text rejected: %v", err)
 	}
 }
 

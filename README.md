@@ -39,7 +39,7 @@ Browse configured locations, discovered repositories, and live tmux sessions wit
 - git
 - tmux
 - [Pi](https://pi.dev) 0.84.4+
-- Optional: [Nerd Font](https://www.nerdfonts.com/), [Worktrunk](https://worktrunk.dev/), [GitHub CLI](https://cli.github.com/)
+- Optional: [Nerd Font](https://www.nerdfonts.com/), [GitHub CLI](https://cli.github.com/)
 
 ## Install
 

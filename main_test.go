@@ -178,17 +178,15 @@ func TestCountFileLinesFIFOReturnsPromptly(t *testing.T) {
 	}
 }
 
-func TestWorktrunkDefaultBranch(t *testing.T) {
-	bin := t.TempDir()
-	script := `#!/bin/sh
-printf '%s\n' '{"schema":2,"repo":{"default_branch":"develop"},"items":[]}'
-`
-	if err := os.WriteFile(filepath.Join(bin, "wt"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
+func TestGitDefaultBranch(t *testing.T) {
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init", "-q", "-b", "master", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
 	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if got := worktrunkDefaultBranch(t.TempDir()); got != "develop" {
-		t.Fatalf("default branch = %q, want develop", got)
+	if got := gitDefaultBranch(repo); got != "master" {
+		t.Fatalf("default branch = %q, want master", got)
 	}
 }
 

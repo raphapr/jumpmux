@@ -12,7 +12,6 @@ import (
 )
 
 type jumpmuxConfig struct {
-	worktreeBackend worktreeBackend
 	theme           colorScheme
 	defaultScope    scopeMode
 	nerdFont        bool
@@ -23,12 +22,11 @@ type jumpmuxConfig struct {
 }
 
 type configFile struct {
-	WorktreeBackend *string        `toml:"worktree_backend"`
-	Theme           *string        `toml:"theme"`
-	DefaultScope    *string        `toml:"default_scope"`
-	NerdFont        *bool          `toml:"nerdfont"`
-	Preview         *previewConfig `toml:"preview"`
-	Sessions        any            `toml:"sessions"`
+	Theme        *string        `toml:"theme"`
+	DefaultScope *string        `toml:"default_scope"`
+	NerdFont     *bool          `toml:"nerdfont"`
+	Preview      *previewConfig `toml:"preview"`
+	Sessions     any            `toml:"sessions"`
 }
 
 type previewConfig struct {
@@ -39,8 +37,7 @@ type previewConfig struct {
 
 func loadConfig() (jumpmuxConfig, error) {
 	config := jumpmuxConfig{
-		worktreeBackend: backendAuto,
-		preview:         [tabCount]bool{true, true, true},
+		preview: [tabCount]bool{true, true, true},
 	}
 	path, err := configPath()
 	if err != nil {
@@ -59,7 +56,7 @@ func loadConfig() (jumpmuxConfig, error) {
 	if err := decoder.Decode(&file); err != nil {
 		var unknown *toml.StrictMissingError
 		if !errors.As(err, &unknown) {
-			for _, key := range []string{"worktree_backend", "theme", "default_scope"} {
+			for _, key := range []string{"theme", "default_scope"} {
 				if strings.Contains(string(data), key+" =") {
 					return config, fmt.Errorf("%s: %s must be a quoted TOML string", path, key)
 				}
@@ -68,6 +65,9 @@ func loadConfig() (jumpmuxConfig, error) {
 		}
 		for _, detail := range unknown.Errors {
 			key := detail.Key()
+			if len(key) > 0 && key[0] == "worktree_backend" {
+				return config, fmt.Errorf("%s: worktree_backend is no longer supported; remove this setting", path)
+			}
 			if len(key) == 0 {
 				continue
 			}
@@ -78,12 +78,6 @@ func loadConfig() (jumpmuxConfig, error) {
 		}
 	}
 
-	if file.WorktreeBackend != nil {
-		config.worktreeBackend = worktreeBackend(*file.WorktreeBackend)
-		if config.worktreeBackend != backendAuto && config.worktreeBackend != backendWT && config.worktreeBackend != backendGit {
-			return config, fmt.Errorf("invalid worktree_backend %q", *file.WorktreeBackend)
-		}
-	}
 	if file.Theme != nil {
 		config.theme = colorSchemeFromSlug(*file.Theme)
 		if config.theme.slug() != strings.ToLower(*file.Theme) {
@@ -116,11 +110,6 @@ func configPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(config, "jumpmux", "config.toml"), nil
-}
-
-func loadWorktreeBackend() (worktreeBackend, error) {
-	config, err := loadConfig()
-	return config.worktreeBackend, err
 }
 
 func saveConfigValue(key, value string) error {

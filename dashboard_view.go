@@ -606,17 +606,10 @@ func (m dashboardModel) removePreviewLines() []string {
 		}
 	}
 	if m.action == actionMergeWorktree {
-		mode := "off (native Git)"
-		if m.actionBackend == backendWT {
-			mode = "on (s toggles)"
-			if m.actionNoSquash {
-				mode = "off (s toggles)"
-			}
-		}
 		return []string{
 			"Will merge " + safeText(m.actionTarget.branch) + " into the local default branch.",
 			"Needs clean worktrees; keeps it.",
-			"Squash: " + mode,
+			"Fast-forward only; commits stay intact.",
 			"Enter Merge    Esc Cancel",
 		}
 	}
@@ -634,13 +627,9 @@ func (m dashboardModel) removePreviewLines() []string {
 			"Enter Remove    Esc Cancel",
 		}
 	}
-	behavior := "The branch stays."
-	if m.actionBackend == backendWT {
-		behavior = "Worktrunk removal follows wt remove semantics."
-	}
 	return []string{
 		"Will remove worktree " + safeText(compactHome(m.actionTarget.cwd)) + ".",
-		behavior,
+		"The branch stays.",
 		"Enter Remove    Esc Cancel",
 	}
 }
@@ -679,13 +668,6 @@ func (m dashboardModel) renderFooter(width int) string {
 			verb = "Merge"
 		}
 		footer := "  " + warningStyle.Render(verb+" "+safeText(name)+"?") + "  " + footerCommand(key, verb)
-		if m.action == actionMergeWorktree && m.actionBackend == backendWT {
-			mode := "on"
-			if m.actionNoSquash {
-				mode = "off"
-			}
-			footer += " " + footerCommand("s", "Squash "+mode)
-		}
 		return padANSI(footer+" "+footerCommand("Esc", "Cancel"), width)
 	case actionRunning:
 		return padANSI("  "+infoStyle.Render("Working…"), width)
@@ -806,8 +788,6 @@ func (m dashboardModel) dashboardErrorText(err error) string {
 	switch text {
 	case "":
 		return "Something went wrong"
-	case "worktree_backend is wt but wt is not installed":
-		return "Install `wt` or select Git"
 	case "the selected worktree is not safe to clean up":
 		return "This worktree cannot be cleaned up"
 	case "the selected worktree cannot be rebased or merged":
@@ -869,7 +849,7 @@ func (m dashboardModel) dashboardErrorText(err error) string {
 	case strings.HasPrefix(text, "tmux returned invalid window ID "):
 		return "Could not create tmux window"
 	}
-	if strings.HasPrefix(text, "tmux ") || strings.HasPrefix(text, "git ") || strings.HasPrefix(text, "jumpmux ") || strings.HasPrefix(text, "wt ") {
+	if strings.HasPrefix(text, "tmux ") || strings.HasPrefix(text, "git ") || strings.HasPrefix(text, "jumpmux ") {
 		return text
 	}
 	runes := []rune(text)

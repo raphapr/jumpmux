@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -101,16 +100,6 @@ type fileLineCount struct {
 	size    int64
 	modTime time.Time
 	lines   int
-}
-
-var defaultBranchCache = struct {
-	sync.Mutex
-	values map[string]cachedDefaultBranch
-}{values: map[string]cachedDefaultBranch{}}
-
-type cachedDefaultBranch struct {
-	branch  string
-	expires time.Time
 }
 
 func boundedCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -252,7 +241,7 @@ func worktreeGitDetails(items []item) []item {
 	if len(items) == 0 {
 		return items
 	}
-	baseBranch := worktrunkDefaultBranch(items[0].cwd)
+	baseBranch := gitDefaultBranch(items[0].cwd)
 	loadGitDetailsParallel(items, func(item item) item { return loadGitDetails(item, baseBranch) })
 	return items
 }
@@ -268,7 +257,7 @@ func agentGitDetails(agents []item) []item {
 		items = append(items, item{kind: "worktree", target: agent.cwd, cwd: agent.cwd})
 	}
 	loadGitDetailsParallel(items, func(item item) item {
-		item = loadGitDetails(item, worktrunkDefaultBranch(item.cwd))
+		item = loadGitDetails(item, gitDefaultBranch(item.cwd))
 		if !item.gitLoaded {
 			item.gitLoaded = true
 			return item
@@ -327,6 +316,11 @@ func loadGitDetails(item item, baseBranch string) item {
 	if item.baseBranch == "" {
 		item.baseBranch = gitDefaultBranch(item.cwd)
 	}
+	if item.baseBranch != "" {
+		if _, err := gitOutput(item.cwd, "show-ref", "--verify", "--quiet", "refs/heads/"+item.baseBranch); err != nil {
+			item.baseBranch = ""
+		}
+	}
 	item.added, item.removed = diffStats(item.cwd)
 	untrackedAdded, untracked := untrackedStats(item.cwd)
 	item.added += untrackedAdded
@@ -356,38 +350,6 @@ func parseGitStatus(output string) (branch string, ahead, behind int, dirty bool
 	return branch, ahead, behind, dirty
 }
 
-func worktrunkDefaultBranch(dir string) string {
-	defaultBranchCache.Lock()
-	cached, ok := defaultBranchCache.values[dir]
-	defaultBranchCache.Unlock()
-	if ok && time.Now().Before(cached.expires) {
-		return cached.branch
-	}
-
-	branch := ""
-	ctx, cancel := context.WithTimeout(context.Background(), metadataTimeout)
-	defer cancel()
-	command := boundedCommand(ctx, "wt", "-C", dir, "--config-set", "list.json-schema=2", "list", "--format=json")
-	command.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
-	if output, err := command.Output(); err == nil {
-		var listing struct {
-			Repo struct {
-				DefaultBranch string `json:"default_branch"`
-			} `json:"repo"`
-		}
-		if json.Unmarshal(output, &listing) == nil {
-			branch = listing.Repo.DefaultBranch
-		}
-	}
-	if branch == "" {
-		branch = gitDefaultBranch(dir)
-	}
-	defaultBranchCache.Lock()
-	defaultBranchCache.values[dir] = cachedDefaultBranch{branch: branch, expires: time.Now().Add(time.Minute)}
-	defaultBranchCache.Unlock()
-	return branch
-}
-
 func gitDefaultBranch(dir string) string {
 	if head, err := gitOutput(dir, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil {
 		if _, name, ok := strings.Cut(strings.TrimSpace(head), "/"); ok && name != "" {
@@ -399,7 +361,18 @@ func gitDefaultBranch(dir string) string {
 			return candidate
 		}
 	}
-	return "main"
+	return ""
+}
+
+func requiredDefaultBranch(dir string) (string, error) {
+	branch := gitDefaultBranch(dir)
+	if branch == "" {
+		return "", errors.New("cannot identify a local default branch; set origin/HEAD or create a local main or master branch")
+	}
+	if _, err := gitOutput(dir, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
+		return "", fmt.Errorf("default branch %q is not available locally; check out or fetch that branch before continuing", branch)
+	}
+	return branch, nil
 }
 
 func gitRebaseInProgress(dir string) bool {
