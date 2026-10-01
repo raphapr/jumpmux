@@ -27,7 +27,7 @@
 | Type in the theme picker                  | Filter theme names                                                     |
 | `Enter` while filtering                   | Accept an Agents/Worktrees filter or open a Session                    |
 | `Esc` while filtering                     | Clear and close the filter                                             |
-| Agents: `o`, `d`, `p`, `m`                | Open, diff, open PR when available, or mark an unseen completion seen  |
+| Agents: `o`, `d`, `p`, `m`, `r`           | Open, diff, open PR, mark an unseen completion seen, or remove         |
 | Worktrees: `a`, `o`, `d`, `p`             | Add, open, diff, or open PR when available                             |
 | Worktrees: `b`, `m`, `x`, `r`             | Rebase, merge, clean up, or remove; `Enter` confirms                   |
 | Sessions: `O`, `Ctrl+r`, `P`              | Open, remove (`Enter` confirms), or switch to the previous session     |
@@ -50,6 +50,10 @@ The Pi extension writes agent status records. Before displaying a record, jumpmu
 `jumpmux agent list` shows live Pi agents, and `jumpmux agent open <session-id|pane-id>` focuses one. Session IDs that identify more than one pane are ambiguous; use a pane ID.
 
 A completion is seen when its pane is focused or explicitly marked seen from the dashboard. On an unseen completed agent, press `m` directly or choose Mark seen from `Space`. Acknowledgement clears its tmux completion marker.
+
+To close an agent, press `r` or choose Remove agent from `Space`, then press `Enter`. jumpmux first checks that the pane still runs the same Pi session, then closes the pane. Panes split next to Pi survive, and tmux closes the window only when Pi was its last pane. The worktree and branch stay.
+
+Agent status also appears in the tmux window list. jumpmux adds a marker to the global `window-status-format` and `window-status-current-format`, or to a window's own format when that window sets one. Reloading the tmux configuration drops the marker until the next agent update. While a completion is unseen, jumpmux also sets global focus hooks at index `987654` and removes them once every completion is seen.
 
 `jumpmux worktree add <branch> [--detach] [--json]` creates a normal worktree. Without `--detach` or `--json`, it opens a new tmux shell in the worktree. `--detach` prints its path, and `--json` returns the worktree resource.
 
@@ -74,7 +78,7 @@ Live previews capture the active pane every 500 ms, including alternate-screen p
 
 jumpmux merges rows with the same name. Configured paths take precedence; live-only rows use the active pane path. Rows appear in three groups: live, configured, and discovered. Each group sorts by name. Press `Ctrl+g` to sort by the `Last` column until jumpmux exits. Searches sort by fuzzy match score.
 
-Press `Space` for actions available on the selected row. Press the shown key from the table or menu, or select an action and press `Enter`. The Sessions `P` action switches to the previous session even when no row is selected. Opening a selected row, adding a worktree, or switching to the previous session exits the dashboard; failures leave it open. Worktree actions include add, open, diff, PR, rebase, merge, cleanup, and removal. Worktree rebase and merge use native Git against the local default branch. Merge is fast-forward-only, requires clean worktrees and the primary worktree on the default branch, preserves commits, and keeps the worktree. Existing `worktree_backend` settings are unsupported and must be removed. Removing a live session does not delete its configured entry.
+Press `Space` for actions available on the selected row. Press the shown key from the table or menu, or select an action and press `Enter`. The Sessions `P` action switches to the previous session even when no row is selected. Opening a selected row, adding a worktree, or switching to the previous session exits the dashboard; failures leave it open. Worktree actions include add, open, diff, PR, rebase, merge, cleanup, and removal. Worktree rebase and merge use native Git against the local default branch. Merge is fast-forward-only and runs in the worktree that has the default branch checked out. It requires both worktrees to be clean, preserves commits, and keeps the worktree. In a bare repository layout, the bare directory is not listed. Existing `worktree_backend` settings are unsupported and must be removed. Removing a live session does not delete its configured entry.
 
 ### Git
 
