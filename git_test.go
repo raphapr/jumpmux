@@ -132,13 +132,33 @@ func TestGitFailuresAreNotRenderedAsClean(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	item := item{kind: "worktree", target: "/repo", cwd: "/repo"}
-	status := loadWorktreeStatus(item, schemeDefault, 1)().(worktreeStatusMsg)
-	log := loadWorktreeLog(item, schemeDefault, 1)().(worktreeLogMsg)
+	status := loadWorktreeStatus(item, 1)().(worktreeStatusMsg)
+	log := loadWorktreeLog(item, 1)().(worktreeLogMsg)
 	if status.err == nil || log.err == nil || strings.Contains(status.err.Error(), "\x1b") || strings.Contains(log.err.Error(), "\x1b") {
 		t.Fatalf("preview Git failures were not sanitized: status=%v log=%v", status.err, log.err)
 	}
 	diff := loadDiff(item, 1)().(diffMsg)
 	if len(diff.lines) != 1 || strings.Contains(diff.lines[0], "\x1b") || !strings.Contains(diff.lines[0], "Git unavailable") {
 		t.Fatalf("diff hid Git failure: %#v", diff)
+	}
+}
+
+func TestGitDetailsWithoutDefaultBranchReportNoConflict(t *testing.T) {
+	parent := t.TempDir()
+	repo, feature := filepath.Join(parent, "repo"), filepath.Join(parent, "feature")
+	for _, args := range [][]string{{"init", "-q", "-b", "trunk", repo}, {"-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "feature", feature}} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	items, err := listWorktreeItems(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Without origin/HEAD, main, or master there is no base to conflict with.
+	for _, detail := range worktreeGitDetails(items) {
+		if !detail.gitLoaded || detail.baseBranch != "" || detail.hasConflict {
+			t.Fatalf("no default branch = %#v", detail)
+		}
 	}
 }

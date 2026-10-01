@@ -48,6 +48,7 @@ type item struct {
 	title            string
 	updated          time.Time
 	current          bool
+	primary          bool
 	dirty            bool
 	gitLoaded        bool
 	branch           string
@@ -87,6 +88,7 @@ type item struct {
 type worktree struct {
 	path     string
 	branch   string
+	bare     bool
 	locked   bool
 	prunable bool
 }
@@ -205,11 +207,11 @@ func collectItemsFor(cwd string) ([]item, error) {
 	items = worktreePRDetails(cwd, items)
 
 	agents, err := listLiveAgents()
-	if err != nil && !tmuxUnavailable(err) {
+	if err != nil {
 		return nil, err
 	}
 	attachAgentsToWorktrees(items, agents)
-	if err := attachTmuxWorktrees(items); err != nil && !tmuxUnavailable(err) {
+	if err := attachTmuxWorktrees(items); err != nil {
 		return nil, err
 	}
 	return append(items, agents...), nil
@@ -221,7 +223,11 @@ func listWorktreeItems(cwd string) ([]item, error) {
 		return nil, err
 	}
 	items := make([]item, 0, len(worktrees))
-	for _, wt := range worktrees {
+	for index, wt := range worktrees {
+		// A bare repository has no working tree to show or act on.
+		if wt.bare {
+			continue
+		}
 		items = append(items, item{
 			kind:     "worktree",
 			target:   wt.path,
@@ -229,6 +235,7 @@ func listWorktreeItems(cwd string) ([]item, error) {
 			branch:   wt.branch,
 			title:    wt.branch,
 			current:  samePath(wt.path, current),
+			primary:  index == 0,
 			locked:   wt.locked,
 			prunable: wt.prunable,
 		})
@@ -325,7 +332,7 @@ func loadGitDetails(item item, baseBranch string) item {
 	untrackedAdded, untracked := untrackedStats(item.cwd)
 	item.added += untrackedAdded
 	item.untracked = untracked
-	if item.branch != item.baseBranch {
+	if item.baseBranch != "" && item.branch != item.baseBranch {
 		item.committedAdded, item.committedRemoved = diffStatsRange(item.cwd, item.baseBranch+"...HEAD")
 		item.hasConflict = gitHasConflict(item.cwd, item.baseBranch)
 	}
@@ -422,12 +429,12 @@ func untrackedStats(dir string) (lines, files int) {
 			lines++
 			continue
 		}
-		lines += countFileLines(path, info)
+		lines += countFileLines(path)
 	}
 	return lines, files
 }
 
-func countFileLines(path string, _ os.FileInfo) int {
+func countFileLines(path string) int {
 	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return 0
@@ -588,6 +595,8 @@ func parseWorktrees(output []byte) []worktree {
 			current.path = strings.TrimPrefix(value, "worktree ")
 		case strings.HasPrefix(value, "branch refs/heads/"):
 			current.branch = strings.TrimPrefix(value, "branch refs/heads/")
+		case value == "bare":
+			current.bare = true
 		case strings.HasPrefix(value, "locked"):
 			current.locked = true
 		case strings.HasPrefix(value, "prunable"):

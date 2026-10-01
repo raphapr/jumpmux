@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -191,5 +192,83 @@ fi
 	}
 	if _, err := os.Stat(worktree); err != nil {
 		t.Fatalf("created worktree is missing: %v", err)
+	}
+}
+
+func TestDestructiveWorktreeCommandsConfirmBeforeRemoving(t *testing.T) {
+	writeFakeTmux(t, "echo 'no server running on /tmp/tmux-test' >&2\nexit 1\n")
+	invalidateTmuxPaneCache()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TMUX", "")
+	parent := t.TempDir()
+	repo, feature := filepath.Join(parent, "repo"), filepath.Join(parent, "feature")
+	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "feature", feature}} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	// A script's stdin is not a terminal, so it must pass --yes instead of answering a prompt.
+	stdin, err := os.CreateTemp(t.TempDir(), "stdin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousStdin := os.Stdin
+	os.Stdin = stdin
+	defer func() {
+		os.Stdin = previousStdin
+		_ = stdin.Close()
+	}()
+	for args, want := range map[string]string{
+		"remove " + feature:                                  "rerun with --yes",
+		"remove --yes " + feature:                            "--yes must be last",
+		"remove " + filepath.Join(parent, "gone") + " --yes": "not found",
+		"cleanup " + feature + " --yes":                      "cannot be cleaned up",
+	} {
+		if err := runWorktreeCommand(repo, strings.Fields(args)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("worktree %s = %v, want %q", args, err, want)
+		}
+	}
+	if _, err := os.Stat(feature); err != nil {
+		t.Fatalf("rejected commands changed the worktree: %v", err)
+	}
+	if err := runWorktreeCommand(repo, []string{"remove", feature, "--yes"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(feature); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("confirmed removal kept the worktree: %v", err)
+	}
+}
+
+func TestRequiredAgentRejectsAmbiguousSessionID(t *testing.T) {
+	writeFakeTmux(t, `
+case "$1" in
+  list-panes) printf '%%7\0371\037/repo\037Pi\037$1\037dev\037@1\037a\037pi\037\036%%8\0372\037/repo\037Pi\037$1\037dev\037@2\037b\037pi\037\036' ;;
+esac
+`)
+	t.Setenv("TMUX", "/tmp/ambiguous-agent,1,0")
+	t.Setenv("JUMPMUX_STATE_DIR", t.TempDir())
+	invalidateTmuxPaneCache()
+	// Two panes can resume the same Pi session, so only a pane ID is unambiguous.
+	for pane, pid := range map[string]string{"%7": "1", "%8": "2"} {
+		path, err := agentStatePath(pane)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.Marshal(agentState{Pane: pane, PanePID: pid, PaneCommand: "pi", SessionID: "shared", Status: "working"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := atomicWrite(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := requiredAgent("shared"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("shared session ID = %v", err)
+	}
+	if agent, err := requiredAgent("%8"); err != nil || agent.pane != "%8" {
+		t.Fatalf("pane ID lookup = %#v, %v", agent, err)
+	}
+	if _, err := requiredAgent("missing"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("missing agent = %v", err)
 	}
 }

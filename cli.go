@@ -104,18 +104,24 @@ func cliItems(kind, cwd string) ([]item, error) {
 	case "agents":
 		return listLiveAgents()
 	case "sessions":
-		return listSessions(true)
+		sessions, err := listSessions(true)
+		if err != nil && sessions != nil {
+			// Discovery failed, but configured and live sessions still work.
+			fmt.Fprintln(os.Stderr, "jumpmux:", err)
+			err = nil
+		}
+		return sessions, err
 	case "worktrees":
 		items, err := listWorktreeItems(cwd)
 		if err != nil {
 			return nil, err
 		}
 		agents, err := listLiveAgents()
-		if err != nil && !tmuxUnavailable(err) {
+		if err != nil {
 			return nil, err
 		}
 		attachAgentsToWorktrees(items, agents)
-		if err := attachTmuxWorktrees(items); err != nil && !tmuxUnavailable(err) {
+		if err := attachTmuxWorktrees(items); err != nil {
 			return nil, err
 		}
 		return items, nil
@@ -151,7 +157,7 @@ func listContext(kind, cwd string, args []string) error {
 
 func findItem(items []item, id string) (item, bool) {
 	for _, item := range items {
-		if item.target == id || (item.kind == "session" && item.agentSessionID != "" && item.agentSessionID == id) {
+		if item.target == id || (item.kind == "session" && item.agentSessionID != "" && item.agentSessionID == id) || (item.kind == "tmux-session" && item.target == tmuxSessionName(id)) {
 			return item, true
 		}
 	}

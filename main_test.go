@@ -165,12 +165,8 @@ func TestCountFileLinesFIFOReturnsPromptly(t *testing.T) {
 	if err := exec.Command("mkfifo", fifo).Run(); err != nil {
 		t.Skip("mkfifo unavailable")
 	}
-	info, err := os.Lstat(fifo)
-	if err != nil {
-		t.Fatal(err)
-	}
 	done := make(chan int, 1)
-	go func() { done <- countFileLines(fifo, info) }()
+	go func() { done <- countFileLines(fifo) }()
 	select {
 	case <-done:
 	case <-time.After(time.Second):

@@ -74,7 +74,7 @@ func TestPreviewFailedChecksAndWorktreeIndicators(t *testing.T) {
 	if pr.Check != checkFailure || strings.Join(pr.FailedChecks, ",") != "unit,lint" {
 		t.Fatalf("failed checks = %#v", pr)
 	}
-	preview := worktreePreview(item{kind: "worktree", target: "/repo", cwd: "/repo", branch: "feature", prCheck: checkFailure, prFailedChecks: pr.FailedChecks, locked: true, prunable: true}, schemeDefault, 1)
+	preview := worktreePreview(item{kind: "worktree", target: "/repo", cwd: "/repo", branch: "feature", prCheck: checkFailure, prFailedChecks: pr.FailedChecks, locked: true, prunable: true}, 1)
 	plain := ansi.Strip(strings.Join(preview.lines, "\n"))
 	for _, want := range []string{"Failed checks: unit, lint", "LOCK", "PRUNE"} {
 		if !strings.Contains(plain, want) {
@@ -102,7 +102,7 @@ func TestPreviewFailedChecksAndWorktreeIndicators(t *testing.T) {
 		t.Fatalf("rendering mutated raw preview lines: %q", got)
 	}
 	writeFakeTmux(t, "printf '1\\t4\\nfirst\\nsecond\\nthird\\nfourth\\n'")
-	message := loadAgentPreview(item{kind: "session", target: "%1", pane: "%1", prCheck: checkFailure, prFailedChecks: pr.FailedChecks}, schemeDefault, 1)().(previewMsg)
+	message := loadAgentPreview(item{kind: "session", target: "%1", pane: "%1", prCheck: checkFailure, prFailedChecks: pr.FailedChecks}, 1)().(previewMsg)
 	if !strings.Contains(ansi.Strip(strings.Join(message.lines, "\n")), "Failed checks: unit, lint") {
 		t.Fatalf("agent preview omitted failed checks: %#v", message.lines)
 	}
@@ -186,32 +186,17 @@ func TestAgentActionMenu(t *testing.T) {
 }
 
 func TestDashboardErrorText(t *testing.T) {
-	tests := []struct {
-		name string
-		tab  int
-		err  string
-		want string
-	}{
-		{"stale worktree", tabWorktrees, "the selected worktree changed; refresh and try again", "Worktree changed. Refresh and retry"},
-		{"dirty merge", tabWorktrees, "cannot merge with uncommitted changes in ~/repo", "Commit or stash changes in ~/repo first"},
-		{"wrong branch", tabWorktrees, "cannot merge: primary worktree is not on main", "Switch the primary worktree to main first"},
-		{"open pane", tabWorktrees, "cannot remove worktree open in tmux pane %7", "Close tmux pane %7 before removing"},
-		{"closed session", tabSessions, "the selected tmux session is no longer open", "Session closed. Refresh to update"},
-		{"agent state", tabAgents, "agent state is unavailable: missing file", "Agent state unavailable. Refresh and retry"},
-		{"tmux required", tabAgents, "run jumpmux inside tmux to jump to a pane", "Run jumpmux inside tmux"},
-		{"agent panes", tabAgents, "tmux returned a malformed pane record", "Could not read tmux panes"},
-		{"session panes", tabSessions, "tmux returned a malformed pane record", "Could not read tmux sessions"},
-		{"fallback", tabAgents, "failed action", "Failed action"},
-		{"brand", tabAgents, "tmux list-panes: failed", "tmux list-panes: failed"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			model := newDashboard("/repo")
-			model.tab = test.tab
-			if got := model.dashboardErrorText(errors.New(test.err)); got != test.want {
-				t.Fatalf("dashboard error = %q, want %q", got, test.want)
-			}
-		})
+	for err, want := range map[string]string{
+		"worktree changed; refresh and retry": "Worktree changed; refresh and retry",
+		"close tmux pane %7 before removing":  "Close tmux pane %7 before removing",
+		"multi\nline\terror":                  "Multi line error",
+		"tmux list-panes: failed":             "tmux list-panes: failed",
+		"git status: fatal: bad object":       "git status: fatal: bad object",
+		"":                                    "Something went wrong",
+	} {
+		if got := dashboardErrorText(errors.New(err)); got != want {
+			t.Fatalf("dashboard error %q = %q, want %q", err, got, want)
+		}
 	}
 }
 
@@ -398,5 +383,79 @@ func TestPrunableCleanupAndErrorPersistence(t *testing.T) {
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if updated.(dashboardModel).err != nil {
 		t.Fatal("Esc did not clear action error")
+	}
+}
+
+func TestErrorFooterOffersDismissOnlyWhenEscClears(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height, model.tab = 100, 24, tabWorktrees
+	model.worktreesLoaded, model.worktreeErr = true, errors.New("git rev-parse: fatal: broken")
+	// Esc quits on refresh errors, so offering Dismiss would quit the dashboard.
+	if footer := ansi.Strip(model.renderFooter(100)); strings.Contains(footer, "Dismiss") || !strings.Contains(footer, "q Quit") {
+		t.Fatalf("refresh error footer = %q", footer)
+	}
+	model.err = errors.New("failed action")
+	if footer := ansi.Strip(model.renderFooter(100)); !strings.Contains(footer, "Esc Dismiss") {
+		t.Fatalf("action error footer = %q", footer)
+	}
+}
+
+func TestAgentRemoveActionConfirmsThenRefreshes(t *testing.T) {
+	model := newDashboard("/repo")
+	model.width, model.height, model.tab, model.agentsLoaded = 120, 30, tabAgents, true
+	model.agents = []item{{kind: "session", target: "%7", pane: "%7", title: "π - Fix login", status: "working", agentSessionID: "session-id"}}
+	if !slices.ContainsFunc(model.actionMenuEntries(), func(entry actionMenuEntry) bool {
+		return entry.action == menuRemove && entry.key == "r" && entry.label == "Remove agent"
+	}) {
+		t.Fatalf("agent menu = %#v", model.actionMenuEntries())
+	}
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	model = updated.(dashboardModel)
+	view := ansi.Strip(model.View())
+	if model.action != actionRemoveAgent || model.actionTarget.pane != "%7" || !strings.Contains(view, "Will close Pi in tmux pane %7.") || !strings.Contains(view, "Remove π - Fix login?") {
+		t.Fatalf("agent removal confirmation = %d:\n%s", model.action, view)
+	}
+	if cancelled, _ := model.Update(tea.KeyMsg{Type: tea.KeyEsc}); cancelled.(dashboardModel).action != actionNone {
+		t.Fatal("Esc did not cancel agent removal")
+	}
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(dashboardModel)
+	if model.action != actionRunning || command == nil {
+		t.Fatalf("Enter did not start agent removal: action=%d", model.action)
+	}
+	model.agentsInFlight = false
+	updated, command = model.Update(worktreeActionMsg{action: actionRemoveAgent, notice: "Removed agent in pane %7"})
+	model = updated.(dashboardModel)
+	if model.action != actionNone || !model.agentsInFlight || command == nil || model.notice == "" {
+		t.Fatalf("agent removal did not refresh agents: action=%d inFlight=%v notice=%q", model.action, model.agentsInFlight, model.notice)
+	}
+}
+
+func TestConfirmedActionsDispatchToTheirOperation(t *testing.T) {
+	// No tmux server and no Git repository, so every operation fails before changing anything.
+	writeFakeTmux(t, "echo 'no server running on /tmp/tmux-test' >&2\nexit 1\n")
+	invalidateTmuxPaneCache()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TMUX", "")
+	dir := t.TempDir()
+	for action, want := range map[dashboardAction][2]string{
+		actionRemoveSession:   {"Removed session dev", "no server running"},
+		actionRemoveAgent:     {"Removed agent in pane %7", "no server running"},
+		actionCleanupWorktree: {"Cleaned up stale worktree record", "not a git repository"},
+		actionRebaseWorktree:  {"Rebased feature", "not a git repository"},
+		actionMergeWorktree:   {"Merged feature", "not a git repository"},
+		actionRemoveWorktree:  {"Removed worktree feature", "not a git repository"},
+	} {
+		model := newDashboard(dir)
+		model.action = action
+		model.actionTarget = item{kind: "worktree", target: "dev", title: "dev", cwd: dir, branch: "feature", pane: "%7", muxSessionID: "$1", prunable: true}
+		updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		if updated.(dashboardModel).action != actionRunning || command == nil {
+			t.Fatalf("Enter did not start action %d", action)
+		}
+		message, ok := command().(worktreeActionMsg)
+		if !ok || message.action != action || message.notice != want[0] || message.err == nil || !strings.Contains(strings.ToLower(message.err.Error()), want[1]) {
+			t.Fatalf("action %d dispatched %#v", action, message)
+		}
 	}
 }

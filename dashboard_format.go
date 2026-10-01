@@ -182,14 +182,14 @@ func projectName(path string) string {
 
 func worktreeName(path string) string { return filepath.Base(filepath.Clean(path)) }
 
-type prStatusSpan struct {
+type statusSpan struct {
 	text  string
 	style lipgloss.Style
 }
 
-func prStatusSpans(item item, now time.Time) []prStatusSpan {
+func prStatusSpans(item item, now time.Time) []statusSpan {
 	if item.prNumber == 0 {
-		return []prStatusSpan{{text: "-", style: mutedStyle}}
+		return []statusSpan{{text: "-", style: mutedStyle}}
 	}
 	icon, style := dashboardIcon(prOpenIcon, "O"), successStyle
 	if item.prDraft {
@@ -202,14 +202,14 @@ func prStatusSpans(item item, now time.Time) []prStatusSpan {
 			icon, style = dashboardIcon(prClosedIcon, "X"), dangerStyle
 		}
 	}
-	spans := []prStatusSpan{{text: fmt.Sprintf("#%d", item.prNumber), style: style}, {text: icon, style: style}}
+	spans := []statusSpan{{text: fmt.Sprintf("#%d", item.prNumber), style: style}, {text: icon, style: style}}
 	switch item.prCheck {
 	case checkSuccess:
-		spans = append(spans, prStatusSpan{text: dashboardIcon(checkSuccessIcon, "+"), style: successStyle})
+		spans = append(spans, statusSpan{text: dashboardIcon(checkSuccessIcon, "+"), style: successStyle})
 	case checkFailure:
-		spans = append(spans, prStatusSpan{text: dashboardIcon(checkFailureIcon, "x"), style: dangerStyle})
+		spans = append(spans, statusSpan{text: dashboardIcon(checkFailureIcon, "x"), style: dangerStyle})
 	case checkPending:
-		spans = append(spans, prStatusSpan{text: spinnerFrame(now), style: accentStyle})
+		spans = append(spans, statusSpan{text: spinnerFrame(now), style: accentStyle})
 	}
 	return spans
 }
@@ -230,33 +230,33 @@ func compactPRCell(item item, width int, now time.Time, background *lipgloss.Ada
 	return statusSpansCell(compactPRStatusSpans(item, now), width, background)
 }
 
-func compactPRStatusSpans(item item, now time.Time) []prStatusSpan {
+func compactPRStatusSpans(item item, now time.Time) []statusSpan {
 	if item.prNumber == 0 {
-		return []prStatusSpan{{text: "-", style: mutedStyle}}
+		return []statusSpan{{text: "-", style: mutedStyle}}
 	}
-	spans := []prStatusSpan{{text: fmt.Sprintf("#%d", item.prNumber), style: successStyle}}
+	spans := []statusSpan{{text: fmt.Sprintf("#%d", item.prNumber), style: successStyle}}
 	if item.prDraft {
-		spans = append(spans, prStatusSpan{text: dashboardIcon(prDraftIcon, "D"), style: mutedStyle})
+		spans = append(spans, statusSpan{text: dashboardIcon(prDraftIcon, "D"), style: mutedStyle})
 	} else {
 		switch item.prState {
 		case "MERGED":
-			return append(spans, prStatusSpan{text: dashboardIcon(prMergedIcon, "M"), style: accentStyle})
+			return append(spans, statusSpan{text: dashboardIcon(prMergedIcon, "M"), style: accentStyle})
 		case "CLOSED":
-			return append(spans, prStatusSpan{text: dashboardIcon(prClosedIcon, "X"), style: dangerStyle})
+			return append(spans, statusSpan{text: dashboardIcon(prClosedIcon, "X"), style: dangerStyle})
 		}
 	}
 	switch item.prCheck {
 	case checkSuccess:
-		spans = append(spans, prStatusSpan{text: dashboardIcon(checkSuccessIcon, "+"), style: successStyle})
+		spans = append(spans, statusSpan{text: dashboardIcon(checkSuccessIcon, "+"), style: successStyle})
 	case checkFailure:
-		spans = append(spans, prStatusSpan{text: dashboardIcon(checkFailureIcon, "x"), style: dangerStyle})
+		spans = append(spans, statusSpan{text: dashboardIcon(checkFailureIcon, "x"), style: dangerStyle})
 	case checkPending:
-		spans = append(spans, prStatusSpan{text: spinnerFrame(now), style: accentStyle})
+		spans = append(spans, statusSpan{text: spinnerFrame(now), style: accentStyle})
 	}
 	return spans
 }
 
-func statusSpansText(spans []prStatusSpan) string {
+func statusSpansText(spans []statusSpan) string {
 	parts := make([]string, len(spans))
 	for index, span := range spans {
 		parts[index] = span.text
@@ -264,7 +264,7 @@ func statusSpansText(spans []prStatusSpan) string {
 	return strings.Join(parts, " ")
 }
 
-func statusSpansCell(spans []prStatusSpan, width int, background *lipgloss.AdaptiveColor) string {
+func statusSpansCell(spans []statusSpan, width int, background *lipgloss.AdaptiveColor) string {
 	parts := make([]string, len(spans))
 	for index, span := range spans {
 		parts[index] = withBackground(span.style, background).Render(span.text)
@@ -272,15 +272,12 @@ func statusSpansCell(spans []prStatusSpan, width int, background *lipgloss.Adapt
 	return padANSIBackground(strings.Join(parts, withBackground(textStyle, background).Render(" ")), width, background)
 }
 
-type gitStatusSpan struct {
-	text  string
-	style lipgloss.Style
-}
-
-func gitStatusSpans(item item, now time.Time) []gitStatusSpan {
-	var spans []gitStatusSpan
+// gitStatusSpans describes a row's Git state. Agent rows use the compact form,
+// which leaves out the base branch and committed line counts.
+func gitStatusSpans(item item, now time.Time, compact bool) []statusSpan {
+	var spans []statusSpan
 	add := func(text string, style lipgloss.Style) {
-		spans = append(spans, gitStatusSpan{text: text, style: style})
+		spans = append(spans, statusSpan{text: text, style: style})
 	}
 	if item.locked {
 		add(dashboardIcon("󰌾", "LOCK"), warningStyle)
@@ -295,32 +292,27 @@ func gitStatusSpans(item item, now time.Time) []gitStatusSpan {
 	if item.isRebasing {
 		add(dashboardIcon(gitRebaseIcon, "R"), warningStyle)
 	}
-	if item.baseBranch != "" && item.baseBranch != "main" && item.baseBranch != "master" {
+	if !compact && item.baseBranch != "" && item.baseBranch != "main" && item.baseBranch != "master" {
 		add("→"+item.baseBranch, mutedStyle)
 	}
 
 	hasUncommitted := item.dirty || item.added > 0 || item.removed > 0
 	allUncommitted := item.added == item.committedAdded && item.removed == item.committedRemoved
-	addUncommitted := func() {
-		add(dashboardIcon(gitDiffIcon, "*"), accentStyle)
-		if item.added > 0 {
-			add(fmt.Sprintf("+%d", item.added), successStyle)
-		}
-		if item.removed > 0 {
-			add(fmt.Sprintf("-%d", item.removed), dangerStyle)
-		}
-	}
-	if hasUncommitted && allUncommitted {
-		addUncommitted()
-	} else {
+	if !compact && (!hasUncommitted || !allUncommitted) {
 		if item.committedAdded > 0 {
 			add(fmt.Sprintf("+%d", item.committedAdded), successStyle.Faint(true))
 		}
 		if item.committedRemoved > 0 {
 			add(fmt.Sprintf("-%d", item.committedRemoved), dangerStyle.Faint(true))
 		}
-		if hasUncommitted {
-			addUncommitted()
+	}
+	if hasUncommitted {
+		add(dashboardIcon(gitDiffIcon, "*"), accentStyle)
+		if item.added > 0 {
+			add(fmt.Sprintf("+%d", item.added), successStyle)
+		}
+		if item.removed > 0 {
+			add(fmt.Sprintf("-%d", item.removed), dangerStyle)
 		}
 	}
 	if item.hasConflict {
@@ -339,81 +331,19 @@ func gitStatusSpans(item item, now time.Time) []gitStatusSpan {
 }
 
 func gitStatusText(item item, now time.Time) string {
-	spans := gitStatusSpans(item, now)
-	parts := make([]string, len(spans))
-	for index, span := range spans {
-		parts[index] = span.text
-	}
-	return strings.Join(parts, " ")
+	return statusSpansText(gitStatusSpans(item, now, false))
 }
 
 func gitStatusCell(item item, width int, now time.Time, background *lipgloss.AdaptiveColor) string {
-	spans := gitStatusSpans(item, now)
-	parts := make([]string, len(spans))
-	for index, span := range spans {
-		parts[index] = withBackground(span.style, background).Render(span.text)
-	}
-	return padANSIBackground(strings.Join(parts, withBackground(textStyle, background).Render(" ")), width, background)
-}
-
-func compactGitStatusSpans(item item, now time.Time) []gitStatusSpan {
-	var spans []gitStatusSpan
-	add := func(text string, style lipgloss.Style) {
-		spans = append(spans, gitStatusSpan{text: text, style: style})
-	}
-	if item.locked {
-		add(dashboardIcon("󰌾", "LOCK"), warningStyle)
-	}
-	if item.prunable {
-		add(dashboardIcon("󰆴", "PRUNE"), dangerStyle)
-	}
-	if !item.gitLoaded {
-		add(spinnerFrame(now), mutedStyle)
-		return spans
-	}
-	if item.isRebasing {
-		add(dashboardIcon(gitRebaseIcon, "R"), warningStyle)
-	}
-	if item.dirty || item.added > 0 || item.removed > 0 {
-		add(dashboardIcon(gitDiffIcon, "*"), accentStyle)
-		if item.added > 0 {
-			add(fmt.Sprintf("+%d", item.added), successStyle)
-		}
-		if item.removed > 0 {
-			add(fmt.Sprintf("-%d", item.removed), dangerStyle)
-		}
-	}
-	if item.hasConflict {
-		add(dashboardIcon(gitConflictIcon, "!"), dangerStyle)
-	}
-	if item.ahead > 0 {
-		add(fmt.Sprintf("↑%d", item.ahead), infoStyle)
-	}
-	if item.behind > 0 {
-		add(fmt.Sprintf("↓%d", item.behind), warningStyle)
-	}
-	if len(spans) == 0 {
-		add("-", mutedStyle)
-	}
-	return spans
+	return statusSpansCell(gitStatusSpans(item, now, false), width, background)
 }
 
 func compactGitStatusText(item item, now time.Time) string {
-	spans := compactGitStatusSpans(item, now)
-	parts := make([]string, len(spans))
-	for index, span := range spans {
-		parts[index] = span.text
-	}
-	return strings.Join(parts, " ")
+	return statusSpansText(gitStatusSpans(item, now, true))
 }
 
 func compactGitStatusCell(item item, width int, now time.Time, background *lipgloss.AdaptiveColor) string {
-	spans := compactGitStatusSpans(item, now)
-	parts := make([]string, len(spans))
-	for index, span := range spans {
-		parts[index] = withBackground(span.style, background).Render(span.text)
-	}
-	return padANSIBackground(strings.Join(parts, withBackground(textStyle, background).Render(" ")), width, background)
+	return statusSpansCell(gitStatusSpans(item, now, true), width, background)
 }
 
 func elapsedCell(value time.Time, width int, now time.Time, background *lipgloss.AdaptiveColor) string {
@@ -452,7 +382,7 @@ func elapsedStyle(age time.Duration) lipgloss.Style {
 }
 
 func gitStatusView(item item) string {
-	spans := gitStatusSpans(item, time.Now())
+	spans := gitStatusSpans(item, time.Now(), false)
 	parts := make([]string, len(spans))
 	for index, span := range spans {
 		parts[index] = span.style.Render(span.text)

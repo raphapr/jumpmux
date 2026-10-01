@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -42,8 +43,9 @@ var tmuxPaneCache struct {
 }
 
 var (
-	errAgentChanged          = errors.New("the selected agent changed; refresh and try again")
-	errAgentStateUnavailable = errors.New("agent state is unavailable")
+	errAgentChanged          = errors.New("agent changed; refresh and retry")
+	errAgentStateUnavailable = errors.New("agent state unavailable")
+	errPaneClosed            = errors.New("pane closed; refresh to update")
 )
 
 type agentState struct {
@@ -254,6 +256,10 @@ func listTmuxPanes() ([]tmuxPane, error) {
 	const format = "#{pane_id}" + fieldSeparator + "#{pane_pid}" + fieldSeparator + "#{pane_current_path}" + fieldSeparator + "#{pane_title}" + fieldSeparator + "#{session_id}" + fieldSeparator + "#{session_name}" + fieldSeparator + "#{window_id}" + fieldSeparator + "#{window_name}" + fieldSeparator + "#{pane_current_command}" + fieldSeparator + "#{@jumpmux_worktree}" + recordSeparator
 	output, err := tmuxOutput("list-panes", "-a", "-F", format)
 	if err != nil {
+		// Without a tmux binary or server there are no panes, which is not an error.
+		if tmuxUnavailable(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	var panes []tmuxPane
@@ -265,7 +271,7 @@ func listTmuxPanes() ([]tmuxPane, error) {
 		}
 		parts := strings.Split(record, fieldSeparator)
 		if len(parts) != 10 {
-			return nil, errors.New("tmux returned a malformed pane record")
+			return nil, errors.New("could not read tmux panes: malformed pane record")
 		}
 		panes = append(panes, tmuxPane{
 			ID: parts[0], PID: parts[1], Path: parts[2], Title: parts[3],
@@ -355,7 +361,7 @@ func jumpTmuxPane(selected item) error {
 		return errors.New("run jumpmux inside tmux to jump to a pane")
 	}
 	if _, err := tmuxOutput("display-message", "-p", "-t", selected.pane, "#{pane_id}"); err != nil {
-		return errors.New("the selected tmux pane is no longer open")
+		return errPaneClosed
 	}
 	return focusTmuxPane(selected)
 }
@@ -375,13 +381,13 @@ func openTmuxWorktree(selected item) error {
 	if name == "" {
 		name = worktreeName(selected.cwd)
 	}
-	output, err := tmuxOutput("new-window", "-d", "-P", "-F", "#{session_id}\t#{window_id}\t#{pane_id}", "-c", selected.cwd, "-n", name)
+	output, err := tmuxOutput("new-window", "-d", "-P", "-F", "#{session_id}\t#{window_id}\t#{pane_id}", "-c", tmuxLiteral(selected.cwd), "-n", tmuxLiteral(name))
 	if err != nil {
 		return err
 	}
 	parts := strings.Split(strings.TrimSpace(output), "\t")
 	if len(parts) != 3 {
-		return errors.New("tmux returned incomplete window identity")
+		return errors.New("could not create tmux window")
 	}
 	selected.muxSessionID, selected.muxWindowID, selected.pane = parts[0], parts[1], parts[2]
 	if _, err := tmuxOutput("set-option", "-w", "-t", selected.muxWindowID, "@jumpmux_worktree", selected.cwd); err != nil {
@@ -498,19 +504,25 @@ func clearFocusedPaneStatus(pane string) error {
 	})
 }
 
-func syncTmuxWindowStatus(pane string) error {
-	output, err := tmuxOutput("list-panes", "-t", pane, "-F", "#{@jumpmux_pane_status}")
+// syncTmuxWindowStatus derives a window's marker from its panes. The target is a pane or window ID.
+func syncTmuxWindowStatus(target string) error {
+	output, err := tmuxOutput("list-panes", "-t", target, "-F", "#{@jumpmux_pane_status}")
 	if err != nil {
 		return err
 	}
 	icon := windowStatusIcon(output)
 	if icon == "" {
-		if _, err = tmuxOutput("set-option", "-uw", "-t", pane, "@jumpmux_status"); err != nil {
+		if _, err = tmuxOutput("set-option", "-uw", "-t", target, "@jumpmux_status"); err != nil {
 			return err
 		}
-	} else if _, err = tmuxOutput("set-option", "-w", "-t", pane, "@jumpmux_status", icon); err != nil {
+	} else if _, err = tmuxOutput("set-option", "-w", "-t", target, "@jumpmux_status", icon); err != nil {
 		return err
 	}
+	return syncTmuxHooks()
+}
+
+// syncTmuxHooks keeps the focus hooks installed only while a pane shows an unseen completion.
+func syncTmuxHooks() error {
 	return withAgentLock("hooks", "", func() error {
 		allStatuses, err := tmuxOutput("list-panes", "-a", "-F", "#{@jumpmux_pane_status}")
 		if err != nil {
@@ -567,11 +579,16 @@ func windowStatusIcon(statuses string) string {
 	return icon
 }
 
+// ensureTmuxStatusFormat adds the marker to the global window formats, so theme
+// reloads keep applying to every window. A window that sets its own format hides
+// the global one, so that window gets the marker in its own format instead.
 func ensureTmuxStatusFormat(pane string) error {
 	for _, option := range []string{"window-status-format", "window-status-current-format"} {
+		scope := []string{"-w", "-t", pane}
 		format, err := tmuxOutput("show-option", "-wv", "-t", pane, option)
 		format = strings.TrimRight(format, "\r\n")
 		if err != nil || format == "" {
+			scope = []string{"-gw"}
 			format, err = tmuxOutput("show-option", "-gv", option)
 			format = strings.TrimRight(format, "\r\n")
 		}
@@ -582,7 +599,8 @@ func ensureTmuxStatusFormat(pane string) error {
 		if normalized == format {
 			continue
 		}
-		if _, err := tmuxOutput("set-option", "-w", "-t", pane, option, normalized); err != nil {
+		args := append(append([]string{"set-option"}, scope...), option, normalized)
+		if _, err := tmuxOutput(args...); err != nil {
 			return err
 		}
 	}
@@ -691,22 +709,9 @@ func markAgentSeenLocked(pane, sessionID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	var current tmuxPane
-	for _, candidate := range panes {
-		if candidate.ID == pane {
-			current = candidate
-			break
-		}
-	}
-	if current.ID == "" {
-		return false, errors.New("the selected tmux pane is no longer open")
-	}
-	state, _, err := readAgentState(pane)
+	_, state, path, err := verifiedAgentState(pane, sessionID, panes)
 	if err != nil {
-		return false, fmt.Errorf("%w: %v", errAgentStateUnavailable, err)
-	}
-	if state.Pane != pane || state.PanePID == "" || state.PanePID != current.PID || state.PaneCommand != current.CurrentCommand || (sessionID != "" && state.SessionID != sessionID) {
-		return false, errAgentChanged
+		return false, err
 	}
 	if state.Status != "done" {
 		return false, nil
@@ -718,15 +723,62 @@ func markAgentSeenLocked(pane, sessionID string) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		path, err := agentStatePath(pane)
-		if err != nil {
-			return false, err
-		}
 		if err := atomicWrite(path, append(data, '\n'), 0o600); err != nil {
 			return false, err
 		}
 	}
 	return marked, clearTmuxStatusLocked(pane)
+}
+
+// removeAgent closes the agent's pane. Splits next to Pi survive, and tmux closes
+// the window only when Pi was its last pane.
+func removeAgent(agent item) error {
+	return withTmuxWindowLock(agent.pane, func() error {
+		panes, err := listTmuxPanes()
+		if err != nil {
+			return err
+		}
+		current, _, path, err := verifiedAgentState(agent.pane, agent.agentSessionID, panes)
+		if err != nil {
+			return err
+		}
+		windowSurvives := slices.ContainsFunc(panes, func(pane tmuxPane) bool {
+			return pane.WindowID == current.WindowID && pane.ID != current.ID
+		})
+		if _, err := tmuxOutput("kill-pane", "-t", current.ID); err != nil {
+			return err
+		}
+		invalidateTmuxPaneCache()
+		// A surviving window still shows the removed pane's marker until it is recomputed.
+		resync := syncTmuxHooks
+		if windowSurvives {
+			resync = func() error { return syncTmuxWindowStatus(current.WindowID) }
+		}
+		return errors.Join(removeAgentState(path), resync())
+	})
+}
+
+// verifiedAgentState returns the pane and its state only while the pane still runs
+// the Pi process that wrote the state, so actions never touch a reused pane.
+func verifiedAgentState(pane, sessionID string, panes []tmuxPane) (tmuxPane, agentState, string, error) {
+	var current tmuxPane
+	for _, candidate := range panes {
+		if candidate.ID == pane {
+			current = candidate
+			break
+		}
+	}
+	if current.ID == "" {
+		return tmuxPane{}, agentState{}, "", errPaneClosed
+	}
+	state, path, err := readAgentState(pane)
+	if err != nil {
+		return tmuxPane{}, agentState{}, "", fmt.Errorf("%w: %w", errAgentStateUnavailable, err)
+	}
+	if state.Pane != pane || state.PanePID == "" || state.PanePID != current.PID || state.PaneCommand != current.CurrentCommand || (sessionID != "" && state.SessionID != sessionID) {
+		return tmuxPane{}, agentState{}, "", errAgentChanged
+	}
+	return current, state, path, nil
 }
 
 func readAgentState(pane string) (agentState, string, error) {

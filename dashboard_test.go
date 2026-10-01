@@ -94,11 +94,18 @@ func TestWorktreeCurrentMarkerWaitsForTmuxRefresh(t *testing.T) {
 		t.Fatalf("tmux refresh did not replace the current marker: %#v", merged)
 	}
 
-	t.Setenv("PATH", t.TempDir())
+	writeFakeTmux(t, "echo 'server exited unexpectedly' >&2\nexit 1\n")
 	invalidateTmuxPaneCache()
 	message := refreshWorktreeMux(fresh, 1)().(worktreeDataMsg)
 	if message.err == nil || slices.ContainsFunc(message.worktrees, func(item item) bool { return item.current }) {
 		t.Fatalf("failed tmux refresh restored a Git current marker: %#v, %v", message.worktrees, message.err)
+	}
+	// Without tmux there are no panes: the stage succeeds and still marks nothing current.
+	t.Setenv("PATH", t.TempDir())
+	invalidateTmuxPaneCache()
+	message = refreshWorktreeMux(fresh, 1)().(worktreeDataMsg)
+	if message.err != nil || slices.ContainsFunc(message.worktrees, func(item item) bool { return item.current }) {
+		t.Fatalf("missing tmux = %#v, %v", message.worktrees, message.err)
 	}
 
 	attachAgentsToWorktrees(merged, []item{{cwd: "/repo/nested", current: true, title: "agent"}})
@@ -218,9 +225,9 @@ func TestWorktreePreviewRendersMetadataBeforeGitCommands(t *testing.T) {
 		t.Fatal("unselected worktree Git update refreshed the preview")
 	}
 	model = updated.(dashboardModel)
-	updated, _ = model.Update(worktreeStatusMsg{request: model.previewRequest, scheme: model.scheme, target: "/repo", status: " M changed.go"})
+	updated, _ = model.Update(worktreeStatusMsg{request: model.previewRequest, target: "/repo", status: " M changed.go"})
 	model = updated.(dashboardModel)
-	updated, _ = model.Update(worktreeLogMsg{request: model.previewRequest, scheme: model.scheme, target: "/repo", log: "abc123\t1 minute ago\tmessage"})
+	updated, _ = model.Update(worktreeLogMsg{request: model.previewRequest, target: "/repo", log: "abc123\t1 minute ago\tmessage"})
 	preview := updated.(dashboardModel).preview
 	if !strings.Contains(strings.Join(preview.lines, "\n"), "M changed.go") || len(preview.rightLines) != 1 || preview.rightLines[0] != "abc123\t1 minute ago\tmessage" {
 		t.Fatalf("worktree preview did not apply independent Git results: %#v", preview)
@@ -444,7 +451,7 @@ func TestAgentFilterAndPreviewIncludeSessionMetadata(t *testing.T) {
 		t.Fatalf("worktree filter matched tmux session metadata: %#v", rows)
 	}
 	writeFakeTmux(t, "printf '1\\t1\\noutput\\n'")
-	preview := loadAgentPreview(model.agents[0], schemeDefault, 1)().(previewMsg)
+	preview := loadAgentPreview(model.agents[0], 1)().(previewMsg)
 	if plain := ansi.Strip(strings.Join(preview.lines, "\n")); !strings.Contains(plain, "Session dev") || strings.Contains(preview.title, "dev") {
 		t.Fatalf("agent preview session metadata = title %q lines %q", preview.title, plain)
 	}
@@ -555,15 +562,15 @@ func TestPreviewCommandsReturnUnstyledData(t *testing.T) {
 	defer applyColorScheme(schemeDefault)
 	applyColorScheme(schemeEmberforge)
 	writeFakeTmux(t, "exit 1")
-	agent := loadAgentPreview(item{kind: "session", target: "%1", pane: "%1", muxSessionName: "dev", prCheck: checkFailure, prFailedChecks: []string{"unit"}}, schemeEmberforge, 1)().(previewMsg)
+	agent := loadAgentPreview(item{kind: "session", target: "%1", pane: "%1", muxSessionName: "dev", prCheck: checkFailure, prFailedChecks: []string{"unit"}}, 1)().(previewMsg)
 	for _, line := range agent.lines {
 		if ansi.Strip(line) != line {
 			t.Fatalf("agent preview command styled %q", line)
 		}
 	}
 	for _, preview := range []previewData{
-		sessionPreview(item{kind: "tmux-session", title: "inactive"}, schemeEmberforge, 1),
-		sessionPreview(item{kind: "tmux-session", title: "live", muxSessionID: "$1"}, schemeEmberforge, 1),
+		sessionPreview(item{kind: "tmux-session", title: "inactive"}, 1),
+		sessionPreview(item{kind: "tmux-session", title: "live", muxSessionID: "$1"}, 1),
 	} {
 		for _, line := range preview.lines {
 			if ansi.Strip(line) != line {
@@ -917,11 +924,12 @@ func TestDashboardDiffOffsetsAndMinimumLayout(t *testing.T) {
 	}{
 		{actionRemoveWorktree, []string{"Will remove worktree /feature.", "The branch stays.", "Enter Remove    Esc Cancel"}},
 		{actionRemoveSession, []string{"Will kill tmux session dev.", "Configured entry stays in config.toml.", "Enter Remove    Esc Cancel"}},
-		{actionCleanupWorktree, []string{"Will prune stale worktree records.", "Live and locked worktrees stay.", "Enter Clean up    Esc Cancel"}},
+		{actionCleanupWorktree, []string{"Will remove stale record /feature.", "Other worktrees and the branch stay.", "Enter Clean up    Esc Cancel"}},
+		{actionRemoveAgent, []string{"Will close Pi in tmux pane %7.", "Other panes and the worktree stay.", "Remove agent", "Remove dev?"}},
 		{actionRebaseWorktree, []string{"Will rebase feature", "Commits may be rewritten.", "Enter Rebase    Esc Cancel"}},
 		{actionMergeWorktree, []string{"Will merge feature", "Needs clean worktrees; keeps it.", "Enter Merge    Esc Cancel"}},
 	} {
-		model.action, model.actionTarget = test.action, item{branch: "feature", cwd: "/feature", title: "dev"}
+		model.action, model.actionTarget = test.action, item{branch: "feature", cwd: "/feature", title: "dev", pane: "%7"}
 		view := ansi.Strip(model.View())
 		for _, want := range test.want {
 			if !strings.Contains(view, want) {
@@ -1356,6 +1364,48 @@ func TestDashboardFooterAndHeaderWidths(t *testing.T) {
 		model = updated.(dashboardModel)
 		if model.tab != tab {
 			t.Fatalf("tab %d hitbox did not use rendered label", tab)
+		}
+	}
+}
+
+func TestDiffViewColorsHunksAndListsFiles(t *testing.T) {
+	previousProfile := lipgloss.ColorProfile()
+	defer func() {
+		lipgloss.SetColorProfile(previousProfile)
+		applyColorScheme(schemeDefault)
+	}()
+	lipgloss.SetColorProfile(0)
+	applyColorScheme(schemeDefault)
+	for line, style := range map[string]lipgloss.Style{"+new": addedStyle, "-old": removedStyle, "+++ b/x": diffHeadStyle, "@@ -1 +1 @@": diffHeadStyle, "context": textStyle} {
+		if got := colorDiff(line); got != style.Render(line) {
+			t.Fatalf("colorDiff(%q) = %q", line, got)
+		}
+	}
+
+	model := newDashboard("/repo")
+	model.width, model.height, model.diff, model.loading = 100, 20, true, true
+	if view := ansi.Strip(model.View()); !strings.Contains(view, "Loading diff…") {
+		t.Fatalf("loading diff view:\n%s", view)
+	}
+	model.loading = false
+	model.preview = previewData{target: "/repo", title: "WIP: feature +1 -1", lines: []string{"diff --git a/x b/x", "@@ -1 +1 @@", "-old", "+new\x1b]52;c;evil\a"}, rightLines: []string{" M x"}}
+	view := model.View()
+	plain := ansi.Strip(view)
+	for _, want := range []string{"WIP: feature +1 -1", "-old", "+new", "Files (1)", " M x", "q/Esc Close"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("diff view missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(view, "\x1b]52") {
+		t.Fatal("diff view passed a terminal control sequence through")
+	}
+	lines := strings.Split(plain, "\n")
+	if len(lines) != 20 {
+		t.Fatalf("diff view height = %d", len(lines))
+	}
+	for _, line := range lines {
+		if width := ansi.StringWidth(line); width != 100 {
+			t.Fatalf("diff view width = %d: %q", width, line)
 		}
 	}
 }

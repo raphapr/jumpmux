@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -95,28 +96,37 @@ func updateWorktree(path, branch, operation string) error {
 		}
 	}
 	if !found {
-		return errors.New("the selected worktree changed; refresh and try again")
+		return errors.New("worktree changed; refresh and retry")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), worktreeMergeTimeout)
 	defer cancel()
-	root := worktrees[0].path
-	for _, dir := range []string{path, root} {
+	// The first record is the main worktree, or the repository itself in a bare layout.
+	base, err := requiredDefaultBranch(worktrees[0].path)
+	if err != nil {
+		return err
+	}
+	dirs := []string{path}
+	target := ""
+	if operation == "merge" {
+		// A fast-forward merge updates the worktree that has the default branch checked out.
+		for _, worktree := range worktrees {
+			if !worktree.bare && !worktree.prunable && worktree.branch == base {
+				target = worktree.path
+				break
+			}
+		}
+		if target == "" {
+			return fmt.Errorf("cannot merge: check out %s in a worktree first", base)
+		}
+		dirs = append(dirs, target)
+	}
+	for _, dir := range dirs {
 		output, err := runActionCommand(ctx, dir, "git", "status", "--porcelain")
 		if err != nil {
 			return actionError("check worktree status", output, err)
 		}
 		if strings.TrimSpace(string(output)) != "" {
-			return fmt.Errorf("cannot %s with uncommitted changes in %s", operation, compactHome(dir))
-		}
-	}
-	base, err := requiredDefaultBranch(root)
-	if err != nil {
-		return err
-	}
-	if operation == "merge" {
-		output, err := runActionCommand(ctx, root, "git", "symbolic-ref", "--quiet", "--short", "HEAD")
-		if err != nil || strings.TrimSpace(string(output)) != base {
-			return fmt.Errorf("cannot merge: primary worktree is not on %s", base)
+			return fmt.Errorf("commit or stash changes in %s first", compactHome(dir))
 		}
 	}
 	if operation == "rebase" {
@@ -126,7 +136,7 @@ func updateWorktree(path, branch, operation string) error {
 		}
 		return nil
 	}
-	output, err := runActionCommand(ctx, root, "git", "merge", "--ff-only", branch)
+	output, err := runActionCommand(ctx, target, "git", "merge", "--ff-only", branch)
 	if err != nil {
 		return actionError("merge worktree", output, err)
 	}
@@ -138,7 +148,7 @@ func cleanupPrunableWorktree(repo string, selected item) error {
 		return err
 	}
 	if !selected.prunable || selected.locked || selected.current {
-		return errors.New("the selected worktree is not safe to clean up")
+		return errors.New("this worktree cannot be cleaned up")
 	}
 	root, err := primaryWorktree(repo)
 	if err != nil {
@@ -148,21 +158,22 @@ func cleanupPrunableWorktree(repo string, selected item) error {
 	if err != nil {
 		return err
 	}
-	stillPrunable := false
+	stale := ""
 	for _, worktree := range worktrees {
 		if samePath(worktree.path, selected.cwd) && worktree.prunable && !worktree.locked {
-			stillPrunable = true
+			stale = worktree.path
 			break
 		}
 	}
-	if !stillPrunable {
-		return errors.New("the selected worktree changed; refresh and try again")
+	if stale == "" {
+		return errors.New("worktree changed; refresh and retry")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), worktreeActionTimeout)
 	defer cancel()
-	output, err := runActionCommand(ctx, root, "git", "worktree", "prune", "--expire", "now")
+	// Unlike git worktree prune, remove drops only this record and leaves other stale records alone.
+	output, err := runActionCommand(ctx, root, "git", "worktree", "remove", stale)
 	if err != nil {
-		return actionError("clean up worktrees", output, err)
+		return actionError("clean up worktree", output, err)
 	}
 	return nil
 }
@@ -170,14 +181,11 @@ func cleanupPrunableWorktree(repo string, selected item) error {
 func validateWorktreeRemoval(path string) error {
 	panes, err := listTmuxPanes()
 	if err != nil {
-		if tmuxUnavailable(err) {
-			return nil
-		}
 		return err
 	}
 	for _, pane := range panes {
 		if pathWithin(pane.Path, path) || (pane.Worktree != "" && samePath(pane.Worktree, path)) {
-			return fmt.Errorf("cannot remove worktree open in tmux pane %s", pane.ID)
+			return fmt.Errorf("close tmux pane %s before removing this worktree", pane.ID)
 		}
 	}
 	return nil
@@ -185,7 +193,7 @@ func validateWorktreeRemoval(path string) error {
 
 func openPullRequest(repo string, number int) error {
 	if number == 0 {
-		return errors.New("selected row has no pull request")
+		return errors.New("no pull request found")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -210,7 +218,13 @@ func primaryWorktree(repo string) (string, error) {
 func runActionCommand(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 	command := boundedCommand(ctx, name, args...)
 	command.Dir = dir
-	return command.CombinedOutput()
+	output, err := command.CombinedOutput()
+	// ErrWaitDelay means the command exited 0 but a child it started, such as a
+	// browser or a hook's background job, still holds the output pipe.
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
+	}
+	return output, err
 }
 
 func actionError(action string, output []byte, err error) error {

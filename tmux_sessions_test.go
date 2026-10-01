@@ -326,7 +326,7 @@ esac
 func TestSwitchLastTmuxSessionRequiresHistory(t *testing.T) {
 	writeFakeTmux(t, `case "$1" in list-sessions) printf '$1\037only\037300\036\n' ;; esac`)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	if err := switchLastTmuxSession(); err == nil || !strings.Contains(err.Error(), "no last session") {
+	if err := switchLastTmuxSession(); err == nil || !strings.Contains(err.Error(), "no previous session") {
 		t.Fatalf("single session history = %v", err)
 	}
 }
@@ -409,7 +409,7 @@ esac
 	if err := jumpTmuxSession(item{kind: "tmux-session", target: "dev", muxSessionID: "$1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := jumpTmuxSession(item{kind: "tmux-session", target: "new", cwd: t.TempDir(), sessionSource: "config"}); err == nil || !strings.Contains(err.Error(), "incomplete session identity") {
+	if err := jumpTmuxSession(item{kind: "tmux-session", target: "new", cwd: t.TempDir(), sessionSource: "config"}); err == nil || !strings.Contains(err.Error(), "could not create tmux session") {
 		t.Fatalf("malformed creation identity = %v", err)
 	}
 	data, err := os.ReadFile(log)
@@ -424,28 +424,39 @@ esac
 }
 
 func TestRenameTmuxSessionRevalidatesIdentity(t *testing.T) {
+	// The fake expands ## like tmux does, so lookups see the name tmux stores.
 	log := writeFakeTmux(t, `
 printf '%s\n' "$*" >> "$TMUX_LOG"
 case "$1" in
   display-message)
-    case "$4" in
-      =dev:) printf '$1\n' ;;
-      =renamed:) if [ -f "$RENAMED" ]; then printf '$1\n'; else printf "can't find session\n" >&2; exit 1; fi ;;
+    target=${4#=}; target=${target%:}
+    case "$target" in
+      dev) printf '$1\n' ;;
+      *) if [ -f "$RENAMED/$target" ]; then printf '$1\n'; else printf "can't find session\n" >&2; exit 1; fi ;;
     esac ;;
-  rename-session) touch "$RENAMED" ;;
+  rename-session) touch "$RENAMED/$(printf '%s' "$4" | sed 's/##/#/g')" ;;
 esac
 `)
 	t.Setenv("TMUX_LOG", log)
-	t.Setenv("RENAMED", filepath.Join(t.TempDir(), "renamed"))
+	t.Setenv("RENAMED", t.TempDir())
 	if err := renameTmuxSession(item{target: "dev", muxSessionID: "$1"}, "renamed"); err != nil {
 		t.Fatal(err)
 	}
-	if err := renameTmuxSession(item{target: "dev", muxSessionID: "$1"}, "bad:name"); err == nil || !strings.Contains(err.Error(), "colons") {
+	if err := renameTmuxSession(item{target: "dev", muxSessionID: "$1"}, "bad\tname"); err == nil || !strings.Contains(err.Error(), "control characters") {
 		t.Fatalf("unsafe rename = %v", err)
 	}
+	// tmux 3.6 and older turn "." into "_", and every version expands "#".
+	if err := renameTmuxSession(item{target: "dev", muxSessionID: "$1"}, "my.app#1"); err != nil {
+		t.Fatal(err)
+	}
 	data, err := os.ReadFile(log)
-	if err != nil || !strings.Contains(string(data), "rename-session -t $1 renamed") || !strings.Contains(string(data), "display-message -p -t =renamed:") {
-		t.Fatalf("rename command = %s, %v", data, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"rename-session -t $1 renamed", "display-message -p -t =renamed:", "rename-session -t $1 my_app##1", "display-message -p -t =my_app#1:"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("rename log missing %q:\n%s", want, data)
+		}
 	}
 }
 
@@ -611,14 +622,106 @@ func TestSessionRemoveShortcutConfirms(t *testing.T) {
 }
 
 func TestRemoveTmuxSessionRejectsCurrentSession(t *testing.T) {
-	writeFakeTmux(t, `
+	log := writeFakeTmux(t, `
+printf '%s\n' "$*" >> "$TMUX_LOG"
 case "$1" in
   display-message) printf '$1\n' ;;
 esac
 `)
+	t.Setenv("TMUX_LOG", log)
 	t.Setenv("TMUX", "/tmp/tmux,1,0")
 	if err := removeTmuxSession(item{target: "dev", muxSessionID: "$1"}); err == nil || !strings.Contains(err.Error(), "current") {
 		t.Fatalf("current session removal = %v", err)
+	}
+	// Outside tmux, display-message reports the most recent session, which is not ours to protect.
+	t.Setenv("TMUX", "")
+	if err := removeTmuxSession(item{target: "dev", muxSessionID: "$1"}); err != nil {
+		t.Fatalf("removal outside tmux = %v", err)
+	}
+	if data, err := os.ReadFile(log); err != nil || strings.Count(string(data), "kill-session -t $1") != 1 {
+		t.Fatalf("remove commands = %s, %v", data, err)
+	}
+}
+
+func TestSessionNamesMatchTmuxRenaming(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TMUX", "")
+	project, plugin := t.TempDir(), filepath.Join(t.TempDir(), "foo.nvim")
+	if err := os.Mkdir(plugin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(t.TempDir(), "discover")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$PLUGIN\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PLUGIN", plugin)
+	writeSessionsConfig(t, "[sessions]\ndiscovery_command = [\""+script+"\"]\n[[sessions.entries]]\nname = \"my.project\"\npath = \""+project+"\"\n")
+	sessions, err := listSessions(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// tmux 3.6 and older create "my.project" as "my_project", so rows must use that name.
+	if len(sessions) != 2 || sessions[0].target != "my_project" || sessions[1].target != "foo_nvim" {
+		t.Fatalf("session names = %#v", sessions)
+	}
+	if selected, ok := findItem(sessions, "my.project"); !ok || selected.target != "my_project" {
+		t.Fatalf("configured name lookup = %#v, %v", selected, ok)
+	}
+	writeSessionsConfig(t, "[[sessions.entries]]\nname = \"a.b\"\npath = \""+project+"\"\n[[sessions.entries]]\nname = \"a_b\"\npath = \""+project+"\"\n")
+	if _, err := loadSessionsConfig(); err == nil || !strings.Contains(err.Error(), "duplicate session name") {
+		t.Fatalf("names that collide in tmux = %v", err)
+	}
+}
+
+func TestDiscoveryFailureKeepsConfiguredSessions(t *testing.T) {
+	writeFakeTmux(t, "echo 'no server running on /tmp/tmux-test' >&2\nexit 1\n")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TMUX", "")
+	writeSessionsConfig(t, "[sessions]\ndiscovery_command = [\"false\"]\n[[sessions.entries]]\nname = \"api\"\npath = \""+t.TempDir()+"\"\n")
+	sessions, err := listSessions(false)
+	if err == nil || len(sessions) != 1 || sessions[0].target != "api" {
+		t.Fatalf("failed discovery = %#v, %v", sessions, err)
+	}
+	model := newDashboard("/repo")
+	model.tab = tabSessions
+	updated, _ := model.Update(sessionDataMsg{generation: model.sessionGeneration, sessions: sessions, err: err})
+	model = updated.(dashboardModel)
+	if len(model.sessions) != 1 || model.sessionsErr == nil {
+		t.Fatalf("dashboard after failed discovery = %#v, %v", model.sessions, model.sessionsErr)
+	}
+	if items, err := cliItems("sessions", ""); err != nil || len(items) != 1 {
+		t.Fatalf("CLI sessions after failed discovery = %#v, %v", items, err)
+	}
+}
+
+func TestTmuxCommandsKeepHashLiteral(t *testing.T) {
+	log := writeFakeTmux(t, `
+printf '%s\n' "$*" >> "$TMUX_LOG"
+case "$1" in
+  display-message) printf "can't find session\n" >&2; exit 1 ;;
+  new-session) printf '$5\037c#1\037%%9\n' ;;
+  new-window) printf '$5\t@9\t%%9\n' ;;
+esac
+`)
+	t.Setenv("TMUX_LOG", log)
+	t.Setenv("TMUX", "/tmp/tmux,1,0")
+	dir := filepath.Join(t.TempDir(), "x#y")
+	if err := jumpTmuxSession(item{kind: "tmux-session", target: "c#1", cwd: dir, sessionSource: "config"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := openTmuxWorktree(item{kind: "worktree", cwd: dir, branch: "fix#1"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// tmux expands formats in names and start directories, so # must reach it as ##.
+	escaped := strings.ReplaceAll(dir, "#", "##")
+	for _, want := range []string{"-s c##1 -c " + escaped, "-c " + escaped + " -n fix##1", "switch-client -t $5"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("tmux log missing %q:\n%s", want, data)
+		}
 	}
 }
 
@@ -646,7 +749,7 @@ func TestNarrowSessionPreviewScrollsPaneHistory(t *testing.T) {
 	model := newDashboard("/repo")
 	model.width, model.height, model.tab = 40, 10, tabSessions
 	model.sessions = []item{{kind: "tmux-session", target: "dev", title: "dev", cwd: "/tmp/dev", muxSessionID: "$1", pane: "%1"}}
-	model.preview = sessionPreview(model.sessions[0], schemeDefault, 1)
+	model.preview = sessionPreview(model.sessions[0], 1)
 	model.preview.lines = nil
 	for index := range 20 {
 		model.preview.lines = append(model.preview.lines, fmt.Sprintf("pane %d", index))
@@ -719,7 +822,7 @@ func TestSessionRefreshKeepsLastGoodList(t *testing.T) {
 	model := newDashboard("/repo")
 	model.tab, model.sessionsLoaded = tabSessions, true
 	model.sessions = []item{{kind: "tmux-session", target: "dev", title: "dev", cwd: "/tmp/dev", sessionSource: "config"}}
-	model.preview = sessionPreview(model.sessions[0], schemeDefault, 1)
+	model.preview = sessionPreview(model.sessions[0], 1)
 	updated, _ := model.Update(sessionDataMsg{generation: model.sessionGeneration, err: errors.New("tmux unavailable")})
 	model = updated.(dashboardModel)
 	if len(model.sessions) != 1 || model.sessions[0].target != "dev" || model.sessionsErr == nil || model.preview.target != "dev" {

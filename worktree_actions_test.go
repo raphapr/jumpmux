@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -130,14 +132,16 @@ func TestWorktreeRemovalRefusesLaunchWorktreeWithoutTmux(t *testing.T) {
 
 func TestCleanupPrunableWorktreeRevalidatesAndPrunes(t *testing.T) {
 	parent := t.TempDir()
-	repo, stale := filepath.Join(parent, "repo"), filepath.Join(parent, "stale")
-	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "stale", stale}} {
+	repo, stale, other := filepath.Join(parent, "repo"), filepath.Join(parent, "stale"), filepath.Join(parent, "other")
+	for _, args := range [][]string{{"init", "-q", "-b", "main", repo}, {"-C", repo, "config", "user.name", "Test"}, {"-C", repo, "config", "user.email", "test@example.com"}, {"-C", repo, "commit", "--allow-empty", "-qm", "base"}, {"-C", repo, "worktree", "add", "-qb", "stale", stale}, {"-C", repo, "worktree", "add", "-qb", "other", other}} {
 		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, output)
 		}
 	}
-	if err := os.RemoveAll(stale); err != nil {
-		t.Fatal(err)
+	for _, path := range []string{stale, other} {
+		if err := os.RemoveAll(path); err != nil {
+			t.Fatal(err)
+		}
 	}
 	items, err := listWorktreeItems(repo)
 	if err != nil {
@@ -159,13 +163,73 @@ func TestCleanupPrunableWorktreeRevalidatesAndPrunes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	otherKept := false
 	for _, candidate := range items {
 		if samePath(candidate.cwd, stale) {
 			t.Fatalf("stale worktree record remained: %#v", candidate)
 		}
+		otherKept = otherKept || (samePath(candidate.cwd, other) && candidate.prunable)
+	}
+	if !otherKept {
+		t.Fatalf("cleanup removed an unselected stale record: %#v", items)
 	}
 	if err := cleanupPrunableWorktree(repo, selected); err == nil || !strings.Contains(err.Error(), "changed") {
 		t.Fatalf("stale cleanup was not revalidated: %v", err)
+	}
+}
+
+func TestBareRepositoryWorktrees(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	parent := t.TempDir()
+	source, bare := filepath.Join(parent, "source"), filepath.Join(parent, "repo.git")
+	mainTree, feature := filepath.Join(parent, "main"), filepath.Join(parent, "feature")
+	identity := []string{"-c", "user.name=Test", "-c", "user.email=test@example.com"}
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main", source},
+		append(append([]string{"-C", source}, identity...), "commit", "--allow-empty", "-qm", "base"),
+		{"clone", "-q", "--bare", source, bare},
+		{"-C", bare, "worktree", "add", "-q", mainTree, "main"},
+		{"-C", bare, "worktree", "add", "-qb", "feature", feature, "main"},
+		append(append([]string{"-C", feature}, identity...), "commit", "--allow-empty", "-qm", "feature"),
+	} {
+		if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	items, err := listWorktreeItems(feature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("bare layout rows = %#v", items)
+	}
+	for _, row := range items {
+		if samePath(row.cwd, bare) || row.primary {
+			t.Fatalf("bare repository leaked into the rows: %#v", row)
+		}
+	}
+	if err := updateWorktree(feature, "feature", "rebase"); err != nil {
+		t.Fatalf("bare layout rebase = %v", err)
+	}
+	if err := updateWorktree(feature, "feature", "merge"); err != nil {
+		t.Fatalf("bare layout merge = %v", err)
+	}
+	head, headErr := exec.Command("git", "-C", mainTree, "rev-parse", "HEAD").Output()
+	tip, tipErr := exec.Command("git", "-C", feature, "rev-parse", "HEAD").Output()
+	if headErr != nil || tipErr != nil || string(head) != string(tip) {
+		t.Fatalf("merge did not fast-forward main: %s %s, %v %v", head, tip, headErr, tipErr)
+	}
+}
+
+func TestActionCommandToleratesLingeringChildOutput(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// gh pr view --web can exit while the browser it started still holds the output pipe.
+	if _, err := runActionCommand(ctx, t.TempDir(), "sh", "-c", "sleep 1 & exit 0"); err != nil {
+		t.Fatalf("successful command with a lingering child = %v", err)
+	}
+	if _, err := runActionCommand(ctx, t.TempDir(), "sh", "-c", "sleep 1 & exit 3"); err == nil {
+		t.Fatal("failed command with a lingering child reported success")
 	}
 }
 
@@ -180,7 +244,7 @@ func TestNativeGitActionsRejectDirtyWorktrees(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(worktree, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := updateWorktree(worktree, "feature", "rebase"); err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
+	if err := updateWorktree(worktree, "feature", "rebase"); err == nil || !strings.Contains(err.Error(), "commit or stash changes") {
 		t.Fatalf("dirty rebase = %v", err)
 	}
 	if err := removeWorktree(repo, worktree); err == nil {
@@ -202,7 +266,7 @@ func TestNativeGitActionsRejectDirtyPrimaryForMerge(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := updateWorktree(worktree, "feature", "merge"); err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
+	if err := updateWorktree(worktree, "feature", "merge"); err == nil || !strings.Contains(err.Error(), "commit or stash changes in "+compactHome(repo)) {
 		t.Fatalf("dirty merge = %v", err)
 	}
 }
@@ -356,8 +420,8 @@ func TestNativeGitMergeRequiresDefaultBranch(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, output)
 		}
 	}
-	if err := updateWorktree(worktree, "feature", "merge"); err == nil || !strings.Contains(err.Error(), "primary worktree is not on main") {
-		t.Fatalf("merge from wrong primary branch = %v", err)
+	if err := updateWorktree(worktree, "feature", "merge"); err == nil || !strings.Contains(err.Error(), "check out main in a worktree") {
+		t.Fatalf("merge without main checked out = %v", err)
 	}
 	head, err := exec.Command("git", "-C", repo, "branch", "--show-current").Output()
 	if err != nil || strings.TrimSpace(string(head)) != "other" {
@@ -389,7 +453,7 @@ func TestDashboardWorktreeActionModes(t *testing.T) {
 	t.Setenv("TMUX", "/tmp/test,1,0")
 	model := newDashboard("/repo")
 	model.width, model.height, model.tab = 120, 30, 1
-	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main"}, {kind: "worktree", target: "/feature", cwd: "/feature", branch: "feature"}}
+	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main", primary: true}, {kind: "worktree", target: "/feature", cwd: "/feature", branch: "feature"}}
 	model.index = 1
 	footer := ansi.Strip(model.renderFooter(120))
 	for _, expected := range []string{"a Add", "r Remove", "t Theme"} {

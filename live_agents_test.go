@@ -71,7 +71,7 @@ func TestAgentPreviewCapturesPaneHistory(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	applyColorScheme(schemeDefault)
-	message := loadAgentPreview(item{kind: "session", target: "%7", pane: "%7", cwd: "/repo"}, schemeDefault, 1)().(previewMsg)
+	message := loadAgentPreview(item{kind: "session", target: "%7", pane: "%7", cwd: "/repo"}, 1)().(previewMsg)
 	if !message.followBottom || message.title != "Preview: repo" || len(message.lines) != 2 || message.lines[0] != "first line" || ansi.Strip(message.lines[1]) != "second line" {
 		t.Fatalf("pane preview = %#v", message)
 	}
@@ -87,7 +87,7 @@ func TestSessionPreviewCapturesCurrentAlternateScreen(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	message := loadSessionPreview(item{kind: "tmux-session", target: "dev", title: "dev", cwd: "/repo", muxSessionID: "$1", pane: "%7"}, schemeDefault, 1)().(previewMsg)
+	message := loadSessionPreview(item{kind: "tmux-session", target: "dev", title: "dev", cwd: "/repo", muxSessionID: "$1", pane: "%7"}, 1)().(previewMsg)
 	if message.title != "Active pane: dev" || !message.followBottom || len(message.lines) != 2 || message.lines[0] != "btop" || ansi.Strip(message.lines[1]) != "cpu 42%" {
 		t.Fatalf("session pane preview = %#v", message)
 	}
@@ -98,7 +98,7 @@ func TestAgentPreviewFollowsBottomUntilScrolled(t *testing.T) {
 	model.agents = []item{{kind: "session", target: "%7", pane: "%7", cwd: "/repo"}}
 	model.previewRequest = 1
 	lines := make([]string, 30)
-	updated, command := model.Update(previewMsg(previewData{request: 1, scheme: schemeDefault, target: "%7", lines: lines, followBottom: true}))
+	updated, command := model.Update(previewMsg(previewData{request: 1, target: "%7", lines: lines, followBottom: true}))
 	if _, ok := command().(previewTickMsg); !ok {
 		t.Fatal("agent preview did not schedule its dedicated refresh tick")
 	}
@@ -110,7 +110,7 @@ func TestAgentPreviewFollowsBottomUntilScrolled(t *testing.T) {
 
 	model.previewOffset = 2
 	model.previewRequest = 2
-	updated, _ = model.Update(previewMsg(previewData{request: 2, scheme: schemeDefault, target: "%7", lines: append(lines, "new"), followBottom: true}))
+	updated, _ = model.Update(previewMsg(previewData{request: 2, target: "%7", lines: append(lines, "new"), followBottom: true}))
 	if got := updated.(dashboardModel).previewOffset; got != 2 {
 		t.Fatalf("scrolled pane preview jumped to %d", got)
 	}
@@ -532,5 +532,85 @@ func TestTmuxPaneParserFailsClosedOnMalformedRecord(t *testing.T) {
 	}
 	if err := validateWorktreeRemoval("/repo"); err == nil {
 		t.Fatal("removal validation did not fail closed")
+	}
+}
+
+func TestMissingTmuxServerMeansNoPanes(t *testing.T) {
+	writeFakeTmux(t, "echo 'no server running on /tmp/tmux-1000/default' >&2\nexit 1\n")
+	invalidateTmuxPaneCache()
+	if panes, err := listTmuxPanes(); err != nil || panes != nil {
+		t.Fatalf("panes without a tmux server = %#v, %v", panes, err)
+	}
+	if agents, err := listLiveAgents(); err != nil || len(agents) != 0 {
+		t.Fatalf("agents without a tmux server = %#v, %v", agents, err)
+	}
+}
+
+func TestRemoveAgentClosesOnlyTheVerifiedPane(t *testing.T) {
+	writeFakeTmux(t, `
+printf '%s\n' "$*" >> "$TMUX_LOG"
+case "$1:$*" in
+  display-message:*window_id*) printf '@2\n' ;;
+  display-message:*) printf '4321\tpi\n' ;;
+  list-panes:*jumpmux_pane_status*) : ;;
+  list-panes:*)
+    printf '%%7\0374321\037/repo\037Pi\037$1\037dev\037@2\037x\037pi\037\036\n'
+    if test -n "$FAKE_SPLIT"; then printf '%%8\0379999\037/repo\037zsh\037$1\037dev\037@2\037x\037zsh\037\036\n'; fi ;;
+esac
+`)
+	t.Setenv("TMUX", "/tmp/remove-agent,1,0")
+	t.Setenv("TMUX_PANE", "%7")
+	t.Setenv("JUMPMUX_STATE_DIR", t.TempDir())
+	for _, split := range []bool{true, false} {
+		log := filepath.Join(t.TempDir(), "tmux.log")
+		t.Setenv("TMUX_LOG", log)
+		t.Setenv("FAKE_SPLIT", map[bool]string{true: "1"}[split])
+		if err := setAgentStatus([]string{"started", "session-id", "", "/repo", "Pi"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := removeAgent(item{pane: "%7", agentSessionID: "replaced-session"}); !errors.Is(err, errAgentChanged) {
+			t.Fatalf("removal of a replaced agent = %v", err)
+		}
+		if err := removeAgent(item{pane: "%7", agentSessionID: "session-id"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := readAgentState("%7"); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("removed agent kept its state: %v", err)
+		}
+		data, err := os.ReadFile(log)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A split window keeps its other panes, so its marker is recomputed; a lone pane takes the window with it.
+		resynced := strings.Contains(string(data), "set-option -uw -t @2 @jumpmux_status")
+		if strings.Count(string(data), "kill-pane -t %7") != 1 || resynced != split || !strings.Contains(string(data), "set-hook -gu after-select-pane[987654]") {
+			t.Fatalf("split=%v remove commands:\n%s", split, data)
+		}
+	}
+}
+
+func TestStatusFormatUsesGlobalUnlessWindowOverrides(t *testing.T) {
+	log := writeFakeTmux(t, `
+printf '%s\n' "$*" >> "$TMUX_LOG"
+case "$*" in
+  "show-option -wv -t %7 window-status-current-format") printf 'L#I\n' ;;
+  "show-option -gv window-status-format") printf '#I:#W\n' ;;
+esac
+`)
+	t.Setenv("TMUX_LOG", log)
+	if err := ensureTmuxStatusFormat("%7"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"set-option -gw window-status-format #I:#W" + jumpmuxStatusFormat, "set-option -w -t %7 window-status-current-format L#I" + jumpmuxStatusFormat} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("tmux log missing %q:\n%s", want, data)
+		}
+	}
+	if strings.Contains(string(data), "set-option -w -t %7 window-status-format") {
+		t.Fatalf("copied the global format into the window:\n%s", data)
 	}
 }

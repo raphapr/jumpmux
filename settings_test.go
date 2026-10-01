@@ -18,7 +18,7 @@ func TestDashboardScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !config.hasDefaultScope || config.defaultScope != scopeSession {
+	if config.defaultScope != scopeSession {
 		t.Fatalf("saved scope = %#v", config)
 	}
 
@@ -38,7 +38,7 @@ func TestDashboardScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.scope != scopeAll || len(got.agents) != 2 || !config.hasDefaultScope || config.defaultScope != scopeAll {
+	if got.scope != scopeAll || len(got.agents) != 2 || config.defaultScope != scopeAll {
 		t.Fatalf("all scope = %s, agents = %#v", got.scope.label(), got.agents)
 	}
 }
@@ -91,22 +91,5 @@ func TestPreviewSize(t *testing.T) {
 	updated, _ = loaded.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'-'}})
 	if got := updated.(dashboardModel).previewSize; got != 50 {
 		t.Fatalf("shrunk preview size = %d", got)
-	}
-
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	legacy, err := legacyPreviewSizePath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := atomicWrite(legacy, []byte("70\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if got := loadPreviewSize(); got != 70 {
-		t.Fatalf("legacy preview size = %d", got)
-	}
-	if data, err := os.ReadFile(path); err != nil || string(data) != "{\"preview_size\":70}\n" {
-		t.Fatalf("migrated settings file: %q err=%v", data, err)
 	}
 }

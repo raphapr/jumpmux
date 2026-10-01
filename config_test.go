@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -24,7 +25,7 @@ func TestDashboardConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !config.hasTheme || config.theme != schemeTealDrift || !config.hasDefaultScope || config.defaultScope != scopeSession || !config.hasNerdFont || config.nerdFont || config.preview != [tabCount]bool{true, false, false} {
+	if config.theme != schemeTealDrift || config.defaultScope != scopeSession || !config.hasNerdFont || config.nerdFont || config.preview != [tabCount]bool{true, false, false} {
 		t.Fatalf("config = %#v", config)
 	}
 	model := newDashboardForLaunch("/repo", "")
@@ -92,25 +93,64 @@ func TestLegacyWorktreeBackendIsRejected(t *testing.T) {
 	}
 }
 
-func TestLegacyDashboardPreferences(t *testing.T) {
-	defer applyColorScheme(schemeDefault)
+func TestConfigPathFollowsXDGOnEveryOS(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for xdg, want := range map[string]string{
+		"":              filepath.Join(home, ".config", "jumpmux", "config.toml"),
+		"relative/path": filepath.Join(home, ".config", "jumpmux", "config.toml"),
+		"/xdg/config":   filepath.Join("/xdg/config", "jumpmux", "config.toml"),
+	} {
+		t.Setenv("XDG_CONFIG_HOME", xdg)
+		if got, err := configPath(); err != nil || got != want {
+			t.Fatalf("config path with XDG_CONFIG_HOME=%q = %q, %v; want %q", xdg, got, err, want)
+		}
+	}
+}
+
+func TestSaveConfigWritesThroughSymlink(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	themePath, err := colorSchemePath()
+	dotfile := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(dotfile, []byte("theme = \"default\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link, err := configPath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicWrite(themePath, []byte("glacier-signal\n"), 0o600); err != nil {
+	if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	scopePath, err := scopeStatePath()
+	if err := os.Symlink(dotfile, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveScopeMode(scopeSession); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("saving replaced the config symlink: %v", err)
+	}
+	if data, err := os.ReadFile(dotfile); err != nil || string(data) != "theme = \"default\"\ndefault_scope = \"session\"\n" {
+		t.Fatalf("symlink target = %q, %v", data, err)
+	}
+}
+
+func TestConfigDecodeErrorsNameTheFailingLine(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	path, err := configPath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicWrite(scopePath, []byte("session\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	model := newDashboardForLaunch("/repo", "")
-	if model.scheme != schemeGlacierSignal || model.scope != scopeSession {
-		t.Fatalf("legacy preferences = theme %q, scope %q", model.scheme.slug(), model.scope.label())
+	for config, want := range map[string]string{
+		"theme = default\n": "config.toml:1: theme must be a quoted TOML string",
+		// A valid theme must not take the blame for another key's error.
+		"theme = \"default\"\nnerdfont = \"yes\"\n": "config.toml:2: toml: cannot decode TOML string",
+	} {
+		if err := atomicWrite(path, []byte(config), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("config %q error = %v, want %q", config, err, want)
+		}
 	}
 }

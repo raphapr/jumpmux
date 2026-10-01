@@ -12,13 +12,11 @@ import (
 )
 
 type jumpmuxConfig struct {
-	theme           colorScheme
-	defaultScope    scopeMode
-	nerdFont        bool
-	preview         [tabCount]bool
-	hasTheme        bool
-	hasDefaultScope bool
-	hasNerdFont     bool
+	theme        colorScheme
+	defaultScope scopeMode
+	nerdFont     bool
+	preview      [tabCount]bool
+	hasNerdFont  bool
 }
 
 type configFile struct {
@@ -56,10 +54,17 @@ func loadConfig() (jumpmuxConfig, error) {
 	if err := decoder.Decode(&file); err != nil {
 		var unknown *toml.StrictMissingError
 		if !errors.As(err, &unknown) {
-			for _, key := range []string{"theme", "default_scope"} {
-				if strings.Contains(string(data), key+" =") {
-					return config, fmt.Errorf("%s: %s must be a quoted TOML string", path, key)
+			// Name the failing line. An unquoted theme or scope otherwise reads as a number error.
+			var decodeErr *toml.DecodeError
+			if errors.As(err, &decodeErr) {
+				row, _ := decodeErr.Position()
+				if lines := strings.Split(string(data), "\n"); row >= 1 && row <= len(lines) {
+					key, _, _ := strings.Cut(lines[row-1], "=")
+					if key = strings.TrimSpace(key); key == "theme" || key == "default_scope" {
+						return config, fmt.Errorf("%s:%d: %s must be a quoted TOML string", path, row, key)
+					}
 				}
+				return config, fmt.Errorf("%s:%d: %w", path, row, err)
 			}
 			return config, fmt.Errorf("%s: %w", path, err)
 		}
@@ -83,13 +88,12 @@ func loadConfig() (jumpmuxConfig, error) {
 		if config.theme.slug() != strings.ToLower(*file.Theme) {
 			return config, fmt.Errorf("invalid theme %q", *file.Theme)
 		}
-		config.hasTheme = true
 	}
 	if file.DefaultScope != nil {
 		if *file.DefaultScope != scopeAll.label() && *file.DefaultScope != scopeSession.label() {
 			return config, fmt.Errorf("invalid default_scope %q", *file.DefaultScope)
 		}
-		config.defaultScope, config.hasDefaultScope = scopeModeFromLabel(*file.DefaultScope), true
+		config.defaultScope = scopeModeFromLabel(*file.DefaultScope)
 	}
 	if file.NerdFont != nil {
 		config.nerdFont, config.hasNerdFont = *file.NerdFont, true
@@ -104,10 +108,16 @@ func loadConfig() (jumpmuxConfig, error) {
 	return config, nil
 }
 
+// configPath follows XDG on every OS, including macOS, where os.UserConfigDir
+// would pick ~/Library/Application Support.
 func configPath() (string, error) {
-	config, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
+	config := os.Getenv("XDG_CONFIG_HOME")
+	if config == "" || !filepath.IsAbs(config) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		config = filepath.Join(home, ".config")
 	}
 	return filepath.Join(config, "jumpmux", "config.toml"), nil
 }
@@ -119,6 +129,10 @@ func saveConfigValue(key, value string) error {
 	path, err := configPath()
 	if err != nil {
 		return err
+	}
+	// Write through a symlink so a dotfiles-managed config stays linked.
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
 	}
 	data, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {

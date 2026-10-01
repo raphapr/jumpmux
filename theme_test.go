@@ -75,7 +75,7 @@ func TestColorSchemes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.themePicker || got.scheme != schemeGlacierSignal || !config.hasTheme || config.theme != schemeGlacierSignal {
+	if got.themePicker || got.scheme != schemeGlacierSignal || config.theme != schemeGlacierSignal {
 		t.Fatalf("selected scheme = %s", got.scheme.slug())
 	}
 }
