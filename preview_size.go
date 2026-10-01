@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 )
 
 const (
@@ -26,16 +24,6 @@ func loadPreviewSize() int {
 			var settings dashboardSettings
 			if json.Unmarshal(data, &settings) == nil && validPreviewSize(settings.PreviewSize) {
 				return settings.PreviewSize
-			}
-		}
-	}
-
-	// Read the 0.19 config file so an existing choice survives the move to XDG state.
-	if path, err := legacyPreviewSizePath(); err == nil {
-		if data, readErr := os.ReadFile(path); readErr == nil {
-			if size, parseErr := strconv.Atoi(strings.TrimSpace(string(data))); parseErr == nil && validPreviewSize(size) {
-				_ = savePreviewSize(size)
-				return size
 			}
 		}
 	}
@@ -68,12 +56,4 @@ func settingsPath() (string, error) {
 		state = filepath.Join(home, ".local", "state")
 	}
 	return filepath.Join(state, "jumpmux", "settings.json"), nil
-}
-
-func legacyPreviewSizePath() (string, error) {
-	config, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(config, "jumpmux", "dashboard_preview_size"), nil
 }

@@ -1,8 +1,6 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -438,28 +436,8 @@ func paintDashboardBackground(value string) string {
 	return strings.Join(lines, "\n")
 }
 
-func loadLegacyColorScheme() colorScheme {
-	path, err := colorSchemePath()
-	if err != nil {
-		return schemeDefault
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return schemeDefault
-	}
-	return colorSchemeFromSlug(string(data))
-}
-
 func saveColorScheme(scheme colorScheme) error {
 	return saveConfigValue("theme", scheme.slug())
-}
-
-func colorSchemePath() (string, error) {
-	config, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(config, "jumpmux", "color_scheme"), nil
 }
 
 func init() {

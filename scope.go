@@ -1,11 +1,5 @@
 package main
 
-import (
-	"os"
-	"path/filepath"
-	"strings"
-)
-
 type scopeMode uint8
 
 const (
@@ -41,26 +35,6 @@ func scopeModeFromLabel(value string) scopeMode {
 	return scopeAll
 }
 
-func loadLegacyScopeMode() scopeMode {
-	path, err := scopeStatePath()
-	if err != nil {
-		return scopeAll
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return scopeAll
-	}
-	return scopeModeFromLabel(strings.TrimSpace(string(data)))
-}
-
 func saveScopeMode(scope scopeMode) error {
 	return saveConfigValue("default_scope", scope.label())
-}
-
-func scopeStatePath() (string, error) {
-	config, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(config, "jumpmux", "dashboard_scope"), nil
 }
