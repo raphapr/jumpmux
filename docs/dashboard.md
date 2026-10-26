@@ -57,7 +57,9 @@ Agent status also appears in the tmux window list. jumpmux adds a marker to the 
 
 `jumpmux worktree add <branch> [--detach] [--json]` creates a normal worktree. Without `--detach` or `--json`, it opens a new tmux shell in the worktree. `--detach` prints its path, and `--json` returns the worktree resource.
 
-The preview captures up to 200 lines from the selected pane every 500 ms while the terminal has focus. It includes the tmux session name, preserves SGR colors, and strips Pi's prompt and footer. Scrolling up shows `PAUSED line/total`. Press `G` or `End` to follow new output again. When focus returns, jumpmux refreshes the data and selected preview.
+When agents in the same worktree share a title, the Title column appends the pane location as `window.pane (window-name)`, for example `π - repo · 2.1 (editor)`. On narrow terminals the title is shortened so the location stays visible. In the Worktrees tab, the Agent column shows `+N` for extra agents and the preview lists each agent with its pane location.
+
+The preview captures up to 200 lines from the selected pane every 500 ms while the terminal has focus. It starts with the pane location, such as `Pane dev:2.1 (editor)`, preserves SGR colors, and strips Pi's prompt and footer. Scrolling up shows `PAUSED line/total`. Press `G` or `End` to follow new output again. When focus returns, jumpmux refreshes the data and selected preview.
 
 Working agents show a Braille spinner. Statuses older than one hour show `󰔛`. The Time column changes color after five minutes and one hour. Set `JUMPMUX_REDUCED_MOTION=1` to replace animation with a static loader and reduce clock updates to once per second.
 

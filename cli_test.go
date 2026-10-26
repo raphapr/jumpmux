@@ -242,7 +242,7 @@ func TestDestructiveWorktreeCommandsConfirmBeforeRemoving(t *testing.T) {
 func TestRequiredAgentRejectsAmbiguousSessionID(t *testing.T) {
 	writeFakeTmux(t, `
 case "$1" in
-  list-panes) printf '%%7\0371\037/repo\037Pi\037$1\037dev\037@1\037a\037pi\037\036%%8\0372\037/repo\037Pi\037$1\037dev\037@2\037b\037pi\037\036' ;;
+  list-panes) printf '%%7\0371\037/repo\037Pi\037$1\037dev\037@1\037a\037pi\037\0371\0370\036%%8\0372\037/repo\037Pi\037$1\037dev\037@2\037b\037pi\037\0372\0370\036' ;;
 esac
 `)
 	t.Setenv("TMUX", "/tmp/ambiguous-agent,1,0")

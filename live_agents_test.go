@@ -139,7 +139,7 @@ case "$1:$*" in
   set-option:*-p*jumpmux_pane_status*) for value do :; done; printf '%s\n' "$value" > "$TMUX_STATUS" ;;
   show-option:*-pv*jumpmux_pane_status*) cat "$TMUX_STATUS" 2>/dev/null || true ;;
   list-panes:*jumpmux_pane_status*) cat "$TMUX_STATUS" 2>/dev/null || true ;;
-  list-panes:*) printf '%%7\0374321\037%s\037Pi\037$1\037dev\037@2\037feature\037pi\037%s\036\n' "$FAKE_CWD" "$FAKE_WORKTREE" ;;
+  list-panes:*) printf '%%7\0374321\037%s\037Pi\037$1\037dev\037@2\037feature\037pi\037%s\0372\0370\036\n' "$FAKE_CWD" "$FAKE_WORKTREE" ;;
   new-window:*) printf '$1\t@9\t%%9\n' ;;
 esac
 `
@@ -198,7 +198,7 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(agents) != 1 || agents[0].pane != "%7" || agents[0].status != "working" || agents[0].title != "π - Fix live tracking" || !agents[0].current {
+	if len(agents) != 1 || agents[0].pane != "%7" || agents[0].status != "working" || agents[0].title != "π - Fix live tracking" || !agents[0].current || agents[0].muxWindowIndex != "2" || agents[0].paneIndex != "0" {
 		t.Fatalf("unexpected live agents: %#v", agents)
 	}
 	t.Setenv("TMUX_PANE", "%7")
@@ -399,7 +399,7 @@ case "$1:$*" in
   display-message:*window_id*) printf '@2\n' ;;
   display-message:*) printf '4321\tpi\n' ;;
   list-panes:*jumpmux_pane_status*) : ;;
-  list-panes:*) printf '%%7\0374321\037/repo\037Pi\037$1\037dev\037@2\037x\037pi\037\036\n' ;;
+  list-panes:*) printf '%%7\0374321\037/repo\037Pi\037$1\037dev\037@2\037x\037pi\037\0372\0370\036\n' ;;
 esac
 `
 	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(script), 0o755); err != nil {
@@ -510,13 +510,13 @@ func TestTmuxStateIsServerNamespacedWithoutLegacyFallback(t *testing.T) {
 func TestTmuxPaneParserPreservesTabsAndNewlines(t *testing.T) {
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(`#!/bin/sh
-printf '%%7\0374321\037/repo\tname\037title line 1\ntitle line 2\037$1\037dev\037@2\037window\037pi\037/worktree\036\n'
+printf '%%7\0374321\037/repo\tname\037title line 1\ntitle line 2\037$1\037dev\037@2\037window\037pi\037/worktree\0373\0371\036\n'
 `), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	panes, err := listTmuxPanes()
-	if err != nil || len(panes) != 1 || panes[0].Path != "/repo\tname" || panes[0].Title != "title line 1\ntitle line 2" {
+	if err != nil || len(panes) != 1 || panes[0].Path != "/repo\tname" || panes[0].Title != "title line 1\ntitle line 2" || panes[0].WindowIndex != "3" || panes[0].PaneIndex != "1" {
 		t.Fatalf("pane parsing = %#v, %v", panes, err)
 	}
 }
@@ -554,8 +554,8 @@ case "$1:$*" in
   display-message:*) printf '4321\tpi\n' ;;
   list-panes:*jumpmux_pane_status*) : ;;
   list-panes:*)
-    printf '%%7\0374321\037/repo\037Pi\037$1\037dev\037@2\037x\037pi\037\036\n'
-    if test -n "$FAKE_SPLIT"; then printf '%%8\0379999\037/repo\037zsh\037$1\037dev\037@2\037x\037zsh\037\036\n'; fi ;;
+    printf '%%7\0374321\037/repo\037Pi\037$1\037dev\037@2\037x\037pi\037\0372\0370\036\n'
+    if test -n "$FAKE_SPLIT"; then printf '%%8\0379999\037/repo\037zsh\037$1\037dev\037@2\037x\037zsh\037\0372\0371\036\n'; fi ;;
 esac
 `)
 	t.Setenv("TMUX", "/tmp/remove-agent,1,0")

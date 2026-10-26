@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -48,7 +49,6 @@ const (
 	clockInterval        = 250 * time.Millisecond
 	staleThreshold       = time.Hour
 	maxDiffOutput        = 1 << 20
-	worktreeMetadataRows = 7
 )
 
 var spinnerFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -216,6 +216,8 @@ type previewData struct {
 	rightTitle   string
 	rightLines   []string
 	followBottom bool
+	// metadataRows counts leading worktree metadata lines; Git status follows them.
+	metadataRows int
 }
 
 type previewMsg previewData
@@ -716,8 +718,8 @@ func refreshWorktreeMux(items []item, generation uint64) tea.Cmd {
 func loadAgentPreview(item item, request uint64) tea.Cmd {
 	return func() tea.Msg {
 		preview := previewData{request: request, target: item.target, kind: item.kind, updated: item.updated, title: "Preview: " + worktreeName(item.cwd), followBottom: true}
-		if item.muxSessionName != "" {
-			preview.lines = append(preview.lines, "Session "+safeText(item.muxSessionName))
+		if location := paneLocation(item); location != "" {
+			preview.lines = append(preview.lines, "Pane "+location)
 		}
 		if item.prCheck == checkFailure {
 			preview.lines = append(preview.lines, failedChecksPreview(item.prFailedChecks))
@@ -756,22 +758,34 @@ func worktreePreview(item item, request uint64) previewData {
 	if item.prunable {
 		state += dashboardIcon("󰆴", "PRUNE")
 	}
+	lines := []string{
+		mutedStyle.Render("Branch  ") + textStyle.Render(safeText(item.branch)),
+		mutedStyle.Render("Path    ") + textStyle.Render(safeText(compactHome(item.cwd))),
+		mutedStyle.Render("Diff    ") + gitStatusView(item),
+	}
+	if len(item.agents) > 1 {
+		now := time.Now()
+		lines = append(lines, mutedStyle.Render("Agents  ")+textStyle.Render(strconv.Itoa(len(item.agents))))
+		for _, agent := range item.agents {
+			lines = append(lines, "  "+statusView(agent, now)+" "+textStyle.Render(truncate(safeText(agent.title), 24))+mutedStyle.Render(" · "+paneLocator(agent)))
+		}
+	} else {
+		lines = append(lines, mutedStyle.Render("Agent   ")+agentSummary(item, time.Now()))
+	}
+	lines = append(lines,
+		mutedStyle.Render("Mux     ")+muxView(item),
+		mutedStyle.Render("State   ")+textStyle.Render(state),
+		failedChecksPreviewStyled(item.prFailedChecks),
+	)
 	return previewData{
-		request: request,
-		target:  item.target,
-		kind:    item.kind,
-		updated: item.updated,
-		title:   worktreeName(item.cwd),
-		lines: []string{
-			mutedStyle.Render("Branch  ") + textStyle.Render(safeText(item.branch)),
-			mutedStyle.Render("Path    ") + textStyle.Render(safeText(compactHome(item.cwd))),
-			mutedStyle.Render("Diff    ") + gitStatusView(item),
-			mutedStyle.Render("Agent   ") + agentSummary(item, time.Now()),
-			mutedStyle.Render("Mux     ") + muxView(item),
-			mutedStyle.Render("State   ") + textStyle.Render(state),
-			failedChecksPreviewStyled(item.prFailedChecks),
-		},
-		rightTitle: "Git Log",
+		request:      request,
+		target:       item.target,
+		kind:         item.kind,
+		updated:      item.updated,
+		title:        worktreeName(item.cwd),
+		lines:        lines,
+		rightTitle:   "Git Log",
+		metadataRows: len(lines),
 	}
 }
 
@@ -939,8 +953,8 @@ func (m *dashboardModel) requestPreview(item item) tea.Cmd {
 
 	preview := worktreePreview(item, request)
 	if !changed {
-		if len(m.preview.lines) > len(preview.lines) {
-			preview.lines = append(preview.lines, m.preview.lines[len(preview.lines):]...)
+		if m.preview.kind == "worktree" && len(m.preview.lines) > m.preview.metadataRows {
+			preview.lines = append(preview.lines, m.preview.lines[m.preview.metadataRows:]...)
 		}
 		preview.rightLines = m.preview.rightLines
 	}
@@ -1260,7 +1274,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if !m.diff && msg.request == m.previewRequest && m.preview.target == msg.target && m.preview.kind == "worktree" {
 			if selected, ok := m.selected(); ok && selected.kind == "worktree" && selected.target == msg.target {
-				m.preview.lines = m.preview.lines[:min(worktreeMetadataRows, len(m.preview.lines))]
+				m.preview.lines = m.preview.lines[:min(m.preview.metadataRows, len(m.preview.lines))]
 				if msg.err != nil {
 					m.preview.lines = append(m.preview.lines, gitErrorLine(msg.err))
 				} else if strings.TrimSpace(msg.status) == "" {

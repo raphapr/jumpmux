@@ -90,10 +90,10 @@ func TestPreviewFailedChecksAndWorktreeIndicators(t *testing.T) {
 	model.width, model.height = 80, 20
 	model.agents = []item{agent}
 	model.agentGit[agent.cwd] = item{gitLoaded: true, prCheck: checkFailure, prFailedChecks: pr.FailedChecks}
-	model.preview = previewData{target: agent.target, kind: agent.kind, title: "Preview", lines: []string{"Session dev", failedChecksPreview(pr.FailedChecks), "Session captured pane output"}}
+	model.preview = previewData{target: agent.target, kind: agent.kind, title: "Preview", lines: []string{"Pane dev", failedChecksPreview(pr.FailedChecks), "Pane captured pane output"}}
 	raw := strings.Join(model.preview.lines, "\n")
 	rendered := model.renderPreview(model.width)
-	for _, style := range []string{mutedStyle.Render("Session "), dangerStyle.Render("Failed checks: ")} {
+	for _, style := range []string{mutedStyle.Render("Pane "), dangerStyle.Render("Failed checks: ")} {
 		if !strings.Contains(rendered, style) {
 			t.Fatalf("agent preview missing styled label %q:\n%s", ansi.Strip(style), rendered)
 		}

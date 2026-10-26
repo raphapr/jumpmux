@@ -72,6 +72,8 @@ type tmuxPane struct {
 	WindowName     string
 	CurrentCommand string
 	Worktree       string
+	WindowIndex    string
+	PaneIndex      string
 }
 
 func setupPIExtension() (string, error) {
@@ -219,6 +221,8 @@ func listLiveAgents() ([]item, error) {
 			muxSessionName: pane.SessionName,
 			muxWindowID:    pane.WindowID,
 			muxWindowName:  pane.WindowName,
+			muxWindowIndex: pane.WindowIndex,
+			paneIndex:      pane.PaneIndex,
 		})
 	}
 	sort.Slice(agents, func(i, j int) bool {
@@ -253,7 +257,7 @@ func invalidateTmuxPaneCache() {
 func listTmuxPanes() ([]tmuxPane, error) {
 	const fieldSeparator = "\x1f"
 	const recordSeparator = "\x1e"
-	const format = "#{pane_id}" + fieldSeparator + "#{pane_pid}" + fieldSeparator + "#{pane_current_path}" + fieldSeparator + "#{pane_title}" + fieldSeparator + "#{session_id}" + fieldSeparator + "#{session_name}" + fieldSeparator + "#{window_id}" + fieldSeparator + "#{window_name}" + fieldSeparator + "#{pane_current_command}" + fieldSeparator + "#{@jumpmux_worktree}" + recordSeparator
+	const format = "#{pane_id}" + fieldSeparator + "#{pane_pid}" + fieldSeparator + "#{pane_current_path}" + fieldSeparator + "#{pane_title}" + fieldSeparator + "#{session_id}" + fieldSeparator + "#{session_name}" + fieldSeparator + "#{window_id}" + fieldSeparator + "#{window_name}" + fieldSeparator + "#{pane_current_command}" + fieldSeparator + "#{@jumpmux_worktree}" + fieldSeparator + "#{window_index}" + fieldSeparator + "#{pane_index}" + recordSeparator
 	output, err := tmuxOutput("list-panes", "-a", "-F", format)
 	if err != nil {
 		// Without a tmux binary or server there are no panes, which is not an error.
@@ -270,13 +274,14 @@ func listTmuxPanes() ([]tmuxPane, error) {
 			continue
 		}
 		parts := strings.Split(record, fieldSeparator)
-		if len(parts) != 10 {
+		if len(parts) != 12 {
 			return nil, errors.New("could not read tmux panes: malformed pane record")
 		}
 		panes = append(panes, tmuxPane{
 			ID: parts[0], PID: parts[1], Path: parts[2], Title: parts[3],
 			SessionID: parts[4], SessionName: parts[5], WindowID: parts[6],
 			WindowName: parts[7], CurrentCommand: parts[8], Worktree: parts[9],
+			WindowIndex: parts[10], PaneIndex: parts[11],
 		})
 	}
 	return panes, nil

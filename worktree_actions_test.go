@@ -90,7 +90,7 @@ func TestWorktreeRemovalRevalidatesTmuxUse(t *testing.T) {
 	}
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(`#!/bin/sh
-printf '%%7\0374321\037%s\037Pi\037$1\037dev\037@2\037feature\037pi\037%s\036\n' "$FAKE_PANE_PATH" "$FAKE_WORKTREE"
+printf '%%7\0374321\037%s\037Pi\037$1\037dev\037@2\037feature\037pi\037%s\0372\0370\036\n' "$FAKE_PANE_PATH" "$FAKE_WORKTREE"
 `), 0o755); err != nil {
 		t.Fatal(err)
 	}

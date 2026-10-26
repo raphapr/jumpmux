@@ -341,7 +341,7 @@ func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) st
 	line += renderCell(keycapStyle, jumpKey, 2, background) + renderCell(worktreeStyle, projectName(item.cwd), c.project, background) + renderCell(worktreeStyle, m.displayWorktree(item), c.worktree, background)
 	if m.tab == tabAgents {
 		line += compactGitStatusCell(gitItem, c.git, m.now, background) + compactPRCell(gitItem, c.pr, m.now, background)
-		line += statusCell(item, c.status, m.now, background) + elapsedCell(item.updated, c.elapsed, m.now, background) + renderCell(worktreeStyle, item.title, c.tail, background)
+		line += statusCell(item, c.status, m.now, background) + elapsedCell(item.updated, c.elapsed, m.now, background) + renderCell(worktreeStyle, m.agentTitle(item, c.tail), c.tail, background)
 	} else {
 		line += gitStatusCell(gitItem, c.git, m.now, background) + prCell(gitItem, c.pr, m.now, background)
 		age := "-"
@@ -351,6 +351,23 @@ func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) st
 		line += muxCell(item, c.status, background) + renderCell(mutedStyle, age, c.elapsed, background) + agentSummaryCell(item, c.tail, m.now, background, m.agentsLoaded, m.agentErr)
 	}
 	return padANSIBackground(line, width, background)
+}
+
+// agentTitle appends the pane locator when another agent would otherwise render
+// an identical row (same project, worktree, and title). The title is shortened
+// first so the locator survives truncation in a cell of the given width.
+func (m dashboardModel) agentTitle(agent item, width int) string {
+	title := safeText(agent.title)
+	for _, other := range m.agents {
+		if other.target != agent.target && safeText(other.title) == title && projectName(other.cwd) == projectName(agent.cwd) && m.displayWorktree(other) == m.displayWorktree(agent) {
+			if locator := paneLocator(agent); locator != "" {
+				// cell() reserves one trailing column as the gap.
+				return fitWithSuffix(title, " · "+locator, width-1)
+			}
+			break
+		}
+	}
+	return agent.title
 }
 
 func (m dashboardModel) displayWorktree(item item) string {
@@ -444,8 +461,8 @@ func (m dashboardModel) renderPreview(width int) string {
 	if selected.kind == "session" {
 		lines = append([]string(nil), lines...)
 		index := 0
-		if selected.muxSessionName != "" && len(lines) > index && lines[index] == "Session "+safeText(selected.muxSessionName) {
-			lines[index] = mutedStyle.Render("Session ") + textStyle.Render(safeText(selected.muxSessionName))
+		if location := paneLocation(selected); location != "" && len(lines) > index && lines[index] == "Pane "+location {
+			lines[index] = mutedStyle.Render("Pane ") + textStyle.Render(location)
 			index++
 		}
 		git := m.gitItem(selected)

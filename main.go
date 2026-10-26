@@ -68,6 +68,8 @@ type item struct {
 	muxSessionName   string
 	muxWindowID      string
 	muxWindowName    string
+	muxWindowIndex   string
+	paneIndex        string
 	prNumber         int
 	prState          string
 	prDraft          bool
@@ -83,6 +85,8 @@ type item struct {
 	added            int
 	removed          int
 	untracked        int
+	// agents lists every live agent in a worktree; the fields above describe the representative.
+	agents []item
 }
 
 type worktree struct {
@@ -506,12 +510,16 @@ func worktreePRDetails(repo string, items []item) []item {
 func attachAgentsToWorktrees(items, agents []item) {
 	representatives := make([]item, len(items))
 	hasRepresentative := make([]bool, len(items))
+	grouped := make([][]item, len(items))
 	for _, agent := range agents {
 		match := -1
 		for index := range items {
 			if pathWithin(agent.cwd, items[index].cwd) && (match < 0 || len(items[index].cwd) > len(items[match].cwd)) {
 				match = index
 			}
+		}
+		if match >= 0 {
+			grouped[match] = append(grouped[match], agent)
 		}
 		if match >= 0 && (!hasRepresentative[match] || preferAgent(agent, representatives[match])) {
 			representatives[match], hasRepresentative[match] = agent, true
@@ -525,6 +533,7 @@ func attachAgentsToWorktrees(items, agents []item) {
 			items[index].muxWindowID = ""
 			items[index].muxWindowName = ""
 		}
+		items[index].agents = grouped[index]
 		items[index].sessionTitle = ""
 		items[index].status = ""
 		items[index].seen = false

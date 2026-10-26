@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -404,6 +405,37 @@ func muxView(item item) string {
 	return infoStyle.Render("● ") + textStyle.Render(safeText(item.muxSessionName+":"+item.muxWindowName))
 }
 
+// paneLocator names a pane as a tmux window.pane target plus the window name,
+// for example "2.1 (editor)". Without indices it falls back to the unique pane ID.
+func paneLocator(item item) string {
+	if item.muxWindowIndex == "" {
+		return safeText(cmp.Or(item.pane, item.muxWindowName))
+	}
+	locator := item.muxWindowIndex
+	if item.paneIndex != "" {
+		locator += "." + item.paneIndex
+	}
+	if item.muxWindowName != "" {
+		locator += " (" + item.muxWindowName + ")"
+	}
+	return safeText(locator)
+}
+
+// fitWithSuffix truncates value so suffix stays visible within width.
+func fitWithSuffix(value, suffix string, width int) string {
+	return ansi.Truncate(safeText(value), max(0, width-ansi.StringWidth(suffix)), "…") + suffix
+}
+
+func paneLocation(item item) string {
+	if item.muxSessionName == "" {
+		return ""
+	}
+	if locator := paneLocator(item); locator != "" {
+		return safeText(item.muxSessionName) + ":" + locator
+	}
+	return safeText(item.muxSessionName)
+}
+
 func statusText(item item, now time.Time) string {
 	icon := dashboardIcon(doneIcon, "D")
 	switch item.status {
@@ -458,7 +490,16 @@ func agentSummaryCell(item item, width int, now time.Time, background *lipgloss.
 			return renderCell(mutedStyle, "-", width, background)
 		}
 	}
-	value := withBackground(statusStyle(item, now), background).Render(statusText(item, now)) + withBackground(textStyle, background).Render(" "+truncate(safeText(item.sessionTitle), 24))
+	status, extra := statusText(item, now), ""
+	if count := len(item.agents) - 1; count > 0 {
+		extra = fmt.Sprintf(" +%d", count)
+	}
+	title := truncate(safeText(item.sessionTitle), 24)
+	if extra != "" {
+		// Keep "+N" visible in narrow cells by shortening the title instead.
+		title = ansi.Truncate(safeText(item.sessionTitle), max(0, min(24, width-ansi.StringWidth(status)-1-ansi.StringWidth(extra))), "…")
+	}
+	value := withBackground(statusStyle(item, now), background).Render(status) + withBackground(textStyle, background).Render(" "+title) + withBackground(mutedStyle, background).Render(extra)
 	return padANSIBackground(value, width, background)
 }
 

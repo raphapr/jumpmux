@@ -209,7 +209,7 @@ func TestWorktreePreviewRendersMetadataBeforeGitCommands(t *testing.T) {
 		worktrees:  []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main"}, {kind: "worktree", target: "/feature", cwd: "/feature", branch: "feature"}},
 	})
 	model = updated.(dashboardModel)
-	if command == nil || model.preview.target != "/repo" || model.preview.title != "repo" || model.preview.rightTitle != "Git Log" || len(model.preview.lines) != worktreeMetadataRows {
+	if command == nil || model.preview.target != "/repo" || model.preview.title != "repo" || model.preview.rightTitle != "Git Log" || len(model.preview.lines) != model.preview.metadataRows || model.preview.metadataRows != 7 {
 		t.Fatalf("worktree metadata was not rendered immediately: %#v", model.preview)
 	}
 	if model.worktreePending != 4 {
@@ -452,7 +452,7 @@ func TestAgentFilterAndPreviewIncludeSessionMetadata(t *testing.T) {
 	}
 	writeFakeTmux(t, "printf '1\\t1\\noutput\\n'")
 	preview := loadAgentPreview(model.agents[0], 1)().(previewMsg)
-	if plain := ansi.Strip(strings.Join(preview.lines, "\n")); !strings.Contains(plain, "Session dev") || strings.Contains(preview.title, "dev") {
+	if plain := ansi.Strip(strings.Join(preview.lines, "\n")); !strings.Contains(plain, "Pane dev") || strings.Contains(preview.title, "dev") {
 		t.Fatalf("agent preview session metadata = title %q lines %q", preview.title, plain)
 	}
 }
@@ -1407,5 +1407,114 @@ func TestDiffViewColorsHunksAndListsFiles(t *testing.T) {
 		if width := ansi.StringWidth(line); width != 100 {
 			t.Fatalf("diff view width = %d: %q", width, line)
 		}
+	}
+}
+
+func TestAgentsSharingAWorktreeAreDistinguishable(t *testing.T) {
+	first := item{kind: "session", target: "%1", pane: "%1", cwd: "/repo", title: "π - repo", status: "working", muxSessionName: "dev", muxWindowIndex: "2", muxWindowName: "editor", paneIndex: "0"}
+	second := item{kind: "session", target: "%2", pane: "%2", cwd: "/repo", title: "π - repo", status: "done", seen: true, muxSessionName: "dev", muxWindowIndex: "2", muxWindowName: "editor", paneIndex: "1"}
+	unique := item{kind: "session", target: "%3", pane: "%3", cwd: "/repo", title: "named", muxSessionName: "dev", muxWindowIndex: "3", paneIndex: "0"}
+
+	model := newDashboard("/repo")
+	model.width = 120
+	model.agents = []item{first, second, unique}
+	for index, want := range []string{"π - repo · 2.0 (editor)", "π - repo · 2.1 (editor)", "named"} {
+		if got := model.agentTitle(model.agents[index], 80); got != want {
+			t.Fatalf("agentTitle(%s) = %q, want %q", model.agents[index].target, got, want)
+		}
+	}
+	columns := model.columns(model.width, model.rows())
+	if row := ansi.Strip(model.tableRow(second, 1, model.width, columns)); !strings.Contains(row, "2.1 (editor)") {
+		t.Fatalf("agent row has no pane locator: %q", row)
+	}
+
+	// Titles that differ only in whitespace render identically, so they still collide.
+	spaced := first
+	spaced.title = "π -  repo"
+	model.agents = []item{spaced, second}
+	if got := model.agentTitle(spaced, 80); !strings.HasSuffix(got, "· 2.0 (editor)") {
+		t.Fatalf("whitespace-only title difference hid the locator: %q", got)
+	}
+	// The same title in a different worktree is already distinguishable.
+	elsewhere := second
+	elsewhere.cwd = "/other"
+	model.agents = []item{first, elsewhere}
+	if got := model.agentTitle(first, 80); got != first.title {
+		t.Fatalf("distinct worktrees got a locator: %q", got)
+	}
+
+	// Narrow terminals with long titles keep the locator and shorten the title.
+	long := []item{first, second}
+	for index := range long {
+		long[index].title = "π - fix multi agent locator truncation"
+	}
+	model.agents = long
+	model.width = 80
+	model.agentGit["/repo"] = item{gitLoaded: true, branch: "feature/multi-agent-locator", committedAdded: 120, committedRemoved: 40, ahead: 2, prNumber: 123}
+	columns = model.columns(model.width, model.rows())
+	firstRow := ansi.Strip(model.tableRow(long[0], 0, model.width, columns))
+	secondRow := ansi.Strip(model.tableRow(long[1], 1, model.width, columns))
+	if firstRow[2:] == secondRow[2:] || !strings.Contains(secondRow, "2.1") {
+		t.Fatalf("narrow agent rows are indistinguishable:\n%q\n%q", firstRow, secondRow)
+	}
+
+	worktrees := []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main", gitLoaded: true}}
+	attachAgentsToWorktrees(worktrees, []item{first, second})
+	if len(worktrees[0].agents) != 2 || worktrees[0].sessionTitle != first.title {
+		t.Fatalf("worktree agents = %#v", worktrees[0])
+	}
+	for _, width := range []int{9, 40} {
+		if cell := ansi.Strip(agentSummaryCell(worktrees[0], width, time.Now(), nil, true, nil)); !strings.Contains(cell, " +1") {
+			t.Fatalf("worktree agent cell at width %d hides extra agents: %q", width, cell)
+		}
+	}
+	preview := ansi.Strip(strings.Join(worktreePreview(worktrees[0], 1).lines, "\n"))
+	for _, want := range []string{"Agents  2", "· 2.0 (editor)", "· 2.1 (editor)"} {
+		if !strings.Contains(preview, want) {
+			t.Fatalf("worktree preview missing %q:\n%s", want, preview)
+		}
+	}
+
+	// Git status must follow all metadata rows, including one line per agent,
+	// and refreshing the preview must not drop or duplicate lines.
+	worktreeModel := newDashboard("/repo")
+	worktreeModel.width, worktreeModel.height, worktreeModel.tab = 100, 30, tabWorktrees
+	worktreeModel.worktrees = worktrees
+	worktreeModel.requestPreview(worktrees[0])
+	updated, _ := worktreeModel.Update(worktreeStatusMsg{request: worktreeModel.previewRequest, target: "/repo", status: " M changed.go"})
+	worktreeModel = updated.(dashboardModel)
+	worktreeModel.requestPreview(worktrees[0])
+	lines := ansi.Strip(strings.Join(worktreeModel.preview.lines, "\n"))
+	if !strings.Contains(lines, "State") || !strings.Contains(lines, "Mux") || strings.Count(lines, "M changed.go") != 1 {
+		t.Fatalf("multi-agent worktree preview lost or repeated lines:\n%s", lines)
+	}
+
+	attachAgentsToWorktrees(worktrees, []item{first})
+	if cell := ansi.Strip(agentSummaryCell(worktrees[0], 40, time.Now(), nil, true, nil)); strings.Contains(cell, " +") {
+		t.Fatalf("single agent shows an extra count: %q", cell)
+	}
+
+	for _, tc := range []struct {
+		agent             item
+		locator, location string
+	}{
+		{second, "2.1 (editor)", "dev:2.1 (editor)"},
+		{item{pane: "%9", muxWindowName: "editor", muxSessionName: "dev"}, "%9", "dev:%9"},
+		{item{muxWindowIndex: "4", muxSessionName: "dev"}, "4", "dev:4"},
+		{item{pane: "%9", muxWindowIndex: "4", paneIndex: "2"}, "4.2", ""},
+		{item{muxSessionName: "dev"}, "", "dev"},
+	} {
+		if got := paneLocator(tc.agent); got != tc.locator {
+			t.Fatalf("paneLocator(%#v) = %q, want %q", tc.agent, got, tc.locator)
+		}
+		if got := paneLocation(tc.agent); got != tc.location {
+			t.Fatalf("paneLocation(%#v) = %q, want %q", tc.agent, got, tc.location)
+		}
+	}
+
+	writeFakeTmux(t, "printf '1\\t1\\noutput\\n'")
+	agentPreview := loadAgentPreview(second, 1)().(previewMsg)
+	if len(agentPreview.lines) == 0 || agentPreview.lines[0] != "Pane dev:2.1 (editor)" {
+		t.Fatalf("agent preview pane line = %q", agentPreview.lines)
 	}
 }
