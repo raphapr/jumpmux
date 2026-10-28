@@ -767,7 +767,10 @@ func (m dashboardModel) renderFooter(width int) string {
 	}
 	candidates := []string{footerCommand("↵", "Open")}
 	for _, entry := range m.actionMenuEntries() {
-		candidates = append(candidates, footerCommand(entry.key, entry.footer))
+		// ↵ already shows Open; o stays in Help and the action menu.
+		if entry.action != menuOpen {
+			candidates = append(candidates, footerCommand(entry.key, entry.footer))
+		}
 	}
 	if m.tab == tabAgents {
 		candidates = append(candidates, footerToggle("s", "Scope ("+m.scope.displayLabel()+")", m.scope == scopeSession))
