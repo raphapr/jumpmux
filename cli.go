@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -210,11 +211,17 @@ func requiredWorktree(cwd, id string) (item, error) {
 
 func runAgentCommand(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: jumpmux agent <list|open>")
+		return errors.New("usage: jumpmux agent <list|open|new>")
 	}
 	switch args[0] {
 	case "list":
 		return listContext("agents", "", args[1:])
+	case "new":
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		return runAgentNew(cwd, args[1:])
 	case "open":
 		if len(args) != 2 {
 			return errors.New("usage: jumpmux agent open <session-id|pane-id>")
@@ -227,6 +234,76 @@ func runAgentCommand(args []string) error {
 	default:
 		return fmt.Errorf("unknown agent command %q", args[0])
 	}
+}
+
+type agentNewOptions struct {
+	prompt     string
+	branch     string
+	repo       string
+	background bool
+}
+
+func parseAgentNew(args []string) (agentNewOptions, error) {
+	usage := errors.New("usage: jumpmux agent new <prompt> [--branch <name>] [--repo <path>] [--background]")
+	var options agentNewOptions
+	for index := 0; index < len(args); index++ {
+		switch arg := args[index]; arg {
+		case "--background":
+			options.background = true
+		case "--branch", "--repo":
+			index++
+			if index >= len(args) || strings.TrimSpace(args[index]) == "" {
+				return agentNewOptions{}, fmt.Errorf("%s requires a value", arg)
+			}
+			if arg == "--branch" {
+				options.branch = args[index]
+			} else {
+				options.repo = args[index]
+			}
+		default:
+			if strings.HasPrefix(arg, "-") || options.prompt != "" {
+				return agentNewOptions{}, usage
+			}
+			options.prompt = strings.TrimSpace(arg)
+		}
+	}
+	if options.prompt == "" {
+		return agentNewOptions{}, usage
+	}
+	return options, nil
+}
+
+func runAgentNew(cwd string, args []string) error {
+	options, err := parseAgentNew(args)
+	if err != nil {
+		return err
+	}
+	repo := cwd
+	if options.repo != "" {
+		if repo, err = filepath.Abs(expandSessionPath(options.repo)); err != nil {
+			return err
+		}
+	}
+	branch := options.branch
+	if branch == "" {
+		var warning error
+		if branch, warning, err = nameAgentBranch(repo, options.prompt); err != nil {
+			return err
+		}
+		if warning != nil {
+			fmt.Fprintf(os.Stderr, "jumpmux: %v; using %s\n", warning, branch)
+		}
+	}
+	launch, err := startAgent(repo, branch, options.prompt)
+	if err != nil {
+		return err
+	}
+	if options.background {
+		// The pane ID works with jumpmux agent open.
+		fmt.Println(launch.pane)
+		return nil
+	}
+	return openAgentWindow(launch)
 }
 
 type worktreeAddOptions struct {

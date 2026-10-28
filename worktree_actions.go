@@ -33,7 +33,7 @@ func addWorktree(repo, branch string) (item, error) {
 	if err != nil {
 		return item{}, err
 	}
-	target := filepath.Join(filepath.Dir(root), filepath.Base(root)+"__worktrees", filepath.FromSlash(branch))
+	target := worktreePath(root, branch)
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return item{}, err
 	}
@@ -42,6 +42,10 @@ func addWorktree(repo, branch string) (item, error) {
 		return item{}, actionError("add worktree", output, err)
 	}
 	return item{kind: "worktree", target: target, cwd: target, branch: branch, title: branch}, nil
+}
+
+func worktreePath(root, branch string) string {
+	return filepath.Join(filepath.Dir(root), filepath.Base(root)+"__worktrees", filepath.FromSlash(branch))
 }
 
 func removeWorktree(repo, path string) error {

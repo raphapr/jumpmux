@@ -107,7 +107,7 @@ func (m dashboardModel) modeLabel() string {
 		return "THEME"
 	case m.actionMenu:
 		return "ACTIONS"
-	case m.action == actionRunning:
+	case m.action == actionRunning || m.action == actionAgentNaming:
 		return "WORKING"
 	case m.action != actionNone:
 		return "CONFIRM"
@@ -663,13 +663,20 @@ func (m dashboardModel) renderFooter(width int) string {
 		return padANSI("  "+footerCommand("j/k", "Move")+" "+footerCommand("key", "Run")+" "+footerCommand("Enter", "Run")+" "+footerCommand("Esc", "Cancel"), width)
 	}
 	switch m.action {
-	case actionAddWorktree:
+	case actionAddWorktree, actionAgentPrompt, actionAgentBranch:
 		input := m.actionTextInput
 		styleTextInput(&input)
-		prefix := "  " + textStyle.Render("branch: ")
-		create := footerCommand("Enter", "Create")
+		label, verb := "branch: ", "Create"
+		switch {
+		case m.action == actionAgentPrompt:
+			label, verb = "prompt: ", "Name"
+		case m.action == actionAgentBranch && m.agentNameFallback:
+			label = "naming failed, branch: "
+		}
+		prefix := "  " + textStyle.Render(label)
+		create := footerCommand("Enter", verb)
 		if width < 60 {
-			create = footerCommand("↵", "Create")
+			create = footerCommand("↵", verb)
 		}
 		suffix := "  " + create + " " + footerCommand("Esc", "Cancel")
 		input.Width = max(0, width-ansi.StringWidth(prefix)-ansi.StringWidth(suffix)-1)
@@ -677,6 +684,8 @@ func (m dashboardModel) renderFooter(width int) string {
 		return padANSI(prefix+input.View()+suffix, width)
 	case actionRunning:
 		return padANSI("  "+infoStyle.Render("Working…"), width)
+	case actionAgentNaming:
+		return padANSI("  "+infoStyle.Render("Naming branch…")+"  "+footerCommand("Esc", "Cancel"), width)
 	}
 	if m.confirming() {
 		name, verb, key := m.displayWorktree(m.actionTarget), "Remove", "Enter"

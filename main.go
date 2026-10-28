@@ -147,7 +147,7 @@ func main() {
 	for index := 1; index < len(os.Args); index++ {
 		switch os.Args[index] {
 		case "-h", "--help":
-			fmt.Print("jumpmux — dashboard for Git worktrees, live Pi agents, and tmux sessions\n\nUsage:\n  jumpmux [-t|--tab <agents|worktrees|sessions>]\n  jumpmux agent <list|open> ...\n  jumpmux worktree add <branch> [--detach] [--json]\n  jumpmux worktree <list|open|diff|pr|remove|cleanup|rebase|merge> ...\n  jumpmux session <list|open|last|rename|remove> ...\n  jumpmux [--list|--version|setup]\n\nResource commands use singular nouns; --tab values use plural tab names. Destructive commands prompt for confirmation; append --yes for non-interactive use.\n")
+			fmt.Print("jumpmux — dashboard for Git worktrees, live Pi agents, and tmux sessions\n\nUsage:\n  jumpmux [-t|--tab <agents|worktrees|sessions>]\n  jumpmux agent <list|open> ...\n  jumpmux agent new <prompt> [--branch <name>] [--repo <path>] [--background]\n  jumpmux worktree add <branch> [--detach] [--json]\n  jumpmux worktree <list|open|diff|pr|remove|cleanup|rebase|merge> ...\n  jumpmux session <list|open|last|rename|remove> ...\n  jumpmux [--list|--version|setup]\n\nResource commands use singular nouns; --tab values use plural tab names. Destructive commands prompt for confirmation; append --yes for non-interactive use.\n")
 			return
 		case "-t", "--tab":
 			flag := os.Args[index]
@@ -163,6 +163,9 @@ func main() {
 			exitOnError(err)
 			fmt.Println("Installed Pi extension:", path)
 			fmt.Println("Restart Pi or run /reload in existing sessions.")
+			return
+		case "agent-exec":
+			exitOnError(runAgentExec(os.Args[index+1:]))
 			return
 		case "agent-status":
 			exitOnError(setAgentStatus(os.Args[index+1:]))

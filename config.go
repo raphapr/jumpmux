@@ -6,17 +6,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
 
 type jumpmuxConfig struct {
-	theme        colorScheme
-	defaultScope scopeMode
-	nerdFont     bool
-	preview      [tabCount]bool
-	hasNerdFont  bool
+	theme            colorScheme
+	defaultScope     scopeMode
+	nerdFont         bool
+	preview          [tabCount]bool
+	hasNerdFont      bool
+	agentCommand     []string
+	agentNameCommand []string
 }
 
 type configFile struct {
@@ -25,6 +28,12 @@ type configFile struct {
 	NerdFont     *bool          `toml:"nerdfont"`
 	Preview      *previewConfig `toml:"preview"`
 	Sessions     any            `toml:"sessions"`
+	Agent        *agentConfig   `toml:"agent"`
+}
+
+type agentConfig struct {
+	Command     *[]string `toml:"command"`
+	NameCommand *[]string `toml:"name_command"`
 }
 
 type previewConfig struct {
@@ -35,7 +44,9 @@ type previewConfig struct {
 
 func loadConfig() (jumpmuxConfig, error) {
 	config := jumpmuxConfig{
-		preview: [tabCount]bool{true, true, true},
+		preview:          [tabCount]bool{true, true, true},
+		agentCommand:     defaultAgentCommand,
+		agentNameCommand: defaultAgentNameCommand,
 	}
 	path, err := configPath()
 	if err != nil {
@@ -76,7 +87,7 @@ func loadConfig() (jumpmuxConfig, error) {
 			if len(key) == 0 {
 				continue
 			}
-			if key[0] == "agents" || key[0] == "preview" {
+			if key[0] == "agent" || key[0] == "agents" || key[0] == "preview" {
 				return config, fmt.Errorf("%s: %s uses unsupported %q", path, key[0], key[len(key)-1])
 			}
 			return config, fmt.Errorf("%s: uses unsupported %q", path, key[0])
@@ -103,6 +114,24 @@ func loadConfig() (jumpmuxConfig, error) {
 			if enabled != nil {
 				config.preview[tab] = *enabled
 			}
+		}
+	}
+	if file.Agent != nil {
+		for _, setting := range []struct {
+			key          string
+			value        *[]string
+			target       *[]string
+			placeholders bool
+		}{{"command", file.Agent.Command, &config.agentCommand, true}, {"name_command", file.Agent.NameCommand, &config.agentNameCommand, false}} {
+			if setting.value == nil {
+				continue
+			}
+			if err := validateAgentCommand(setting.key, *setting.value, setting.placeholders); err != nil {
+				return config, fmt.Errorf("%s: %w", path, err)
+			}
+			command := slices.Clone(*setting.value)
+			command[0] = expandSessionPath(command[0])
+			*setting.target = command
 		}
 	}
 	return config, nil

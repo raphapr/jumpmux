@@ -28,6 +28,7 @@
 | `Enter` while filtering                   | Accept an Agents/Worktrees filter or open a Session                    |
 | `Esc` while filtering                     | Clear and close the filter                                             |
 | Agents: `o`, `d`, `p`, `m`, `r`           | Open, diff, open PR, mark an unseen completion seen, or remove         |
+| Agents and Worktrees: `A`                 | Start an agent from a prompt: name the branch, edit it, then create    |
 | Worktrees: `a`, `o`, `d`, `p`             | Add, open, diff, or open PR when available                             |
 | Worktrees: `b`, `m`, `x`, `r`             | Rebase, merge, clean up, or remove; `Enter` confirms                   |
 | Sessions: `O`, `Ctrl+r`, `P`              | Open, remove (`Enter` confirms), or switch to the previous session     |
@@ -48,6 +49,8 @@
 The Pi extension writes agent status records. Before displaying a record, jumpmux checks its pane with `tmux list-panes`. Pi UI prompts show as a question state until the prompt closes. Set `JUMPMUX_STATE_DIR` to change the status directory. `jumpmux setup` honors `PI_CODING_AGENT_DIR`.
 
 `jumpmux agent list` shows live Pi agents, and `jumpmux agent open <session-id|pane-id>` focuses one. Session IDs that identify more than one pane are ambiguous; use a pane ID.
+
+To start an agent on a new task, press `A` on the Agents or Worktrees tab and type a one-line prompt. jumpmux asks `agent.name_command` for a branch name and fills the branch input with it; edit it if needed and press `Enter`. jumpmux then creates the worktree, opens a window for it in the project's tmux session, starts the agent with the prompt, and switches to that window. `Esc` cancels while naming runs. If naming fails, the input reads `naming failed, branch:` and holds a name built from the prompt. The CLI equivalent is [`jumpmux agent new`](cli.md#start-an-agent-from-a-prompt).
 
 A completion is seen when its pane is focused or explicitly marked seen from the dashboard. On an unseen completed agent, press `m` directly or choose Mark seen from `Space`. Acknowledgement clears its tmux completion marker.
 

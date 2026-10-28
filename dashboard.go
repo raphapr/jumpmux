@@ -115,6 +115,9 @@ type dashboardModel struct {
 	lastClickAt                                                           time.Time
 	action                                                                dashboardAction
 	actionTarget                                                          item
+	agentPrompt                                                           string
+	agentNameRequest                                                      uint64
+	agentNameFallback                                                     bool
 	sessionSelectionAfterRemove                                           string
 	restoreSessionSelection                                               bool
 }
@@ -145,6 +148,9 @@ const (
 const (
 	actionNone dashboardAction = iota
 	actionAddWorktree
+	actionAgentPrompt
+	actionAgentNaming
+	actionAgentBranch
 	actionRemoveWorktree
 	actionRemoveSession
 	actionCleanupWorktree
@@ -158,6 +164,7 @@ const (
 const (
 	menuOpen menuAction = iota
 	menuAddWorktree
+	menuNewAgent
 	menuDiff
 	menuPR
 	menuMarkAgentSeen
@@ -173,6 +180,14 @@ type actionMenuEntry struct {
 	label  string
 	key    string
 	footer string
+}
+
+// agentNameMsg carries a branch suggestion; request rejects stale or cancelled lookups.
+type agentNameMsg struct {
+	request uint64
+	branch  string
+	warning error
+	err     error
 }
 
 type worktreeActionMsg struct {
@@ -368,8 +383,10 @@ func (m dashboardModel) actionMenuEntries() []actionMenuEntry {
 	selected, ok := m.selected()
 	if !ok {
 		switch m.tab {
+		case tabAgents:
+			return []actionMenuEntry{newAgentMenuEntry}
 		case tabWorktrees:
-			return []actionMenuEntry{{menuAddWorktree, "Add worktree", "a", "Add"}}
+			return []actionMenuEntry{{menuAddWorktree, "Add worktree", "a", "Add"}, newAgentMenuEntry}
 		case tabSessions:
 			return []actionMenuEntry{{menuPreviousSession, "Previous session", "P", "Previous"}}
 		default:
@@ -386,7 +403,7 @@ func (m dashboardModel) actionMenuEntries() []actionMenuEntry {
 	entries := []actionMenuEntry{{menuOpen, "Open", "o", "Open"}}
 	gitItem := m.gitItem(selected)
 	if m.tab == tabWorktrees {
-		entries = append([]actionMenuEntry{{menuAddWorktree, "Add worktree", "a", "Add"}}, entries...)
+		entries = append([]actionMenuEntry{{menuAddWorktree, "Add worktree", "a", "Add"}, newAgentMenuEntry}, entries...)
 	}
 	entries = append(entries, actionMenuEntry{menuDiff, "View diff", "d", "Diff"})
 	if gitItem.prNumber != 0 {
@@ -396,7 +413,7 @@ func (m dashboardModel) actionMenuEntries() []actionMenuEntry {
 		entries = append(entries, actionMenuEntry{menuMarkAgentSeen, "Mark seen", "m", "Seen"})
 	}
 	if m.tab == tabAgents {
-		entries = append(entries, actionMenuEntry{menuRemove, "Remove agent", "r", "Remove"})
+		entries = append(entries, actionMenuEntry{menuRemove, "Remove agent", "r", "Remove"}, newAgentMenuEntry)
 	}
 	if m.tab == tabWorktrees {
 		if !selected.primary && !selected.prunable && selected.branch != "" && selected.branch != "detached" {
@@ -422,6 +439,9 @@ func (m dashboardModel) executeAction(action menuAction) (tea.Model, tea.Cmd) {
 	switch action {
 	case menuAddWorktree:
 		cmd := m.beginAddWorktree()
+		return m, cmd
+	case menuNewAgent:
+		cmd := m.beginNewAgent()
 		return m, cmd
 	case menuPreviousSession:
 		m.action, m.err = actionRunning, nil
@@ -475,9 +495,6 @@ func (m dashboardModel) executeAction(action menuAction) (tea.Model, tea.Cmd) {
 }
 
 func (m *dashboardModel) openActionMenu() tea.Cmd {
-	if _, ok := m.selected(); !ok && m.tab == tabAgents {
-		return nil
-	}
 	m.clearActionError()
 	m.actionMenu, m.actionMenuIndex = true, 0
 	m.lastClickTarget, m.lastClickAt = "", time.Time{}
@@ -493,6 +510,34 @@ func (m *dashboardModel) beginAddWorktree() tea.Cmd {
 	m.actionTextInput.SetValue("")
 	m.lastClickTarget, m.lastClickAt = "", time.Time{}
 	return m.actionTextInput.Focus()
+}
+
+var newAgentMenuEntry = actionMenuEntry{menuNewAgent, "New agent from prompt", "A", "Agent"}
+
+func (m *dashboardModel) beginNewAgent() tea.Cmd {
+	if err := requireTmuxWorktreeWindow(); err != nil {
+		m.err = err
+		return nil
+	}
+	// Fail before the prompt is typed, not after naming runs.
+	if _, err := primaryWorktree(m.cwd); err != nil {
+		m.err = err
+		return nil
+	}
+	m.action, m.err, m.agentPrompt, m.agentNameFallback = actionAgentPrompt, nil, "", false
+	m.actionTextInput.SetValue("")
+	m.lastClickTarget, m.lastClickAt = "", time.Time{}
+	return m.actionTextInput.Focus()
+}
+
+// cancelAgentInput also invalidates a naming lookup that is still running.
+func (m dashboardModel) cancelAgentInput() (tea.Model, tea.Cmd) {
+	m.action, m.agentPrompt, m.agentNameFallback = actionNone, "", false
+	m.agentNameRequest++
+	m.actionTextInput.SetValue("")
+	m.actionTextInput.Blur()
+	cmd := m.resumeRefreshes()
+	return m, cmd
 }
 
 func (m *dashboardModel) beginMarkAgentSeen(selected item) tea.Cmd {
@@ -1313,6 +1358,19 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case agentNameMsg:
+		if msg.request != m.agentNameRequest || m.action != actionAgentNaming {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.action, m.err, m.agentPrompt = actionNone, msg.err, ""
+			cmd := m.resumeRefreshes()
+			return m, cmd
+		}
+		m.action, m.agentNameFallback = actionAgentBranch, msg.warning != nil
+		m.actionTextInput.SetValue(msg.branch)
+		m.actionTextInput.CursorEnd()
+		return m, m.actionTextInput.Focus()
 	case worktreeActionMsg:
 		m.action, m.actionTarget, m.err = actionNone, item{}, msg.err
 		if msg.err == nil && msg.quit {
@@ -1386,7 +1444,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.preview, m.loading = previewData{}, false
 		return m, command
 	}
-	if m.action == actionAddWorktree {
+	if m.action == actionAddWorktree || m.action == actionAgentPrompt || m.action == actionAgentBranch {
 		var command tea.Cmd
 		m.actionTextInput, command = m.actionTextInput.Update(msg)
 		return m, command
@@ -1894,6 +1952,46 @@ func (m dashboardModel) handleActionMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	switch m.action {
+	case actionAgentNaming:
+		if key == "esc" {
+			return m.cancelAgentInput()
+		}
+		return m, nil
+	case actionAgentPrompt, actionAgentBranch:
+		switch key {
+		case "esc":
+			return m.cancelAgentInput()
+		case "enter":
+			value := strings.TrimSpace(m.actionTextInput.Value())
+			if value == "" {
+				return m, nil
+			}
+			m.actionTextInput.Blur()
+			cwd := m.cwd
+			if m.action == actionAgentPrompt {
+				m.action, m.agentPrompt = actionAgentNaming, value
+				m.agentNameRequest++
+				request := m.agentNameRequest
+				return m, func() tea.Msg {
+					branch, warning, err := nameAgentBranch(cwd, value)
+					return agentNameMsg{request: request, branch: branch, warning: warning, err: err}
+				}
+			}
+			prompt := m.agentPrompt
+			m.action, m.err = actionRunning, nil
+			return m, func() tea.Msg {
+				launch, err := startAgent(cwd, value, prompt)
+				if err == nil {
+					err = openAgentWindow(launch)
+				}
+				// actionAddWorktree refreshes the list on failure, since the worktree may exist.
+				return worktreeActionMsg{action: actionAddWorktree, notice: "Started agent in " + launch.session + ":" + launch.branch, quit: true, err: err}
+			}
+		default:
+			var command tea.Cmd
+			m.actionTextInput, command = m.actionTextInput.Update(msg)
+			return m, command
+		}
 	case actionAddWorktree:
 		switch key {
 		case "esc":

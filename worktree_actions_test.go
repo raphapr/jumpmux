@@ -456,10 +456,17 @@ func TestDashboardWorktreeActionModes(t *testing.T) {
 	model.worktrees = []item{{kind: "worktree", target: "/repo", cwd: "/repo", branch: "main", primary: true}, {kind: "worktree", target: "/feature", cwd: "/feature", branch: "feature"}}
 	model.index = 1
 	footer := ansi.Strip(model.renderFooter(120))
-	for _, expected := range []string{"a Add", "r Remove", "t Theme"} {
+	for _, expected := range []string{"↵ Open", "a Add", "A Agent", "r Remove"} {
 		if !strings.Contains(footer, expected) {
 			t.Fatalf("worktree footer missing %q: %s", expected, footer)
 		}
+	}
+	if strings.Contains(footer, "o Open") {
+		t.Fatalf("worktree footer repeats Open: %s", footer)
+	}
+	// Theme is the first item dropped when the footer is crowded.
+	if wide := ansi.Strip(model.renderFooter(140)); !strings.Contains(wide, "t Theme") {
+		t.Fatalf("wide worktree footer missing t Theme: %s", wide)
 	}
 	if strings.Contains(footer, "Refresh") {
 		t.Fatalf("worktree footer still shows refresh: %s", footer)
