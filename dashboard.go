@@ -1640,6 +1640,12 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// Ctrl+t works on every tab, even while searching; Sessions has no free letters.
+	if key == "ctrl+t" && !m.diff {
+		m.clearActionError()
+		cmd := m.togglePreview()
+		return m, cmd
+	}
 	if m.filter {
 		switch key {
 		case "shift+tab":
@@ -1808,13 +1814,13 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "shift+tab":
 		m.clearActionError()
 		return m.switchTab((m.tab - 1 + tabCount) % tabCount)
-	case "ctrl+v":
-		m.clearActionError()
-		cmd := m.togglePreview()
-		return m, cmd
 	case "t":
 		m.clearActionError()
 		cmd := m.openThemePicker()
+		return m, cmd
+	case "v":
+		m.clearActionError()
+		cmd := m.togglePreview()
 		return m, cmd
 	case "ctrl+f":
 		if m.tab == tabSessions {
@@ -2231,7 +2237,7 @@ func helpSections() []helpSection {
 			{"q, Ctrl+c", "Quit"},
 		}},
 		{"Preview and diff", tabCount, []helpRow{
-			{"Ctrl+v", "Show or hide this tab's preview"},
+			{"v, Ctrl+t", "Show or hide the preview (Sessions: Ctrl+t)"},
 			{"+/-", "Grow / shrink the preview"},
 			{"Shift+←/→", "Focus the left / right panel"},
 			{"PgUp/PgDn", "Page up / down"},

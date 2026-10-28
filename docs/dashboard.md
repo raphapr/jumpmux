@@ -35,7 +35,7 @@
 | `PgUp` / `PgDn`                           | Page diff/Help, or the Session preview                                 |
 | `Ctrl+u` / `Ctrl+d`                       | Page the focused preview, diff panel, or Help                          |
 | `h` / `l`, left/right                     | Pan long preview or diff lines                                         |
-| `Ctrl+v`                                  | Toggle the current tab's runtime preview without saving configuration  |
+| `v`, or `Ctrl+t` on any tab               | Toggle the preview without saving it; on Sessions `v` types in search  |
 | `+` / `-`                                 | Resize Agents/Worktrees previews; search Sessions                      |
 | `?`                                       | Open Help, current tab first; enter `?` in active Sessions search      |
 | `Esc`                                     | Close a view, cancel an action, clear a filter, or quit the dashboard  |

@@ -1101,10 +1101,10 @@ func TestDashboardNavigationPreviewModesAndWideLayout(t *testing.T) {
 	if strings.Contains(ansi.Strip(model.View()), "Preview") {
 		t.Fatal("narrow dashboard showed the default preview")
 	}
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlV})
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 	model = updated.(dashboardModel)
 	if model.previewOverride[tabSessions] != 1 || !strings.Contains(ansi.Strip(model.View()), "Preview") {
-		t.Fatalf("Ctrl+V did not force a narrow preview: %#v", model.previewOverride)
+		t.Fatalf("Ctrl+t did not force a narrow preview: %#v", model.previewOverride)
 	}
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
 	model = updated.(dashboardModel)
@@ -1358,6 +1358,40 @@ func TestHelpGroupsKeysAndLeadsWithCurrentTab(t *testing.T) {
 	}
 	if got := ansi.Strip(model.helpLines()[0]); !strings.Contains(got, "Agents tab") || !strings.Contains(got, "Everywhere") {
 		t.Fatalf("wide help did not use two columns: %q", got)
+	}
+}
+
+func TestPreviewToggleKeys(t *testing.T) {
+	press := func(model dashboardModel, msg tea.KeyMsg) dashboardModel {
+		updated, _ := model.Update(msg)
+		return updated.(dashboardModel)
+	}
+	for _, tab := range []int{tabAgents, tabWorktrees} {
+		model := newDashboard("/repo")
+		model.width, model.height, model.tab = 120, 30, tab
+		if shown := model.previewShown(); press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}}).previewShown() == shown {
+			t.Fatalf("tab %d: v did not toggle the preview", tab)
+		}
+	}
+	// Ctrl+t toggles while searching, without touching the query.
+	for _, tab := range []int{tabAgents, tabSessions} {
+		model := newDashboard("/repo")
+		model.width, model.height, model.tab = 120, 30, tab
+		model.filter, model.query = true, "ju"
+		model.filterInputs[tab].SetValue("ju")
+		model.filterInputs[tab].Focus()
+		shown := model.previewShown()
+		model = press(model, tea.KeyMsg{Type: tea.KeyCtrlT})
+		if model.previewShown() == shown || model.query != "ju" || model.filterInputs[tab].Value() != "ju" {
+			t.Fatalf("tab %d: Ctrl+t while searching: preview %v -> %v, query %q", tab, shown, model.previewShown(), model.filterInputs[tab].Value())
+		}
+	}
+	// On Sessions, v is a search letter.
+	model := newDashboard("/repo")
+	model.width, model.height, model.tab = 120, 30, tabSessions
+	shown := model.previewShown()
+	if model = press(model, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}}); model.query != "v" || model.previewShown() != shown {
+		t.Fatalf("Sessions v: query %q, preview %v -> %v", model.query, shown, model.previewShown())
 	}
 }
 
