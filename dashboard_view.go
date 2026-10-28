@@ -908,9 +908,14 @@ func (m dashboardModel) renderHelp(width int) string {
 	lines := m.helpLines()
 	start := m.helpOffset + 1
 	end := min(len(lines), m.helpOffset+m.helpHeight())
-	title := fmt.Sprintf("Help (%d-%d/%d)", start, end, len(lines))
+	title := "Help · Keys"
+	commands := []string{footerCommand("? / Esc", "Close"), footerCommand("q", "Quit")}
+	if len(lines) > m.helpHeight() {
+		title = fmt.Sprintf("Help · Keys (%d-%d/%d)", start, end, len(lines))
+		commands = append([]string{footerCommand("j/k", "Scroll"), footerCommand("PgUp/PgDn", "Page")}, commands...)
+	}
 	body := renderPanel(title, lines, width, m.height-1, m.helpOffset, 0, false, true)
-	return body + "\n" + padANSI("  "+footerCommand("? / Esc", "Close")+" "+footerCommand("q", "Quit"), width)
+	return body + "\n" + m.prioritizedFooterWithBase(width, commands[:len(commands)-2], commands[len(commands)-2:])
 }
 
 func (m dashboardModel) renderDiff(width int) string {

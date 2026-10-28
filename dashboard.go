@@ -2176,43 +2176,138 @@ func (m dashboardModel) clampHelpOffset(offset int) int {
 	return max(0, min(offset, max(0, len(m.helpLines())-m.helpHeight())))
 }
 
-func (m dashboardModel) helpLines() []string {
-	return []string{
-		"↑/k, ↓/j     Move (Agents/Worktrees)",
-		"g/Home, G/End First/last (Agents/Worktrees)",
-		"Ctrl+j/k/n/p  Move (Sessions)",
-		"Home/End      First/last (Sessions)",
-		"Session icons  " + dashboardIcon(" live,  configured,  discovered", "L live, C configured, R discovered"),
-		"Enter         Open selected row",
-		"1–9           Open row (Agents/Worktrees)",
-		"Agents        o Open · d Diff · p PR · m Mark seen · r Remove",
-		"Worktrees     a Add · o Open · d Diff · p PR",
-		"              b Rebase · m Merge · x Cleanup · r Remove",
-		"Sessions      O Open · Ctrl+r Remove · P Previous",
-		"Confirm       Enter confirms · Esc cancels",
-		"Click         Select row",
-		"Double-click  Open row",
-		"Mouse wheel   Scroll table or preview",
-		"Tab/Shift+Tab Switch tabs",
-		"/             Filter (Agents/Worktrees)",
-		"Type          Search Sessions (except O/P)",
-		"Space         Show applicable actions; shown keys run actions",
-		"Ctrl+f        Cycle Session filter",
-		"Ctrl+g        Toggle grouped/recent Session order",
-		"Enter / Esc   Open / clear session search",
-		"Shift+←/→     Focus split panel",
-		"PgUp/PgDn     Page diff/help; preview in Sessions",
-		"Ctrl+u/d      Page preview, diff, or help",
-		"G/End         Resume a paused live preview",
-		"g/G, Home/End Top/bottom in diff or help",
-		"h/l           Pan long lines",
-		"Ctrl+v        Toggle this tab's runtime preview",
-		"+/-           Resize preview in Agents/Worktrees",
-		"s             Toggle agent scope",
-		"t             Open theme picker",
-		"Theme picker  Type filters; j/k browses",
-		"              Enter applies; Esc cancels",
+type helpRow struct{ keys, text string }
+
+type helpSection struct {
+	title string
+	tab   int // tabCount for sections that apply everywhere
+	rows  []helpRow
+}
+
+func helpSections() []helpSection {
+	return []helpSection{
+		{"Agents tab", tabAgents, []helpRow{
+			{"Enter, o", "Open the agent's pane"},
+			{"A", "New agent from a prompt"},
+			{"d", "Show the worktree diff"},
+			{"p", "Open the pull request"},
+			{"m", "Mark a finished agent seen"},
+			{"r", "Close the agent (asks first)"},
+			{"s", "Show all agents or this session's"},
+		}},
+		{"Worktrees tab", tabWorktrees, []helpRow{
+			{"Enter, o", "Open the worktree in tmux"},
+			{"a", "Add a worktree"},
+			{"A", "New agent from a prompt"},
+			{"d", "Show the diff"},
+			{"p", "Open the pull request"},
+			{"b/m", "Rebase onto / merge into default"},
+			{"x", "Clean up a stale record"},
+			{"r", "Remove the worktree (asks first)"},
+		}},
+		{"Sessions tab", tabSessions, []helpRow{
+			{"type", "Search (every letter except O, P)"},
+			{"Enter", "Open the selected session"},
+			{"Esc", "Clear the search"},
+			{"Ctrl+j/k", "Move down / up (or Ctrl+n/p)"},
+			{"Home/End", "First / last session"},
+			{"O", "Open the selected session"},
+			{"P", "Switch to the previous session"},
+			{"Ctrl+r", "Kill the session (asks first)"},
+			{"Ctrl+f", "Cycle the source filter"},
+			{"Ctrl+g", "Grouped or recent order"},
+			{"icons", dashboardIcon(" live   configured   discovered", "L live  C configured  R discovered")},
+		}},
+		{"Everywhere", tabCount, []helpRow{
+			{"j/k, ↓/↑", "Move down / up (Agents, Worktrees)"},
+			{"g/G, Home/End", "First / last row"},
+			{"1–9", "Open row by number"},
+			{"Space", "Actions for the selected row"},
+			{"Tab/Shift+Tab", "Next / previous tab"},
+			{"/", "Filter rows (Agents, Worktrees)"},
+			{"t", "Choose a theme"},
+			{"Enter/Esc", "Confirm / cancel a prompt"},
+			{"?", "Toggle this help"},
+			{"q, Ctrl+c", "Quit"},
+		}},
+		{"Preview and diff", tabCount, []helpRow{
+			{"Ctrl+v", "Show or hide this tab's preview"},
+			{"+/-", "Grow / shrink the preview"},
+			{"Shift+←/→", "Focus the left / right panel"},
+			{"PgUp/PgDn", "Page up / down"},
+			{"Ctrl+u/d", "Half page up / down"},
+			{"g/G, Home/End", "Top / bottom"},
+			{"G, End", "Resume a paused live preview"},
+			{"h/l, ←/→", "Pan long lines left / right"},
+		}},
+		{"Theme picker", tabCount, []helpRow{
+			{"type", "Filter themes"},
+			{"j/k", "Preview the next / previous theme"},
+			{"Enter/Esc", "Apply / restore"},
+		}},
+		{"Mouse", tabCount, []helpRow{
+			{"click", "Select a row"},
+			{"double-click", "Open a row"},
+			{"wheel", "Scroll the table, preview, or help"},
+		}},
 	}
+}
+
+// helpLines puts the current tab first and flows sections into two columns
+// when the terminal is wide enough, so most screens fit without scrolling.
+func (m dashboardModel) helpLines() []string {
+	sections := helpSections()
+	current := slices.IndexFunc(sections, func(section helpSection) bool { return section.tab == m.tab })
+	sections = slices.Concat(sections[current:current+1], sections[:current], sections[current+1:])
+	keyWidth := 0
+	for _, section := range sections {
+		for _, row := range section.rows {
+			keyWidth = max(keyWidth, ansi.StringWidth(row.keys))
+		}
+	}
+	blocks := make([][]string, 0, len(sections))
+	columnWidth, total := 0, 0
+	for _, section := range sections {
+		title := " " + headerStyle.Render(section.title)
+		if section.tab == m.tab {
+			title += mutedStyle.Render("  · current tab")
+		}
+		block := []string{title}
+		for _, row := range section.rows {
+			keys := row.keys + strings.Repeat(" ", keyWidth-ansi.StringWidth(row.keys))
+			block = append(block, "   "+keycapStyle.Render(keys)+"  "+textStyle.Render(row.text))
+		}
+		for _, line := range block {
+			columnWidth = max(columnWidth, ansi.StringWidth(line))
+		}
+		blocks = append(blocks, append(block, ""))
+		total += len(block) + 1
+	}
+
+	const gap = 3
+	if m.width-2 < 2*columnWidth+gap {
+		return slices.Concat(blocks...)
+	}
+	var left, right []string
+	for _, block := range blocks {
+		if len(left) < total/2 {
+			left = append(left, block...)
+		} else {
+			right = append(right, block...)
+		}
+	}
+	lines := make([]string, max(len(left), len(right)))
+	for index := range lines {
+		if index < len(left) {
+			lines[index] = padANSI(left[index], columnWidth+gap)
+		} else {
+			lines[index] = strings.Repeat(" ", columnWidth+gap)
+		}
+		if index < len(right) {
+			lines[index] += right[index]
+		}
+	}
+	return lines
 }
 
 func (m dashboardModel) clampX(offset int) int {

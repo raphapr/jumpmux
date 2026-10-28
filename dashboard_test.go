@@ -884,7 +884,7 @@ func TestDashboardPanelFocusAndHelpScroll(t *testing.T) {
 	model.width, model.height, model.help = 40, 10, true
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	model = updated.(dashboardModel)
-	if model.helpOffset == 0 || !strings.Contains(ansi.Strip(model.View()), "Help (") || !strings.Contains(ansi.Strip(model.View()), "q Quit") {
+	if model.helpOffset == 0 || !strings.Contains(ansi.Strip(model.View()), "Help · Keys (") || !strings.Contains(ansi.Strip(model.View()), "j/k Scroll") || !strings.Contains(ansi.Strip(model.View()), "q Quit") {
 		t.Fatalf("small help did not scroll with close guidance: %#v\n%s", model, model.View())
 	}
 	updated, _ = model.Update(tea.MouseMsg{X: 5, Y: 4, Button: tea.MouseButtonWheelDown})
@@ -1321,6 +1321,43 @@ func TestModeLabelMovesToHeader(t *testing.T) {
 	narrowHeader := ansi.Strip(model.renderHeader(model.width))
 	if !strings.Contains(narrowHeader, "SEARCH") {
 		t.Fatalf("narrow header dropped mode: %q", narrowHeader)
+	}
+}
+
+func TestHelpGroupsKeysAndLeadsWithCurrentTab(t *testing.T) {
+	for tab, title := range []string{"Agents tab", "Worktrees tab", "Sessions tab"} {
+		model := newDashboard("/repo")
+		model.width, model.height, model.tab, model.help = 80, 30, tab, true
+		lines := model.helpLines()
+		if first := ansi.Strip(lines[0]); !strings.Contains(first, title) || !strings.Contains(first, "current tab") {
+			t.Fatalf("tab %d help starts with %q", tab, first)
+		}
+		column := -1
+		for _, line := range lines {
+			plain := ansi.Strip(line)
+			if ansi.StringWidth(plain) > model.width-2 {
+				t.Fatalf("help line wider than the panel: %q", plain)
+			}
+			// Rows indent three spaces; their descriptions share one column.
+			if strings.HasPrefix(plain, "   ") {
+				start := 3 + strings.Index(plain[3:], "  ")
+				description := start + len(plain[start:]) - len(strings.TrimLeft(plain[start:], " "))
+				if column >= 0 && ansi.StringWidth(plain[:description]) != column {
+					t.Fatalf("misaligned help row %q", plain)
+				}
+				column = ansi.StringWidth(plain[:description])
+			}
+		}
+	}
+
+	model := newDashboard("/repo")
+	model.width, model.height, model.help = 150, 40, true
+	view := ansi.Strip(model.View())
+	if !strings.Contains(view, "Help · Keys ") || strings.Contains(view, "j/k Scroll") {
+		t.Fatalf("wide help should fit without scrolling:\n%s", view)
+	}
+	if got := ansi.Strip(model.helpLines()[0]); !strings.Contains(got, "Agents tab") || !strings.Contains(got, "Everywhere") {
+		t.Fatalf("wide help did not use two columns: %q", got)
 	}
 }
 
