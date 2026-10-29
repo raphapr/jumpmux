@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"os"
 	"slices"
 	"sort"
 	"strconv"
@@ -43,12 +44,14 @@ func (filter sessionFilter) label() string {
 }
 
 const (
-	refreshInterval      = 2 * time.Second
-	gitRefreshPeriod     = 5 * time.Second
-	previewRefreshPeriod = 500 * time.Millisecond
-	clockInterval        = 250 * time.Millisecond
-	staleThreshold       = time.Hour
-	maxDiffOutput        = 1 << 20
+	refreshInterval  = 2 * time.Second
+	gitRefreshPeriod = 5 * time.Second
+	// worktreeFullRefreshPeriod bounds how stale an idle, unselected row can get.
+	worktreeFullRefreshPeriod = 30 * time.Second
+	previewRefreshPeriod      = 500 * time.Millisecond
+	clockInterval             = 250 * time.Millisecond
+	staleThreshold            = time.Hour
+	maxDiffOutput             = 1 << 20
 )
 
 var spinnerFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -72,41 +75,44 @@ var (
 )
 
 type dashboardModel struct {
-	cwd                                                                   string
-	now                                                                   time.Time
-	tab, index                                                            int
-	width, height                                                         int
-	agents, allAgents                                                     []item
-	worktrees, sessions                                                   []item
-	agentGit, gitCache, prCache                                           map[string]item
-	scope                                                                 scopeMode
-	scheme                                                                colorScheme
-	launchSession                                                         string
-	worktreeGeneration, sessionGeneration                                 uint64
-	previewRequest, diffRequest                                           uint64
-	filter, diff, help, themePicker                                       bool
-	query                                                                 string
-	queries, tabTargets                                                   [tabCount]string
-	filterInputs                                                          [tabCount]textinput.Model
-	sessionSortRecent                                                     bool
-	themePickerInput                                                      textinput.Model
-	themePickerIndex, themePickerOffset                                   int
-	themePickerPrevious                                                   colorScheme
-	sessionFilter                                                         sessionFilter
-	actionMenu                                                            bool
-	actionMenuIndex                                                       int
-	actionTextInput                                                       textinput.Model
-	preview                                                               previewData
-	previewOffset, diffOff, rightOffset, xOffset, previewSize             int
-	previewEnabled                                                        [tabCount]bool
-	previewOverride                                                       [tabCount]int8
-	panelFocus, helpOffset                                                int
-	previewFocused, focused                                               bool
+	cwd                                                       string
+	now                                                       time.Time
+	tab, index                                                int
+	width, height                                             int
+	agents, allAgents                                         []item
+	worktrees, sessions                                       []item
+	agentGit, gitCache, prCache                               map[string]item
+	scope                                                     scopeMode
+	scheme                                                    colorScheme
+	launchSession                                             string
+	worktreeGeneration, sessionGeneration                     uint64
+	previewRequest, diffRequest                               uint64
+	filter, diff, help, themePicker                           bool
+	query                                                     string
+	queries, tabTargets                                       [tabCount]string
+	filterInputs                                              [tabCount]textinput.Model
+	sessionSortRecent                                         bool
+	themePickerInput                                          textinput.Model
+	themePickerIndex, themePickerOffset                       int
+	themePickerPrevious                                       colorScheme
+	sessionFilter                                             sessionFilter
+	actionMenu                                                bool
+	actionMenuIndex                                           int
+	actionTextInput                                           textinput.Model
+	preview                                                   previewData
+	previewOffset, diffOff, rightOffset, xOffset, previewSize int
+	previewEnabled                                            [tabCount]bool
+	previewOverride                                           [tabCount]int8
+	panelFocus, helpOffset                                    int
+	previewFocused, focused                                   bool
+	// hidden is set when the dashboard's tmux window is not on screen. tmux only
+	// reports focus changes with focus-events on, so focused alone misses this.
+	hidden                                                                bool
 	loading                                                               bool
 	agentsLoaded, worktreesLoaded, sessionsLoaded                         bool
 	lastRefresh                                                           [tabCount]time.Time
 	agentsInFlight, agentGitInFlight, worktreesInFlight, sessionsInFlight bool
-	agentGitRefreshed, worktreeGitRefreshed                               time.Time
+	agentGitRefreshed, worktreeGitRefreshed, worktreeFullRefreshed        time.Time
 	worktreePending                                                       int
 	err, agentErr, worktreeErr, sessionsErr                               error
 	notice                                                                string
@@ -648,19 +654,41 @@ func newDashboardForLaunch(cwd, launchSession string) dashboardModel {
 }
 
 func (m dashboardModel) Init() tea.Cmd {
-	return tea.Batch(refreshAgents(), refreshWorktreeList(m.cwd, m.worktreeGeneration), refreshSessions(m.sessionGeneration), nextTick(), nextClock(), tea.EnableReportFocus)
+	return tea.Batch(refreshAgents(), refreshWorktreeList(m.cwd, m.worktreeGeneration), refreshSessions(m.sessionGeneration), nextTick(), nextClockAfter(clockInterval), tea.EnableReportFocus)
 }
 
 func nextTick() tea.Cmd {
 	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
-func nextClock() tea.Cmd {
-	interval := clockInterval
-	if reducedMotion() {
-		interval = time.Second
+type visibilityMsg struct{ hidden bool }
+
+// checkVisibility asks tmux whether the dashboard's window is the active one
+// in an attached session. Errors count as visible, so refreshes never stop by
+// mistake.
+func checkVisibility() tea.Cmd {
+	pane := os.Getenv("TMUX_PANE")
+	if !validTmuxPaneID(pane) {
+		return nil
 	}
-	return nextClockAfter(interval)
+	return func() tea.Msg {
+		output, err := tmuxOutput("display-message", "-p", "-t", pane, "#{window_active} #{session_attached}")
+		active, attached, ok := strings.Cut(strings.TrimSpace(output), " ")
+		return visibilityMsg{hidden: err == nil && ok && (active != "1" || attached == "0")}
+	}
+}
+
+func (m dashboardModel) active() bool { return m.focused && !m.hidden }
+
+// nextClock ticks fast only while the last frame drew a spinner. Otherwise the
+// screen only shows second-resolution clocks, and 250 ms ticks just redraw it.
+func nextClock(focused bool) tea.Cmd { return nextClockAfter(clockDelay(focused)) }
+
+func clockDelay(focused bool) time.Duration {
+	if spinnerDrawn.Swap(false) && focused && !reducedMotion() {
+		return clockInterval
+	}
+	return time.Second
 }
 
 func nextClockAfter(interval time.Duration) tea.Cmd {
@@ -725,9 +753,17 @@ func (m *dashboardModel) queueRefreshes() []tea.Cmd {
 	return commands
 }
 
-func refreshWorktreeGit(items []item, generation uint64) tea.Cmd {
+// refreshWorktreeGit streams one message per row while some rows have no
+// cached Git data, so cells fill in as they load. Once every row is cached it
+// sends a single message, which redraws the screen once instead of per row.
+func refreshWorktreeGit(items []item, generation uint64, stream bool) tea.Cmd {
 	if len(items) == 0 {
 		return nil
+	}
+	if !stream {
+		return func() tea.Msg {
+			return worktreeDataMsg{stage: worktreeGitStage, generation: generation, worktrees: worktreeGitDetails(items)}
+		}
 	}
 	limit := make(chan struct{}, min(4, len(items)))
 	var baseOnce sync.Once
@@ -737,7 +773,7 @@ func refreshWorktreeGit(items []item, generation uint64) tea.Cmd {
 		commands = append(commands, func() tea.Msg {
 			limit <- struct{}{}
 			defer func() { <-limit }()
-			baseOnce.Do(func() { baseBranch = gitDefaultBranch(items[0].cwd) })
+			baseOnce.Do(func() { baseBranch = localDefaultBranch(items[0].cwd) })
 			return worktreeDataMsg{stage: worktreeGitStage, generation: generation, worktrees: []item{loadGitDetails(worktree, baseBranch)}}
 		})
 	}
@@ -907,12 +943,29 @@ func loadDiff(item item, request uint64) tea.Cmd {
 		if _, err := gitOutput(item.cwd, "rev-parse", "--is-inside-work-tree"); err != nil {
 			return diffMsg{request: request, target: item.target, title: "WIP", lines: []string{gitErrorLine(err)}}
 		}
-		unstaged, unstagedTruncated, unstagedErr := gitOutputLimited(item.cwd, maxDiffOutput, "diff", "--no-ext-diff", "--no-color")
-		staged, stagedTruncated, stagedErr := gitOutputLimited(item.cwd, maxDiffOutput, "diff", "--no-ext-diff", "--no-color", "--cached")
-		untracked, untrackedErr := gitOutput(item.cwd, "ls-files", "--others", "--exclude-standard")
-		status, statusErr := gitOutput(item.cwd, "status", "--porcelain")
-		branch, branchErr := gitOutput(item.cwd, "branch", "--show-current")
-		added, removed := diffStats(item.cwd)
+		// The reads are independent, so run them at once; in a large repo this
+		// halves the time before the diff opens.
+		var unstaged, staged, untracked, status, branch string
+		var unstagedTruncated, stagedTruncated bool
+		var unstagedErr, stagedErr, untrackedErr, statusErr, branchErr error
+		var added, removed int
+		var group sync.WaitGroup
+		for _, read := range []func(){
+			func() {
+				unstaged, unstagedTruncated, unstagedErr = gitOutputLimited(item.cwd, maxDiffOutput, "diff", "--no-ext-diff", "--no-color")
+			},
+			func() {
+				staged, stagedTruncated, stagedErr = gitOutputLimited(item.cwd, maxDiffOutput, "diff", "--no-ext-diff", "--no-color", "--cached")
+			},
+			func() { untracked, untrackedErr = gitOutput(item.cwd, "ls-files", "--others", "--exclude-standard") },
+			func() { status, statusErr = gitOutput(item.cwd, "status", "--porcelain") },
+			func() { branch, branchErr = gitOutput(item.cwd, "branch", "--show-current") },
+			func() { added, removed = diffStats(item.cwd) },
+		} {
+			group.Add(1)
+			go func() { defer group.Done(); read() }()
+		}
+		group.Wait()
 		var lines []string
 		if strings.TrimSpace(unstaged) != "" {
 			lines = append(lines, strings.Split(strings.TrimRight(unstaged, "\n"), "\n")...)
@@ -997,6 +1050,11 @@ func (m *dashboardModel) requestPreview(item item) tea.Cmd {
 		return loadSessionPreview(item, request)
 	}
 
+	m.setWorktreeMetadata(item, request, changed)
+	return tea.Batch(loadWorktreeStatus(item, request), loadWorktreeLog(item, request))
+}
+
+func (m *dashboardModel) setWorktreeMetadata(item item, request uint64, changed bool) {
 	preview := worktreePreview(item, request)
 	if !changed {
 		if m.preview.kind == "worktree" && len(m.preview.lines) > m.preview.metadataRows {
@@ -1005,7 +1063,19 @@ func (m *dashboardModel) requestPreview(item item) tea.Cmd {
 		preview.rightLines = m.preview.rightLines
 	}
 	m.preview, m.loading = preview, false
-	return tea.Batch(loadWorktreeStatus(item, request), loadWorktreeLog(item, request))
+}
+
+// refreshWorktreePreview reloads the selected worktree's preview only when it
+// is new or its Git data changed. Other refresh stages only touch the metadata
+// rows, which needs no Git commands.
+func (m *dashboardModel) refreshWorktreePreview(item item, gitChanged bool) tea.Cmd {
+	if gitChanged || m.preview.target != item.target || m.preview.kind != "worktree" {
+		return m.requestPreview(item)
+	}
+	if m.focused && !m.refreshPaused() && m.previewShown() {
+		m.setWorktreeMetadata(item, m.preview.request, false)
+	}
+	return nil
 }
 
 func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1038,9 +1108,17 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BlurMsg:
 		m.focused = false
 		return m, nil
+	case visibilityMsg:
+		wasHidden := m.hidden
+		m.hidden = msg.hidden
+		if wasHidden && m.active() && !m.refreshPaused() {
+			cmd := m.resumeRefreshes()
+			return m, cmd
+		}
+		return m, nil
 	case tickMsg:
-		commands := []tea.Cmd{nextTick()}
-		if m.focused && !m.refreshPaused() {
+		commands := []tea.Cmd{nextTick(), checkVisibility()}
+		if m.active() && !m.refreshPaused() {
 			commands = append(commands, m.queueRefreshes()...)
 		}
 		return m, tea.Batch(commands...)
@@ -1052,9 +1130,9 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.noticeUntil.IsZero() && !m.now.Before(m.noticeUntil) {
 			m.notice, m.noticeUntil = "", time.Time{}
 		}
-		return m, nextClock()
+		return m, nextClock(m.active())
 	case previewTickMsg:
-		if !m.focused || m.refreshPaused() || uint64(msg) != m.previewRequest || m.diff {
+		if !m.active() || m.refreshPaused() || uint64(msg) != m.previewRequest || m.diff {
 			return m, nil
 		}
 		if selected, ok := m.selected(); ok && (selected.kind == "session" || (selected.kind == "tmux-session" && selected.muxSessionID != "")) {
@@ -1126,7 +1204,8 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		commands := []tea.Cmd{}
-		if m.focused && !m.refreshPaused() && len(m.allAgents) > 0 && !m.agentGitInFlight && time.Since(m.agentGitRefreshed) >= gitRefreshPeriod {
+		// Only the Agents tab shows Git details for agents outside the worktree list.
+		if m.tab == tabAgents && m.active() && !m.refreshPaused() && len(m.allAgents) > 0 && !m.agentGitInFlight && time.Since(m.agentGitRefreshed) >= gitRefreshPeriod {
 			m.agentGitInFlight = true
 			m.agentGitRefreshed = time.Now()
 			commands = append(commands, refreshAgentGit(m.allAgents))
@@ -1222,22 +1301,43 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.worktrees = mergeWorktreeData(m.worktrees, cached, worktreePRStage)
 			m.restoreSelection(target)
 			attachAgentsToWorktrees(m.worktrees, m.allAgents)
-			if !m.focused || m.refreshPaused() {
+			if !m.active() || m.refreshPaused() {
 				m.worktreesInFlight = false
 				return m, nil
 			}
 			m.worktreePending = 2
+			detailed := m.worktreesNeedingDetails(msg.worktrees)
+			if m.tab == tabWorktrees && time.Since(m.worktreeFullRefreshed) < worktreeFullRefreshPeriod {
+				// Between full refreshes, only rows likely to change refresh every
+				// cycle: the selected row, rows with an agent, and rows never loaded.
+				selected := m.selectedTarget()
+				hosting := map[string]bool{}
+				for _, worktree := range m.worktrees {
+					hosting[worktree.target] = len(worktree.agents) > 0
+				}
+				detailed = slices.DeleteFunc(slices.Clone(detailed), func(worktree item) bool {
+					_, cached := m.gitCache[worktree.cwd]
+					return cached && worktree.target != selected && !hosting[worktree.target]
+				})
+			} else if m.tab == tabWorktrees && time.Since(m.worktreeGitRefreshed) >= gitRefreshPeriod {
+				m.worktreeFullRefreshed = time.Now()
+			}
 			commands := []tea.Cmd{
-				refreshWorktreePR(m.cwd, msg.worktrees, msg.generation),
+				refreshWorktreePR(m.cwd, detailed, msg.generation),
 				refreshWorktreeMux(msg.worktrees, msg.generation),
 			}
-			if len(msg.worktrees) > 0 && time.Since(m.worktreeGitRefreshed) >= gitRefreshPeriod {
+			if len(detailed) > 0 && time.Since(m.worktreeGitRefreshed) >= gitRefreshPeriod {
 				m.worktreeGitRefreshed = time.Now()
-				m.worktreePending += len(msg.worktrees)
-				commands = append(commands, refreshWorktreeGit(msg.worktrees, msg.generation))
+				stream := slices.ContainsFunc(detailed, func(worktree item) bool { _, ok := m.gitCache[worktree.cwd]; return !ok })
+				if stream {
+					m.worktreePending += len(detailed)
+				} else {
+					m.worktreePending++
+				}
+				commands = append(commands, refreshWorktreeGit(detailed, msg.generation, stream))
 			}
 			if selected, ok := m.selected(); ok && selected.kind == "worktree" && !m.diff {
-				commands = append(commands, m.requestPreview(selected))
+				commands = append(commands, m.refreshWorktreePreview(selected, false))
 			}
 			return m, tea.Batch(commands...)
 		}
@@ -1285,7 +1385,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		selectedPRUpdated := hasAfter && msg.stage == worktreePRStage && slices.ContainsFunc(msg.worktrees, func(item item) bool { return item.target == after.target })
 		refreshPreview := selectedGitUpdated || selectedPRUpdated || (msg.stage == worktreeMuxStage && changed)
 		if msg.err == nil && !m.diff && !m.refreshPaused() && hasAfter && after.kind == "worktree" && refreshPreview {
-			cmd := m.requestPreview(after)
+			cmd := m.refreshWorktreePreview(after, selectedGitUpdated)
 			return m, cmd
 		}
 		return m, nil
@@ -1420,8 +1520,10 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.MouseMsg:
+		m.hidden = false // input means the dashboard is on screen
 		return m.handleMouse(msg)
 	case tea.KeyMsg:
+		m.hidden = false
 		return m.handleKey(msg)
 	}
 	if m.themePicker {
@@ -2080,9 +2182,35 @@ func (m dashboardModel) confirming() bool {
 	}
 }
 
+// worktreesNeedingDetails limits Git and PR refreshes to rows the current tab
+// shows: every worktree on Worktrees, worktrees with an agent on Agents, and
+// none on Sessions. Git status is the dashboard's most expensive work.
+func (m dashboardModel) worktreesNeedingDetails(worktrees []item) []item {
+	switch m.tab {
+	case tabWorktrees:
+		return worktrees
+	case tabAgents:
+		hosting := make(map[string]bool, len(m.worktrees))
+		for _, worktree := range m.worktrees {
+			hosting[worktree.target] = len(worktree.agents) > 0
+		}
+		return slices.DeleteFunc(slices.Clone(worktrees), func(worktree item) bool { return !hosting[worktree.target] })
+	default:
+		return nil
+	}
+}
+
 func (m dashboardModel) switchTab(tab int) (tea.Model, tea.Cmd) {
 	if tab == m.tab || tab < 0 || tab >= tabCount {
 		return m, nil
+	}
+	// Other tabs refresh fewer worktrees, so the new tab refreshes right away.
+	var refresh tea.Cmd
+	if tab != tabSessions && !m.worktreesInFlight && !m.refreshPaused() {
+		m.worktreeGitRefreshed, m.worktreeFullRefreshed = time.Time{}, time.Time{}
+		m.worktreesInFlight = true
+		m.worktreeGeneration++
+		refresh = refreshWorktreeList(m.cwd, m.worktreeGeneration)
 	}
 	m.queries[m.tab], m.tabTargets[m.tab] = m.query, m.selectedTarget()
 	m.filterInputs[m.tab].Blur()
@@ -2093,11 +2221,11 @@ func (m dashboardModel) switchTab(tab int) (tea.Model, tea.Cmd) {
 	m.restoreSelection(m.tabTargets[m.tab])
 	m.preview = previewData{}
 	if selected, ok := m.selected(); ok {
-		cmd := m.requestPreview(selected)
+		cmd := tea.Batch(refresh, m.requestPreview(selected))
 		return m, cmd
 	}
 	m.loading = false
-	return m, nil
+	return m, refresh
 }
 
 func clampLineOffset(offset int, lines []string, visible int) int {

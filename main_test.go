@@ -150,7 +150,7 @@ func TestUntrackedSpecialFileDoesNotBlock(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		untrackedStats(dir)
+		untrackedStats(dir, []string{"pipe"})
 	}()
 	select {
 	case <-done:

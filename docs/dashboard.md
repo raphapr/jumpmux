@@ -93,6 +93,8 @@ jumpmux reads the default branch from local Git metadata: `origin/HEAD`, then lo
 
 jumpmux loads `git_status_cache.json` before the first render, refreshes Git data in the background, and saves the cache on exit.
 
+Background refreshes run only while the dashboard is on screen: the terminal has focus and the dashboard's tmux window is the active window of an attached session. For terminal focus tracking inside tmux, set `set -g focus-events on`. Each tab refreshes only the Git data it shows. The Worktrees tab refreshes the selected row and rows with agents every 5 seconds and every other row every 30 seconds. The Agents tab refreshes worktrees that host an agent, and the Sessions tab refreshes no Git data.
+
 ### Pull requests
 
 Worktree PR cells show `#number state-icon check-icon`. Agent PR cells omit the open-state icon to reduce noise. Checks use `󰄴` for success, `󰅙` for failure, and a spinner while pending. Agent and worktree previews list up to three failed checks.

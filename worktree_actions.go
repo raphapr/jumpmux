@@ -41,6 +41,10 @@ func addWorktree(repo, branch string) (item, error) {
 	if err != nil {
 		return item{}, actionError("add worktree", output, err)
 	}
+	// The dashboard runs git status with optional locks off, so it never rewrites
+	// a fresh worktree's stale index and every status rehashes all files (about
+	// 3x slower). One refresh here fixes that; failure only costs speed.
+	_, _ = runActionCommand(ctx, target, "git", "update-index", "-q", "--refresh")
 	return item{kind: "worktree", target: target, cwd: target, branch: branch, title: branch}, nil
 }
 

@@ -177,20 +177,26 @@ func TestWorktreeAgentRefreshPreservesErrorsAndClearsSuccessfulEmptyResults(t *t
 }
 
 func TestWorktreeGitRefreshStreamsRows(t *testing.T) {
-	command := refreshWorktreeGit([]item{{target: "/repo", cwd: "/repo"}, {target: "/feature", cwd: "/feature"}}, 1)
-	message := command()
-	batch, ok := message.(tea.BatchMsg)
-	if !ok || len(batch) != 2 {
-		t.Fatalf("worktree Git refresh = %#v, want one command per row", message)
+	worktrees := []item{{target: "/repo", cwd: "/repo"}, {target: "/feature", cwd: "/feature"}}
+	message := refreshWorktreeGit(worktrees, 1, true)()
+	if batch, ok := message.(tea.BatchMsg); !ok || len(batch) != 2 {
+		t.Fatalf("cold worktree Git refresh = %#v, want one command per row", message)
+	}
+	// With every row cached, one message updates all rows and redraws once.
+	message = refreshWorktreeGit(worktrees, 1, false)()
+	if data, ok := message.(worktreeDataMsg); !ok || len(data.worktrees) != 2 {
+		t.Fatalf("warm worktree Git refresh = %#v, want one message", message)
 	}
 }
 
 func TestWorktreeGitRefreshIsThrottled(t *testing.T) {
 	model := newDashboard("/repo")
+	model.tab = tabWorktrees
 	worktrees := []item{{kind: "worktree", target: "/repo", cwd: "/repo"}}
 	updated, command := model.Update(worktreeDataMsg{stage: worktreeListStage, generation: model.worktreeGeneration, worktrees: worktrees})
 	model = updated.(dashboardModel)
-	if batch, ok := command().(tea.BatchMsg); !ok || len(batch) != 3 {
+	// PR, mux, Git, and the selected row's preview.
+	if batch, ok := command().(tea.BatchMsg); !ok || len(batch) != 4 {
 		t.Fatalf("initial worktree detail commands = %#v", command())
 	}
 	model.worktreeGeneration++

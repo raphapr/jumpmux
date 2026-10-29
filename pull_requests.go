@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -11,12 +13,32 @@ import (
 )
 
 const (
-	checkSuccess            = "success"
-	checkFailure            = "failure"
-	checkPending            = "pending"
-	pullRequestRetryPeriod  = 30 * time.Second
-	pullRequestQueryTimeout = 3 * time.Second
+	checkSuccess                 = "success"
+	checkFailure                 = "failure"
+	checkPending                 = "pending"
+	pullRequestRetryPeriod       = 30 * time.Second
+	pullRequestUnavailablePeriod = 5 * time.Minute
+	pullRequestQueryTimeout      = 3 * time.Second
 )
+
+// pullRequestsUnavailable reports failures that retrying soon cannot fix:
+// gh is missing, not logged in, or the repository has no GitHub remote.
+func pullRequestsUnavailable(err error) bool {
+	if errors.Is(err, exec.ErrNotFound) {
+		return true
+	}
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return false
+	}
+	message := strings.ToLower(string(exit.Stderr))
+	for _, marker := range []string{"gh auth login", "not logged in", "no git remotes", "none of the git remotes", "not a git repository"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
 
 type pullRequest struct {
 	Number              int                   `json:"number"`
@@ -86,18 +108,30 @@ func listPullRequests(repo string) (map[string][]pullRequest, bool) {
 	}
 	// ponytail: cap PR lookup; add pagination if repositories with 100+ PRs miss active branches.
 	baseFields := "number,state,isDraft,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository"
-	fields := baseFields + ",url,statusCheckRollup"
-	output, err, timedOut := run(fields)
-	identityAvailable := true
-	if err != nil && !timedOut {
-		output, err, _ = run(baseFields + ",statusCheckRollup")
-	}
-	if err != nil {
-		output, err, _ = run(baseFields)
-	}
-	if err != nil {
-		identityAvailable = false
-		output, err, _ = run("number,state,isDraft,headRefName")
+	// Older gh versions reject newer fields, so each failure retries with fewer.
+	// A timeout skips to the fields without statusCheckRollup, which is the slow
+	// part, and a second timeout stops. Only a missing or logged-out gh backs off
+	// for minutes; a slow network retries after the usual period.
+	attempts := []string{baseFields + ",url,statusCheckRollup", baseFields + ",statusCheckRollup", baseFields, "number,state,isDraft,headRefName"}
+	var output []byte
+	var err error
+	identityAvailable, timedOutOnce := true, false
+	for index := 0; index < len(attempts); index++ {
+		var timedOut bool
+		identityAvailable = index < 3
+		if output, err, timedOut = run(attempts[index]); err == nil {
+			break
+		}
+		if pullRequestsUnavailable(err) {
+			ttl = pullRequestUnavailablePeriod
+			break
+		}
+		if timedOut && timedOutOnce {
+			break
+		}
+		if timedOut {
+			timedOutOnce, index = true, 1
+		}
 	}
 	if err != nil {
 		return nil, false
@@ -269,7 +303,27 @@ func (pr pullRequest) headRepository() string {
 	return ""
 }
 
+type upstreamEntry struct {
+	repository string
+	expires    time.Time
+}
+
+// upstreamRepositories caches branchUpstreamRepository for as long as listed PRs
+// stay cached. PR matching runs every refresh, and the answer only changes when
+// someone edits the branch's remote.
+var upstreamRepositories sync.Map
+
 func branchUpstreamRepository(dir, branch string) string {
+	key := dir + "\x00" + branch
+	if cached, ok := upstreamRepositories.Load(key); ok && time.Now().Before(cached.(upstreamEntry).expires) {
+		return cached.(upstreamEntry).repository
+	}
+	repository := lookupBranchUpstreamRepository(dir, branch)
+	upstreamRepositories.Store(key, upstreamEntry{repository: repository, expires: time.Now().Add(time.Minute)})
+	return repository
+}
+
+func lookupBranchUpstreamRepository(dir, branch string) string {
 	remote, err := gitOutput(dir, "config", "--get", "branch."+branch+".remote")
 	if err != nil {
 		return ""

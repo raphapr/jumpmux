@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -122,11 +124,11 @@ func clipLine(value string, width, offset int) string {
 	left := ""
 	available := width
 	if offset > 0 {
-		left, available = mutedStyle.Render("‹"), max(0, available-1)
+		left, available = paint(mutedStyle, "‹"), max(0, available-1)
 	}
 	right := ""
 	if total > offset+available {
-		right, available = mutedStyle.Render("…"), max(0, available-1)
+		right, available = paint(mutedStyle, "…"), max(0, available-1)
 	}
 	return left + ansi.Cut(value, offset, offset+available) + right
 }
@@ -136,7 +138,7 @@ func styleGitLog(lines []string) []string {
 	for _, line := range lines {
 		parts := strings.SplitN(line, "\t", 3)
 		if len(parts) == 3 {
-			styled = append(styled, accentStyle.Render(parts[0])+"  "+mutedStyle.Render(parts[1])+"  "+textStyle.Render(safeText(parts[2])))
+			styled = append(styled, paint(accentStyle, parts[0])+"  "+paint(mutedStyle, parts[1])+"  "+paint(textStyle, safeText(parts[2])))
 		} else {
 			styled = append(styled, textStyle.Render(safeText(line)))
 		}
@@ -152,6 +154,32 @@ func padANSI(value string, width int) string {
 	return padANSIBackground(value, width, nil)
 }
 
+type paintKey struct {
+	foreground, background                  lipgloss.TerminalColor
+	bold, faint, italic, underline, reverse bool
+	profile                                 int
+	dark                                    bool
+}
+
+var paintCache sync.Map
+
+// paint equals style.Render(value) for single-line, tab-free text. Render costs
+// about 14 µs per call because lipgloss parses colors every time, so paint caches
+// the escape codes around a sample and reuses them; table cells call it per frame.
+func paint(style lipgloss.Style, value string) string {
+	key := paintKey{style.GetForeground(), style.GetBackground(), style.GetBold(), style.GetFaint(), style.GetItalic(), style.GetUnderline(), style.GetReverse(), int(lipgloss.ColorProfile()), lipgloss.HasDarkBackground()}
+	if cached, ok := paintCache.Load(key); ok {
+		wrap := cached.([2]string)
+		return wrap[0] + value + wrap[1]
+	}
+	before, after, ok := strings.Cut(style.Render("\x00"), "\x00")
+	if !ok {
+		return style.Render(value)
+	}
+	paintCache.Store(key, [2]string{before, after})
+	return before + value + after
+}
+
 func withBackground(style lipgloss.Style, background *lipgloss.AdaptiveColor) lipgloss.Style {
 	if background != nil {
 		return style.Foreground(textColor).Background(*background)
@@ -160,14 +188,14 @@ func withBackground(style lipgloss.Style, background *lipgloss.AdaptiveColor) li
 }
 
 func renderCell(style lipgloss.Style, value string, width int, background *lipgloss.AdaptiveColor) string {
-	return withBackground(style, background).Render(cell(value, width))
+	return paint(withBackground(style, background), cell(value, width))
 }
 
 func padANSIBackground(value string, width int, background *lipgloss.AdaptiveColor) string {
 	value = ansi.Truncate(value, max(0, width), "")
 	padding := strings.Repeat(" ", max(0, width-ansi.StringWidth(value)))
 	if padding != "" && background != nil {
-		padding = withBackground(lipgloss.NewStyle(), background).Render(padding)
+		padding = paint(withBackground(lipgloss.NewStyle(), background), padding)
 	}
 	return value + padding
 }
@@ -268,9 +296,9 @@ func statusSpansText(spans []statusSpan) string {
 func statusSpansCell(spans []statusSpan, width int, background *lipgloss.AdaptiveColor) string {
 	parts := make([]string, len(spans))
 	for index, span := range spans {
-		parts[index] = withBackground(span.style, background).Render(span.text)
+		parts[index] = paint(withBackground(span.style, background), span.text)
 	}
-	return padANSIBackground(strings.Join(parts, withBackground(textStyle, background).Render(" ")), width, background)
+	return padANSIBackground(strings.Join(parts, paint(withBackground(textStyle, background), " ")), width, background)
 }
 
 // gitStatusSpans describes a row's Git state. Agent rows use the compact form,
@@ -364,11 +392,11 @@ func elapsedCell(value time.Time, width int, now time.Time, background *lipgloss
 	if parts[1] == "00" {
 		minutesStyle = inactive
 	}
-	rendered := withBackground(hoursStyle, background).Render(parts[0]) +
-		withBackground(inactive, background).Render(":") +
-		withBackground(minutesStyle, background).Render(parts[1]) +
-		withBackground(inactive, background).Render(":") +
-		withBackground(base, background).Render(parts[2])
+	rendered := paint(withBackground(hoursStyle, background), parts[0]) +
+		paint(withBackground(inactive, background), ":") +
+		paint(withBackground(minutesStyle, background), parts[1]) +
+		paint(withBackground(inactive, background), ":") +
+		paint(withBackground(base, background), parts[2])
 	return padANSIBackground(rendered, width, background)
 }
 
@@ -499,7 +527,7 @@ func agentSummaryCell(item item, width int, now time.Time, background *lipgloss.
 		// Keep "+N" visible in narrow cells by shortening the title instead.
 		title = ansi.Truncate(safeText(item.sessionTitle), max(0, min(24, width-ansi.StringWidth(status)-1-ansi.StringWidth(extra))), "…")
 	}
-	value := withBackground(statusStyle(item, now), background).Render(status) + withBackground(textStyle, background).Render(" "+title) + withBackground(mutedStyle, background).Render(extra)
+	value := withBackground(statusStyle(item, now), background).Render(status) + paint(withBackground(textStyle, background), " "+title) + paint(withBackground(mutedStyle, background), extra)
 	return padANSIBackground(value, width, background)
 }
 
@@ -516,10 +544,14 @@ func isStale(item item, now time.Time) bool {
 
 func reducedMotion() bool { return os.Getenv("JUMPMUX_REDUCED_MOTION") == "1" }
 
+// spinnerDrawn tells the clock that the screen animates; see nextClock.
+var spinnerDrawn atomic.Bool
+
 func spinnerFrame(now time.Time) string {
 	if reducedMotion() {
 		return "·"
 	}
+	spinnerDrawn.Store(true)
 	index := int(now.UnixNano()/int64(clockInterval)) % len(spinnerFrames)
 	if index < 0 {
 		index += len(spinnerFrames)

@@ -306,7 +306,6 @@ func (m dashboardModel) tableHeader(width int, c tableColumns) string {
 }
 
 func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) string {
-	gitItem := m.gitItem(item)
 	var background *lipgloss.AdaptiveColor
 	if index == m.index {
 		background = &selectedColor
@@ -334,6 +333,7 @@ func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) st
 		line += renderCell(style, name, c.name, background) + renderCell(textStyle, compactHome(item.cwd), c.path, background) + renderCell(mutedStyle, windows, c.windows, background) + renderCell(mutedStyle, last, c.last, background)
 		return padANSIBackground(line, width, background)
 	}
+	gitItem := m.gitItem(item)
 	jumpKey := ""
 	if index < 9 {
 		jumpKey = strconv.Itoa(index + 1)
@@ -357,9 +357,17 @@ func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) st
 // an identical row (same project, worktree, and title). The title is shortened
 // first so the locator survives truncation in a cell of the given width.
 func (m dashboardModel) agentTitle(agent item, width int) string {
-	title := safeText(agent.title)
+	title, project, worktree := safeText(agent.title), projectName(agent.cwd), ""
 	for _, other := range m.agents {
-		if other.target != agent.target && safeText(other.title) == title && projectName(other.cwd) == projectName(agent.cwd) && m.displayWorktree(other) == m.displayWorktree(agent) {
+		// Compare titles first; the worktree lookup scans every worktree, and this
+		// runs for each agent row on every frame.
+		if other.target == agent.target || safeText(other.title) != title || projectName(other.cwd) != project {
+			continue
+		}
+		if worktree == "" {
+			worktree = m.displayWorktree(agent)
+		}
+		if m.displayWorktree(other) == worktree {
 			if locator := paneLocator(agent); locator != "" {
 				// cell() reserves one trailing column as the gap.
 				return fitWithSuffix(title, " · "+locator, width-1)
@@ -854,7 +862,7 @@ func sessionIcon(session item) (string, lipgloss.Style) {
 }
 
 func footerCommand(key, label string) string {
-	return mutedStyle.Render(key) + " " + headerStyle.Render(label)
+	return paint(mutedStyle, key) + " " + paint(headerStyle, label)
 }
 
 func footerToggle(key, label string, active bool) string {
@@ -967,7 +975,7 @@ func renderPanel(title string, lines []string, width, height, offset, xOffset in
 			}
 			line = clipLine(line, innerWidth, xOffset)
 		}
-		out = append(out, panelBorderStyle.Render("│")+padANSI(line, innerWidth)+panelBorderStyle.Render("│"))
+		out = append(out, paint(panelBorderStyle, "│")+padANSI(line, innerWidth)+paint(panelBorderStyle, "│"))
 	}
 	out = append(out, panelBorderStyle.Render("└"+strings.Repeat("─", innerWidth)+"┘"))
 	return strings.Join(out, "\n")

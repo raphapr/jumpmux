@@ -108,7 +108,22 @@ type fileLineCount struct {
 	lines   int
 }
 
+// executablePaths caches PATH lookups. jumpmux starts git and tmux dozens of
+// times per refresh, and each lookup stats every PATH entry until one matches.
+// One stat confirms a cached path still exists, for example after a version
+// manager removes an old install.
+var executablePaths sync.Map
+
 func boundedCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
+	if !strings.ContainsRune(name, os.PathSeparator) {
+		key := name + "\x00" + os.Getenv("PATH")
+		if path, ok := executablePaths.Load(key); ok && fileExists(path.(string)) {
+			name = path.(string)
+		} else if path, err := exec.LookPath(name); err == nil && filepath.IsAbs(path) {
+			executablePaths.Store(key, path)
+			name = path
+		}
+	}
 	command := exec.CommandContext(ctx, name, args...)
 	command.WaitDelay = commandWait
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -123,6 +138,11 @@ func boundedCommand(ctx context.Context, name string, args ...string) *exec.Cmd 
 		}
 	}
 	return command
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func dashboardTab(name string) (int, error) {
@@ -255,7 +275,7 @@ func worktreeGitDetails(items []item) []item {
 	if len(items) == 0 {
 		return items
 	}
-	baseBranch := gitDefaultBranch(items[0].cwd)
+	baseBranch := localDefaultBranch(items[0].cwd)
 	loadGitDetailsParallel(items, func(item item) item { return loadGitDetails(item, baseBranch) })
 	return items
 }
@@ -271,7 +291,7 @@ func agentGitDetails(agents []item) []item {
 		items = append(items, item{kind: "worktree", target: agent.cwd, cwd: agent.cwd})
 	}
 	loadGitDetailsParallel(items, func(item item) item {
-		item = loadGitDetails(item, gitDefaultBranch(item.cwd))
+		item = loadGitDetails(item, localDefaultBranch(item.cwd))
 		if !item.gitLoaded {
 			item.gitLoaded = true
 			return item
@@ -313,7 +333,7 @@ func loadGitDetailsParallel(items []item, load func(item) item) {
 func loadGitDetails(item item, baseBranch string) item {
 	item.gitLoaded = false
 	item.isRebasing = gitRebaseInProgress(item.cwd)
-	status, err := gitOutput(item.cwd, "status", "--porcelain=v2", "--branch")
+	status, err := gitOutput(item.cwd, "status", "--porcelain=v2", "--branch", "-uall")
 	if err != nil {
 		return item
 	}
@@ -327,23 +347,57 @@ func loadGitDetails(item item, baseBranch string) item {
 	}
 
 	item.baseBranch = baseBranch
-	if item.baseBranch == "" {
-		item.baseBranch = gitDefaultBranch(item.cwd)
+	item.added, item.removed = 0, 0
+	if statusHasTracked(status) {
+		item.added, item.removed = diffStats(item.cwd)
 	}
-	if item.baseBranch != "" {
-		if _, err := gitOutput(item.cwd, "show-ref", "--verify", "--quiet", "refs/heads/"+item.baseBranch); err != nil {
-			item.baseBranch = ""
-		}
-	}
-	item.added, item.removed = diffStats(item.cwd)
-	untrackedAdded, untracked := untrackedStats(item.cwd)
+	untrackedAdded, untracked := untrackedStats(item.cwd, statusUntracked(status))
 	item.added += untrackedAdded
 	item.untracked = untracked
+	item.committedAdded, item.committedRemoved, item.hasConflict = 0, 0, false
 	if item.baseBranch != "" && item.branch != item.baseBranch {
-		item.committedAdded, item.committedRemoved = diffStatsRange(item.cwd, item.baseBranch+"...HEAD")
-		item.hasConflict = gitHasConflict(item.cwd, item.baseBranch)
+		item.committedAdded, item.committedRemoved, item.hasConflict = branchComparison(item.cwd, item.baseBranch, statusHeadOID(status))
 	}
 	return item
+}
+
+type branchComparisonResult struct {
+	added, removed int
+	conflict       bool
+}
+
+// branchComparisons caches the branch diff and conflict check by commit IDs.
+// Both depend only on the base and HEAD commits, and merge-tree is the slowest
+// per-worktree command; one rev-parse replaces both while nothing moves.
+var branchComparisons sync.Map
+
+func branchComparison(dir, base, head string) (int, int, bool) {
+	compare := func() branchComparisonResult {
+		added, removed := diffStatsRange(dir, base+"...HEAD")
+		return branchComparisonResult{added, removed, gitHasConflict(dir, base)}
+	}
+	baseOID, err := gitOutput(dir, "rev-parse", "--verify", "--quiet", "refs/heads/"+base)
+	if err != nil || head == "" {
+		result := compare()
+		return result.added, result.removed, result.conflict
+	}
+	key := strings.TrimSpace(baseOID) + "\x00" + head
+	cached, ok := branchComparisons.Load(key)
+	if !ok {
+		cached = compare()
+		branchComparisons.Store(key, cached)
+	}
+	result := cached.(branchComparisonResult)
+	return result.added, result.removed, result.conflict
+}
+
+func statusHeadOID(status string) string {
+	for _, line := range strings.Split(status, "\n") {
+		if oid, ok := strings.CutPrefix(line, "# branch.oid "); ok && oid != "(initial)" {
+			return strings.TrimSpace(oid)
+		}
+	}
+	return ""
 }
 
 func parseGitStatus(output string) (branch string, ahead, behind int, dirty bool) {
@@ -362,6 +416,19 @@ func parseGitStatus(output string) (branch string, ahead, behind int, dirty bool
 		}
 	}
 	return branch, ahead, behind, dirty
+}
+
+// localDefaultBranch returns the default branch when it exists locally, else "".
+// Callers resolve it once per refresh and pass it to loadGitDetails.
+func localDefaultBranch(dir string) string {
+	branch := gitDefaultBranch(dir)
+	if branch == "" {
+		return ""
+	}
+	if _, err := gitOutput(dir, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
+		return ""
+	}
+	return branch
 }
 
 func gitDefaultBranch(dir string) string {
@@ -389,12 +456,19 @@ func requiredDefaultBranch(dir string) (string, error) {
 	return branch, nil
 }
 
+// gitDirCache maps a worktree to its Git directory, which does not change.
+var gitDirCache sync.Map
+
 func gitRebaseInProgress(dir string) bool {
-	gitDir, err := gitOutput(dir, "rev-parse", "--git-dir")
-	if err != nil {
-		return false
+	gitDir, cached := gitDirCache.Load(dir)
+	if !cached {
+		output, err := gitOutput(dir, "rev-parse", "--git-dir")
+		if err != nil {
+			return false
+		}
+		gitDir, _ = gitDirCache.LoadOrStore(dir, output)
 	}
-	path := strings.TrimSpace(gitDir)
+	path := strings.TrimSpace(gitDir.(string))
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(dir, path)
 	}
@@ -417,15 +491,8 @@ func gitHasConflict(dir, base string) bool {
 	return errors.As(err, &exit) && exit.ExitCode() == 1
 }
 
-func untrackedStats(dir string) (lines, files int) {
-	output, err := gitOutput(dir, "ls-files", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return 0, 0
-	}
-	for _, name := range strings.Split(output, "\x00") {
-		if name == "" {
-			continue
-		}
+func untrackedStats(dir string, names []string) (lines, files int) {
+	for _, name := range names {
 		files++
 		path := filepath.Join(dir, name)
 		info, err := os.Lstat(path)
@@ -809,4 +876,34 @@ func exitOnError(err error) {
 		fmt.Fprintln(os.Stderr, "jumpmux:", err)
 		os.Exit(1)
 	}
+}
+
+// statusHasTracked reports tracked changes, so a clean tree skips `git diff`.
+func statusHasTracked(status string) bool {
+	for _, line := range strings.Split(status, "\n") {
+		if line != "" && line[0] != '#' && line[0] != '?' && line[0] != '!' {
+			return true
+		}
+	}
+	return false
+}
+
+// statusUntracked reads untracked paths from `git status --porcelain=v2 -uall`,
+// which replaces a separate `git ls-files --others` scan. Git C-quotes unusual
+// names; strconv.Unquote accepts its octal escapes.
+func statusUntracked(status string) []string {
+	var names []string
+	for _, line := range strings.Split(status, "\n") {
+		name, ok := strings.CutPrefix(line, "? ")
+		if !ok {
+			continue
+		}
+		if strings.HasPrefix(name, "\"") {
+			if unquoted, err := strconv.Unquote(name); err == nil {
+				name = unquoted
+			}
+		}
+		names = append(names, name)
+	}
+	return names
 }
