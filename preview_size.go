@@ -47,13 +47,9 @@ func validPreviewSize(size int) bool {
 }
 
 func settingsPath() (string, error) {
-	state := os.Getenv("XDG_STATE_HOME")
-	if state == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		state = filepath.Join(home, ".local", "state")
+	state, err := jumpmuxStateDir()
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(state, "jumpmux", "settings.json"), nil
+	return filepath.Join(state, "settings.json"), nil
 }

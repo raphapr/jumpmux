@@ -367,7 +367,8 @@ func runWorktreeCommand(cwd string, args []string) error {
 		if len(args) != 2 {
 			return errors.New("usage: jumpmux worktree open <id>")
 		}
-		selected, err := requiredWorktree(cwd, args[1])
+		// requiredItem attaches tmux panes, so an existing window is reused.
+		selected, err := requiredItem("worktrees", cwd, args[1])
 		if err != nil {
 			return err
 		}

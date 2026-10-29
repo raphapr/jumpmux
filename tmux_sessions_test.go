@@ -795,6 +795,8 @@ func TestSessionRemovalSelectsPreRemovalNeighbor(t *testing.T) {
 			model.sessions = []item{{target: "one", muxSessionID: "$1"}, {target: "two", muxSessionID: "$2", sessionSource: "config"}, {target: "three", muxSessionID: "$3"}}
 			selected, _ := model.selected()
 			model.beginRemove(selected)
+			confirmed, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			model = confirmed.(dashboardModel)
 			updated, _ := model.Update(worktreeActionMsg{action: actionRemoveSession, notice: "removed"})
 			model = updated.(dashboardModel)
 			updated, _ = model.Update(sessionDataMsg{generation: model.sessionGeneration, sessions: test.remaining})

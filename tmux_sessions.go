@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -349,6 +350,9 @@ func listSessions(includeServer bool) ([]item, error) {
 		if sessionExcluded(config.exclude, session.name) || sessionExcluded(config.exclude, session.path) {
 			continue
 		}
+		if slices.ContainsFunc(config.sessions, func(configured configuredSession) bool { return samePath(configured.path, session.path) }) {
+			continue
+		}
 		name := uniqueDiscoveredSessionName(items, session)
 		items[name] = item{kind: "tmux-session", target: name, title: name, cwd: session.path, sessionSource: "discovered"}
 	}
@@ -529,6 +533,7 @@ func switchLastTmuxSession() error {
 		attached int64
 	}
 	sessions := []recentSession{}
+	current := activeTmuxSession()
 	for _, record := range tmuxRecords(output) {
 		parts := strings.Split(record, tmuxFieldSeparator)
 		if len(parts) != 3 || !validTmuxSessionID(parts[0]) {
@@ -541,16 +546,22 @@ func switchLastTmuxSession() error {
 				return errors.New("could not read tmux session history")
 			}
 		}
-		if config != nil && sessionExcluded(config.exclude, parts[1]) {
+		// Drop the current session by name, so an excluded current session cannot
+		// shift the previous one out of place.
+		if parts[1] == current || (config != nil && sessionExcluded(config.exclude, parts[1])) {
 			continue
 		}
 		sessions = append(sessions, recentSession{id: parts[0], attached: attached})
 	}
 	sort.Slice(sessions, func(i, j int) bool { return sessions[i].attached > sessions[j].attached })
-	if len(sessions) < 2 {
+	if current == "" && len(sessions) > 0 {
+		// Without a known current session, assume the most recent one is current.
+		sessions = sessions[1:]
+	}
+	if len(sessions) == 0 {
 		return errors.New("no previous session")
 	}
-	return switchTmuxSession(sessions[1].id)
+	return switchTmuxSession(sessions[0].id)
 }
 
 func renameTmuxSession(selected item, name string) error {

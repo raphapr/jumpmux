@@ -343,7 +343,8 @@ func activeTmuxSession() string {
 
 func activeTmuxClientContext() (string, string) {
 	if session := activeTmuxSession(); session != "" {
-		output, err := tmuxOutput("display-message", "-p", "-t", session, "#{pane_id}\t#{pane_current_path}")
+		// "=name:" forces a session target; a bare "0" would match pane or window 0 first.
+		output, err := tmuxOutput("display-message", "-p", "-t", "="+session+":", "#{pane_id}\t#{pane_current_path}")
 		if err == nil {
 			parts := strings.SplitN(strings.TrimSpace(output), "\t", 2)
 			if len(parts) == 2 && parts[0] != "" {
@@ -365,7 +366,8 @@ func jumpTmuxPane(selected item) error {
 	if os.Getenv("TMUX") == "" {
 		return errors.New("run jumpmux inside tmux to jump to a pane")
 	}
-	if _, err := tmuxOutput("display-message", "-p", "-t", selected.pane, "#{pane_id}"); err != nil {
+	// tmux prints an empty line and exits 0 for a closed pane.
+	if output, err := tmuxOutput("display-message", "-p", "-t", selected.pane, "#{pane_id}"); err != nil || strings.TrimSpace(output) != selected.pane {
 		return errPaneClosed
 	}
 	return focusTmuxPane(selected)

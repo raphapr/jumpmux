@@ -191,10 +191,11 @@ type agentNameMsg struct {
 }
 
 type worktreeActionMsg struct {
-	action dashboardAction
-	notice string
-	quit   bool
-	err    error
+	action     dashboardAction
+	notice     string
+	quit       bool
+	background bool
+	err        error
 }
 
 // dashboardJumpCommand lets Bubble Tea restore the terminal before tmux takes control.
@@ -465,7 +466,7 @@ func (m dashboardModel) executeAction(action menuAction) (tea.Model, tea.Cmd) {
 		if ok {
 			pr := m.gitItem(selected)
 			return m, func() tea.Msg {
-				return worktreeActionMsg{notice: fmt.Sprintf("Opened PR #%d", pr.prNumber), err: openPullRequest(selected.cwd, pr.prNumber)}
+				return worktreeActionMsg{notice: fmt.Sprintf("Opened PR #%d", pr.prNumber), background: true, err: openPullRequest(selected.cwd, pr.prNumber)}
 			}
 		}
 	case menuMarkAgentSeen:
@@ -1372,7 +1373,12 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.actionTextInput.CursorEnd()
 		return m, m.actionTextInput.Focus()
 	case worktreeActionMsg:
-		m.action, m.actionTarget, m.err = actionNone, item{}, msg.err
+		// A background result, such as opening a PR, must not end a prompt or an
+		// action the user started while it ran.
+		if !msg.background {
+			m.action, m.actionTarget = actionNone, item{}
+		}
+		m.err = msg.err
 		if msg.err == nil && msg.quit {
 			return m, tea.Quit
 		}
@@ -2465,6 +2471,7 @@ func mergeWorktreeData(current, incoming []item, stage worktreeStage) []item {
 				old.primary, old.locked, old.prunable = fresh.primary, fresh.locked, fresh.prunable
 				if branchChanged {
 					old.prNumber, old.prState, old.prDraft, old.prCheck, old.prLoaded = 0, "", false, "", false
+					old.prFailedChecks, old.prURL = nil, ""
 					old.dirty, old.gitLoaded = false, false
 					old.baseBranch = ""
 					old.committedAdded, old.committedRemoved = 0, 0

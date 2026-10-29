@@ -134,6 +134,7 @@ case "$1:$*" in
   display-message:*pane_active*)
     if test "$FAKE_ACTIVE_PANE" = '%7'; then printf '1\t1\t1\n'; else printf '0\t1\t1\n'; fi ;;
   display-message:*window_id*) printf '@2\n' ;;
+  "display-message:display-message -p -t %7 #{pane_id}") printf '%%7\n' ;;
   display-message:*) printf '4321\tpi\n' ;;
   set-option:*-up*jumpmux_pane_status*) rm -f "$TMUX_STATUS" ;;
   set-option:*-p*jumpmux_pane_status*) for value do :; done; printf '%s\n' "$value" > "$TMUX_STATUS" ;;
