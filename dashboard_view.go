@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"strconv"
@@ -341,7 +342,7 @@ func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) st
 	line += renderCell(keycapStyle, jumpKey, 2, background) + renderCell(worktreeStyle, projectName(item.cwd), c.project, background) + renderCell(worktreeStyle, m.displayWorktree(item), c.worktree, background)
 	if m.tab == tabAgents {
 		line += compactGitStatusCell(gitItem, c.git, m.now, background) + compactPRCell(gitItem, c.pr, m.now, background)
-		line += statusCell(item, c.status, m.now, background) + elapsedCell(item.updated, c.elapsed, m.now, background) + renderCell(worktreeStyle, m.agentTitle(item, c.tail), c.tail, background)
+		line += statusCell(item, c.status, m.now, background) + elapsedCell(item.updated, c.elapsed, m.now, background) + m.agentTitleCell(item, worktreeStyle, c.tail, background)
 	} else {
 		line += gitStatusCell(gitItem, c.git, m.now, background) + prCell(gitItem, c.pr, m.now, background)
 		age := "-"
@@ -353,10 +354,66 @@ func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) st
 	return padANSIBackground(line, width, background)
 }
 
-// agentTitle appends the pane locator when another agent would otherwise render
-// an identical row (same project, worktree, and title). The title is shortened
-// first so the locator survives truncation in a cell of the given width.
-func (m dashboardModel) agentTitle(agent item, width int) string {
+// agentTitle returns the agent's title and a tmux location suffix for when the
+// title alone is not enough: " @session:window" for an agent outside the
+// dashboard's session, so a jump is visibly a session switch, and the pane
+// locator when another agent would otherwise render an identical row. The title
+// is shortened first so the suffix survives truncation in a cell of the given
+// width. tag reports whether the suffix is a session tag; a tag that cannot fit
+// beside a readable title is dropped rather than cut.
+func (m dashboardModel) agentTitle(agent item, width int) (title, suffix string, tag bool) {
+	title = safeText(agent.title)
+	// cell() reserves one trailing column as the gap.
+	available := max(0, width-1)
+	locator := ""
+	if m.duplicateAgentRow(agent) {
+		locator = paneLocator(agent)
+	}
+	session, window := safeText(agent.muxSessionName), safeText(agent.muxWindowIndex)
+	if m.launchSessionID != "" && agent.muxSessionID != "" && agent.muxSessionID != m.launchSessionID && session != "" {
+		room := available - min(ansi.StringWidth(title), max(4, available/2))
+		suffix = sessionTag(session, cmp.Or(locator, window), room)
+		if suffix == "" && locator != "" {
+			suffix = sessionTag(session, window, room)
+		}
+		tag = suffix != ""
+	} else if locator != "" {
+		suffix = ansi.Truncate(" · "+locator, available, "")
+	}
+	if suffix != "" {
+		title = ansi.Truncate(title, max(0, available-ansi.StringWidth(suffix)), "…")
+	}
+	return title, suffix, tag
+}
+
+// sessionTag formats " @session:where" within room columns, shortening the
+// session name with … so the window stays visible. It returns "" when even a
+// shortened name does not fit.
+func sessionTag(session, where string, room int) string {
+	tail := ""
+	if where != "" {
+		tail = ":" + where
+	}
+	sessionRoom := room - ansi.StringWidth(" @"+tail)
+	if sessionRoom < min(ansi.StringWidth(session), 2) {
+		return ""
+	}
+	return " @" + ansi.Truncate(session, sessionRoom, "…") + tail
+}
+
+// agentTitleCell paints a session tag apart from the title so it reads as a
+// location; the text itself still marks it for plain and NO_COLOR terminals.
+func (m dashboardModel) agentTitleCell(agent item, style lipgloss.Style, width int, background *lipgloss.AdaptiveColor) string {
+	title, suffix, tag := m.agentTitle(agent, width)
+	if !tag {
+		return renderCell(style, title+suffix, width, background)
+	}
+	return padANSIBackground(paint(withBackground(style, background), title)+paint(withBackground(infoStyle, background), suffix), width, background)
+}
+
+// duplicateAgentRow reports whether another agent would render an identical
+// row: same project, worktree, and title.
+func (m dashboardModel) duplicateAgentRow(agent item) bool {
 	title, project, worktree := safeText(agent.title), projectName(agent.cwd), ""
 	for _, other := range m.agents {
 		// Compare titles first; the worktree lookup scans every worktree, and this
@@ -368,14 +425,10 @@ func (m dashboardModel) agentTitle(agent item, width int) string {
 			worktree = m.displayWorktree(agent)
 		}
 		if m.displayWorktree(other) == worktree {
-			if locator := paneLocator(agent); locator != "" {
-				// cell() reserves one trailing column as the gap.
-				return fitWithSuffix(title, " · "+locator, width-1)
-			}
-			break
+			return true
 		}
 	}
-	return agent.title
+	return false
 }
 
 func (m dashboardModel) displayWorktree(item item) string {

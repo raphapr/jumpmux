@@ -1496,7 +1496,7 @@ func TestAgentsSharingAWorktreeAreDistinguishable(t *testing.T) {
 	model.width = 120
 	model.agents = []item{first, second, unique}
 	for index, want := range []string{"π - repo · 2.0 (editor)", "π - repo · 2.1 (editor)", "named"} {
-		if got := model.agentTitle(model.agents[index], 80); got != want {
+		if got := agentTitleText(model, model.agents[index], 80); got != want {
 			t.Fatalf("agentTitle(%s) = %q, want %q", model.agents[index].target, got, want)
 		}
 	}
@@ -1509,14 +1509,14 @@ func TestAgentsSharingAWorktreeAreDistinguishable(t *testing.T) {
 	spaced := first
 	spaced.title = "π -  repo"
 	model.agents = []item{spaced, second}
-	if got := model.agentTitle(spaced, 80); !strings.HasSuffix(got, "· 2.0 (editor)") {
+	if got := agentTitleText(model, spaced, 80); !strings.HasSuffix(got, "· 2.0 (editor)") {
 		t.Fatalf("whitespace-only title difference hid the locator: %q", got)
 	}
 	// The same title in a different worktree is already distinguishable.
 	elsewhere := second
 	elsewhere.cwd = "/other"
 	model.agents = []item{first, elsewhere}
-	if got := model.agentTitle(first, 80); got != first.title {
+	if got := agentTitleText(model, first, 80); got != first.title {
 		t.Fatalf("distinct worktrees got a locator: %q", got)
 	}
 
@@ -1594,4 +1594,98 @@ func TestAgentsSharingAWorktreeAreDistinguishable(t *testing.T) {
 	if len(agentPreview.lines) == 0 || agentPreview.lines[0] != "Pane dev:2.1 (editor)" {
 		t.Fatalf("agent preview pane line = %q", agentPreview.lines)
 	}
+}
+
+func TestAgentsOutsideTheLaunchSessionShowWhereTheyRun(t *testing.T) {
+	// The launch session was renamed after start; its ID still matches.
+	home := item{kind: "session", target: "%1", pane: "%1", cwd: "/repo", title: "π - repo", muxSessionID: "$1", muxSessionName: "renamed", muxWindowIndex: "2", paneIndex: "0"}
+	away := item{kind: "session", target: "%2", pane: "%2", cwd: "/labs", title: "π - labs", muxSessionID: "$2", muxSessionName: "labs", muxWindowIndex: "4", muxWindowName: "helm", paneIndex: "1"}
+	twin := away
+	twin.target, twin.pane, twin.paneIndex = "%3", "%3", "2"
+	infra := item{kind: "session", target: "%4", pane: "%4", cwd: "/infra", title: "π - infra", muxSessionID: "$3", muxSessionName: "infrastructure-live", muxWindowIndex: "1", paneIndex: "0"}
+
+	model := newDashboard("/repo")
+	model.launchSessionID = "$1"
+	model.agents = []item{home, away, infra}
+	for _, tc := range []struct {
+		agent item
+		width int
+		want  string
+	}{
+		{home, 80, "π - repo"},
+		{away, 80, "π - labs @labs:4"},
+		// Narrow cells shorten the title first, but never below a readable share.
+		{away, 16, "π - la… @labs:4"},
+		{away, 14, "π - l… @la…:4"},
+		// Long session names are shortened visibly and keep the window.
+		{infra, 30, "π - infra @infrastructure-…:1"},
+		// Too narrow for both: the tag is dropped instead of cut.
+		{away, 8, "π - labs"},
+	} {
+		if got := agentTitleText(model, tc.agent, tc.width); got != tc.want {
+			t.Fatalf("agentTitle(%s, %d) = %q, want %q", tc.agent.target, tc.width, got, tc.want)
+		}
+		if cell := ansi.Strip(model.agentTitleCell(tc.agent, textStyle, tc.width, nil)); ansi.StringWidth(cell) != tc.width {
+			t.Fatalf("title cell width at %d = %d: %q", tc.width, ansi.StringWidth(cell), cell)
+		}
+	}
+
+	// The tag is painted apart from the title, and keeps the selection background.
+	previousProfile := lipgloss.ColorProfile()
+	defer lipgloss.SetColorProfile(previousProfile)
+	lipgloss.SetColorProfile(0) // termenv.TrueColor, so styles emit escape codes
+	tag := paint(infoStyle, " @labs:4")
+	if cell := model.agentTitleCell(away, textStyle, 40, nil); tag == " @labs:4" || !strings.Contains(cell, paint(textStyle, "π - labs")+tag) {
+		t.Fatalf("session tag cell = %q", cell)
+	}
+	selectedTag := paint(withBackground(infoStyle, &selectedColor), " @labs:4")
+	if cell := model.agentTitleCell(away, textStyle, 40, &selectedColor); !strings.Contains(cell, selectedTag) || ansi.StringWidth(cell) != 40 {
+		t.Fatalf("selected session tag cell = %q", cell)
+	}
+
+	// A title collision folds the pane locator into the session tag.
+	model.agents = []item{home, away, twin}
+	if got := agentTitleText(model, twin, 80); got != "π - labs @labs:4.2 (helm)" {
+		t.Fatalf("colliding agent in another session = %q", got)
+	}
+	// Untrusted session names cannot inject terminal sequences.
+	unsafe := away
+	unsafe.muxSessionName = "x\x1b]52;c;evil\a"
+	if got := agentTitleText(model, unsafe, 80); strings.Contains(got, "\x1b") {
+		t.Fatalf("session tag passed a control sequence: %q", got)
+	}
+
+	// The filter matches the tag as shown.
+	model.agents = []item{home, away, infra}
+	for query, want := range map[string]int{"@labs": 1, "labs:4": 1, "labs": 1, "@renamed": 1} {
+		model.query = query
+		if got := len(model.rows()); got != want {
+			t.Fatalf("filter /%s = %d rows, want %d", query, got, want)
+		}
+	}
+	model.query = ""
+
+	// Every rendered line keeps the terminal width, with and without the preview.
+	model.agentsLoaded, model.height = true, 24
+	for _, width := range []int{60, 80, 140, 180} {
+		for _, preview := range []bool{true, false} {
+			model.width, model.previewEnabled[tabAgents] = width, preview
+			for _, line := range strings.Split(ansi.Strip(model.View()), "\n") {
+				if got := ansi.StringWidth(line); got != width {
+					t.Fatalf("view line width at %d (preview %t) = %d: %q", width, preview, got, line)
+				}
+			}
+		}
+	}
+
+	// Outside tmux there is no home session, so nothing is tagged.
+	model.launchSessionID = ""
+	if got := agentTitleText(model, away, 80); got != away.title {
+		t.Fatalf("agent tagged without a launch session: %q", got)
+	}
+}
+
+func agentTitleText(model dashboardModel, agent item, width int) string {
+	title, suffix, _ := model.agentTitle(agent, width)
+	return title + suffix
 }

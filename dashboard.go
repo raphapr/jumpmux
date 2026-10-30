@@ -84,7 +84,7 @@ type dashboardModel struct {
 	agentGit, gitCache, prCache                               map[string]item
 	scope                                                     scopeMode
 	scheme                                                    colorScheme
-	launchSession                                             string
+	launchSessionID                                           string // tmux session the dashboard runs in, as $N
 	worktreeGeneration, sessionGeneration                     uint64
 	previewRequest, diffRequest                               uint64
 	filter, diff, help, themePicker                           bool
@@ -623,7 +623,7 @@ func (m *dashboardModel) resizeInputs() {
 	m.actionTextInput.Width = width
 }
 
-func newDashboardForLaunch(cwd, launchSession string) dashboardModel {
+func newDashboardForLaunch(cwd, launchSessionID string) dashboardModel {
 	model := newDashboard(cwd)
 	model.gitCache = loadGitStatusCache()
 	model.prCache = loadPRStatusCache()
@@ -649,7 +649,7 @@ func newDashboardForLaunch(cwd, launchSession string) dashboardModel {
 	nerdFontEnabled = configErr != nil || !config.hasNerdFont || config.nerdFont
 	model.previewSize = loadPreviewSize()
 	applyColorScheme(model.scheme)
-	model.launchSession = launchSession
+	model.launchSessionID = launchSessionID
 	return model
 }
 
@@ -2334,6 +2334,7 @@ func helpSections() []helpSection {
 			{"m", "Mark a finished agent seen"},
 			{"r", "Close the agent (asks first)"},
 			{"s", "Show all agents or this session's"},
+			{"@s:w", "In another tmux session; Enter switches"},
 		}},
 		{"Worktrees tab", tabWorktrees, []helpRow{
 			{"Enter, o", "Open the worktree in tmux"},
@@ -2540,7 +2541,8 @@ func (m dashboardModel) rows() []item {
 	for _, item := range rows {
 		fields := item.title + " " + item.cwd + " " + item.branch + " " + item.sessionTitle
 		if m.tab == tabAgents {
-			fields += " " + item.muxSessionName
+			// Match the Title tag too, so /@labs and /labs:4 find what the row shows.
+			fields += " @" + item.muxSessionName + ":" + item.muxWindowIndex
 		}
 		if strings.Contains(strings.ToLower(fields), query) {
 			filtered = append(filtered, item)
@@ -2579,7 +2581,7 @@ func (m *dashboardModel) applyAgentScope() {
 	m.agents = append(m.agents[:0], m.allAgents...)
 	if m.scope == scopeSession {
 		m.agents = slices.DeleteFunc(m.agents, func(item item) bool {
-			return m.launchSession == "" || item.muxSessionName != m.launchSession
+			return m.launchSessionID == "" || item.muxSessionID != m.launchSessionID
 		})
 	}
 }

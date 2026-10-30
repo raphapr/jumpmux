@@ -341,6 +341,16 @@ func activeTmuxSession() string {
 	return strings.TrimSpace(session)
 }
 
+// activeTmuxSessionID returns the current session's ID, which, unlike its
+// name, survives a rename while the dashboard is open.
+func activeTmuxSessionID() string {
+	id, err := tmuxOutput("display-message", "-p", "#{session_id}")
+	if id = strings.TrimSpace(id); err != nil || !validTmuxSessionID(id) {
+		return ""
+	}
+	return id
+}
+
 func activeTmuxClientContext() (string, string) {
 	if session := activeTmuxSession(); session != "" {
 		// "=name:" forces a session target; a bare "0" would match pane or window 0 first.

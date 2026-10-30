@@ -216,7 +216,7 @@ func main() {
 
 	cwd, err := os.Getwd()
 	exitOnError(err)
-	model := newDashboardForLaunch(cwd, activeTmuxSession())
+	model := newDashboardForLaunch(cwd, activeTmuxSessionID())
 	model.tab = initialTab
 	result, err := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	exitOnError(err)

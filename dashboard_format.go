@@ -449,11 +449,6 @@ func paneLocator(item item) string {
 	return safeText(locator)
 }
 
-// fitWithSuffix truncates value so suffix stays visible within width.
-func fitWithSuffix(value, suffix string, width int) string {
-	return ansi.Truncate(safeText(value), max(0, width-ansi.StringWidth(suffix)), "…") + suffix
-}
-
 func paneLocation(item item) string {
 	if item.muxSessionName == "" {
 		return ""

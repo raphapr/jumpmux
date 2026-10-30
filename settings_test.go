@@ -22,10 +22,11 @@ func TestDashboardScope(t *testing.T) {
 		t.Fatalf("saved scope = %#v", config)
 	}
 
-	model := newDashboardForLaunch("/repo", "dev")
+	model := newDashboardForLaunch("/repo", "$1")
+	// Scope follows the session ID, so a renamed launch session keeps its agents.
 	model.allAgents = []item{
-		{kind: "session", target: "%1", muxSessionName: "dev"},
-		{kind: "session", target: "%2", muxSessionName: "other"},
+		{kind: "session", target: "%1", muxSessionID: "$1", muxSessionName: "renamed"},
+		{kind: "session", target: "%2", muxSessionID: "$2", muxSessionName: "other"},
 	}
 	model.applyAgentScope()
 	if len(model.agents) != 1 || model.agents[0].target != "%1" {
