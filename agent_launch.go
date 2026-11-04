@@ -202,12 +202,17 @@ func nameAgentBranch(repo, prompt string) (branch string, warning, err error) {
 // availableAgentBranch adds the first -N suffix that is free for both the
 // branch and its worktree path.
 func availableAgentBranch(root, branch string) (string, error) {
+	refs, err := loadBranchRefs(root)
+	if err != nil {
+		return "", err
+	}
 	for attempt := 1; attempt <= 100; attempt++ {
 		candidate := branch
 		if attempt > 1 {
 			candidate = fmt.Sprintf("%s-%d", branch, attempt)
 		}
-		if _, err := gitOutput(root, "show-ref", "--verify", "--quiet", "refs/heads/"+candidate); err == nil {
+		// Skip remote names too: an agent must start fresh, not on someone's branch.
+		if refs.plan(candidate).source != branchNew {
 			continue
 		}
 		if _, err := os.Lstat(worktreePath(root, candidate)); errors.Is(err, os.ErrNotExist) {
@@ -281,7 +286,7 @@ func startAgent(repo, branch, prompt string) (agentLaunch, error) {
 	if err != nil {
 		return agentLaunch{}, err
 	}
-	created, err := addWorktree(root, branch)
+	created, _, err := addWorktree(root, branch, false)
 	if err != nil {
 		return agentLaunch{}, err
 	}

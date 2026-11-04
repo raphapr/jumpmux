@@ -28,6 +28,8 @@ type contextItem struct {
 	TmuxSessionID string `json:"tmux_session_id,omitempty"`
 	TmuxWindowID  string `json:"tmux_window_id,omitempty"`
 	Live          bool   `json:"live,omitempty"`
+	// Source is set only by worktree add: new, local, remote, or existing-worktree.
+	Source string `json:"source,omitempty"`
 }
 
 func contextCommand(args []string) (bool, error) {
@@ -340,18 +342,24 @@ func runWorktreeAdd(cwd string, args []string) error {
 			return err
 		}
 	}
-	created, err := addWorktree(cwd, options.branch)
+	added, plan, err := addWorktree(cwd, options.branch, true)
 	if err != nil {
 		return err
 	}
 	if options.json {
-		return json.NewEncoder(os.Stdout).Encode(contextJSON([]item{created})[0])
+		entry := contextJSON([]item{added})[0]
+		entry.Source = [...]string{branchNew: "new", branchLocal: "local", branchRemote: "remote", branchCheckedOut: "existing-worktree"}[plan.source]
+		return json.NewEncoder(os.Stdout).Encode(entry)
+	}
+	if plan.source != branchNew {
+		// Stderr keeps --detach output a bare path for scripts.
+		fmt.Fprintln(os.Stderr, "jumpmux:", plan.notice(options.branch))
 	}
 	if options.detach {
-		fmt.Println(created.cwd)
+		fmt.Println(added.cwd)
 		return nil
 	}
-	return openTmuxWorktree(created)
+	return openAddedWorktree(cwd, added, plan)
 }
 
 func runWorktreeCommand(cwd string, args []string) error {
@@ -413,14 +421,33 @@ func runDestructiveWorktreeCommand(cwd string, args []string) error {
 	if err != nil {
 		return err
 	}
+	mode := removeClean
+	if args[0] == "remove" && len(clean) == 2 {
+		switch clean[1] {
+		case "--stash":
+			mode, clean = removeStash, clean[:1]
+		case "--force":
+			mode, clean = removeDiscard, clean[:1]
+		}
+	}
 	if len(clean) != 1 {
+		if args[0] == "remove" {
+			return errors.New("usage: jumpmux worktree remove <id> [--stash|--force] [--yes]")
+		}
 		return fmt.Errorf("usage: jumpmux worktree %s <id> [--yes]", args[0])
 	}
 	if _, err := requiredWorktree(cwd, clean[0]); err != nil {
 		return err
 	}
 	if !yes {
-		if err := confirmOperation("worktree " + args[0]); err != nil {
+		label := "worktree " + args[0]
+		switch mode {
+		case removeStash:
+			label += " and stash its changes"
+		case removeDiscard:
+			label += " and discard its changes"
+		}
+		if err := confirmOperation(label); err != nil {
 			return err
 		}
 	}
@@ -431,7 +458,11 @@ func runDestructiveWorktreeCommand(cwd string, args []string) error {
 	}
 	switch args[0] {
 	case "remove":
-		return removeWorktree(cwd, selected.cwd)
+		err := removeWorktree(cwd, selected.cwd, mode)
+		if dirty := (dirtyWorktreeError{}); errors.As(err, &dirty) {
+			return fmt.Errorf("%w; rerun with --stash to keep them in the Git stash, or --force to discard them", err)
+		}
+		return err
 	case "cleanup":
 		return cleanupPrunableWorktree(cwd, selected)
 	case "rebase", "merge":

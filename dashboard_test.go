@@ -928,14 +928,15 @@ func TestDashboardDiffOffsetsAndMinimumLayout(t *testing.T) {
 		action dashboardAction
 		want   []string
 	}{
-		{actionRemoveWorktree, []string{"Will remove worktree /feature.", "The branch stays.", "Enter Remove    Esc Cancel"}},
-		{actionRemoveSession, []string{"Will kill tmux session dev.", "Configured entry stays in config.toml.", "Enter Remove    Esc Cancel"}},
-		{actionCleanupWorktree, []string{"Will remove stale record /feature.", "Other worktrees and the branch stay.", "Enter Clean up    Esc Cancel"}},
+		{actionRemoveWorktree, []string{" No uncommitted changes", "The branch stays.", "Enter Remove Esc Cancel"}},
+		{actionRemoveSession, []string{"Will kill tmux session dev.", "Configured entry stays in config.toml.", "Enter Remove Esc Cancel"}},
+		{actionCleanupWorktree, []string{"Will remove stale record /feature.", "Other worktrees and the branch stay.", "Enter Clean up Esc"}},
 		{actionRemoveAgent, []string{"Will close Pi in tmux pane %7.", "Other panes and the worktree stay.", "Remove agent", "Remove dev?"}},
-		{actionRebaseWorktree, []string{"Will rebase feature", "Commits may be rewritten.", "Enter Rebase    Esc Cancel"}},
-		{actionMergeWorktree, []string{"Will merge feature", "Needs clean worktrees; keeps it.", "Enter Merge    Esc Cancel"}},
+		{actionRebaseWorktree, []string{"Will rebase feature", "Commits may be rewritten.", "Enter Rebase Esc Cancel"}},
+		{actionMergeWorktree, []string{"Will merge feature", "Needs clean worktrees; keeps it.", "Enter Merge Esc Cancel"}},
 	} {
 		model.action, model.actionTarget = test.action, item{branch: "feature", cwd: "/feature", title: "dev", pane: "%7"}
+		model.removeChanges = &worktreeChanges{}
 		view := ansi.Strip(model.View())
 		for _, want := range test.want {
 			if !strings.Contains(view, want) {

@@ -30,7 +30,7 @@
 | Agents: `o`, `d`, `p`, `m`, `r`           | Open, diff, open PR, mark an unseen completion seen, or remove         |
 | Agents and Worktrees: `A`                 | Start an agent from a prompt: name the branch, edit it, then create    |
 | Worktrees: `a`, `o`, `d`, `p`             | Add, open, diff, or open PR when available                             |
-| Worktrees: `b`, `m`, `x`, `r`             | Rebase, merge, clean up, or remove; `Enter` confirms                   |
+| Worktrees: `b`, `m`, `x`, `r`             | Rebase, merge, clean up, or remove; `Enter`, `s`, or `F` confirms      |
 | Sessions: `O`, `Ctrl+r`, `P`              | Open, remove (`Enter` confirms), or switch to the previous session     |
 | `PgUp` / `PgDn`                           | Page diff/Help, or the Session preview                                 |
 | `Ctrl+u` / `Ctrl+d`                       | Page the focused preview, diff panel, or Help                          |
@@ -58,7 +58,9 @@ To close an agent, press `r` or choose Remove agent from `Space`, then press `En
 
 Agent status also appears in the tmux window list. jumpmux adds a marker to the global `window-status-format` and `window-status-current-format`, or to a window's own format when that window sets one. Reloading the tmux configuration drops the marker until the next agent update. While a completion is unseen, jumpmux also sets global focus hooks at index `987654` and removes them once every completion is seen.
 
-`jumpmux worktree add <branch> [--detach] [--json]` creates a normal worktree. Without `--detach` or `--json`, it opens a new tmux shell in the worktree. `--detach` prints its path, and `--json` returns the worktree resource.
+`jumpmux worktree add <branch> [--detach] [--json]` adds a normal worktree. A new name creates the branch from the local default branch. An existing local branch is checked out, and a branch that exists only on a remote gets a local branch that tracks it, preferring `origin`. A branch already checked out in another worktree opens that worktree instead. A name that starts with a remote, such as `origin/feature`, is refused; type `feature` to use the remote branch. Without `--detach` or `--json`, it opens a tmux shell in a new worktree, or switches to a pane already open in an existing one. `--detach` prints its path, and `--json` returns the worktree resource with `source` set to `new`, `local`, `remote`, or `existing-worktree`.
+
+In the dashboard, press `a` and type a branch name. As you type, the Add worktree panel shows the branch, the worktree path, and what `Enter` will do: `New branch from main`, `Uses the existing local branch`, `Tracks origin/<branch>`, or `Already checked out here`. In the last case the path is the existing worktree and `Enter` opens it. When `Enter` would fail, the panel says why instead: an invalid name, a name that starts with a remote, or a missing local default branch.
 
 When agents in the same worktree share a title, the Title column appends the pane location as `window.pane (window-name)`, for example `π - repo · 2.1 (editor)`. When the dashboard runs inside tmux, agents in sessions other than the one jumpmux was opened from get a `@session:window` tag, for example `π - labs @labs:4`, so a tag means `Enter` switches sessions. Pressing `s` hides the tagged rows. The filter matches the tag, so `/@labs` and `/labs:4` work. Colliding titles in another session combine both, as in `@labs:4.2 (helm)`. Renaming the session jumpmux runs in does not tag its own agents. On narrow terminals the title is shortened so the location stays visible; a long session name is shortened with `…` and keeps its window, and a tag that does not fit beside a readable title is hidden. In the Worktrees tab, the Agent column shows `+N` for extra agents and the preview lists each agent with its pane location.
 
@@ -84,6 +86,13 @@ Live previews capture the active pane every 500 ms, including alternate-screen p
 jumpmux merges rows with the same name, and drops a discovered directory that a configured entry already covers. Configured paths take precedence; live-only rows use the active pane path. Rows appear in three groups: live, configured, and discovered. Each group sorts by name. Press `Ctrl+g` to sort by the `Last` column until jumpmux exits. Searches sort by fuzzy match score.
 
 Press `Space` for actions available on the selected row. Press the shown key from the table or menu, or select an action and press `Enter`. The Sessions `P` action switches to the previous session even when no row is selected. Opening a selected row, adding a worktree, or switching to the previous session exits the dashboard; failures leave it open. Worktree actions include add, open, diff, PR, rebase, merge, cleanup, and removal. Worktree rebase and merge use native Git against the local default branch. Merge is fast-forward-only and runs in the worktree that has the default branch checked out. It requires both worktrees to be clean, preserves commits, and keeps the worktree. In a bare repository layout, the bare directory is not listed. Existing `worktree_backend` settings are unsupported and must be removed. Removing a live session does not delete its configured entry.
+
+Before removing a worktree, jumpmux checks tmux and reads `git status`. If a tmux pane in any session has its directory inside the worktree, or sits in a window jumpmux opened for it, the confirmation lists each pane as `session:window.pane (window-name)` and only `Esc` works. Close those panes yourself; jumpmux does not close them, because that would kill what runs in them. The CLI refuses the removal with the same list, even with `--force`. A clean worktree is removed with `Enter`, and the branch stays. If the worktree has changed or untracked files, the confirmation shows how many, and `Enter` does nothing:
+
+- `s` saves the changes and untracked files with `git stash push --include-untracked`, then removes the worktree. The stash is shared by every worktree in the repository, so `git stash list` and `git stash pop` restore the changes anywhere.
+- `F` removes the worktree with `git worktree remove --force` and deletes the changes. This cannot be undone.
+
+Ignored files are not stashed; Git deletes them with the worktree. If the worktree changes after you confirm a clean removal, jumpmux stops and asks you to press `r` again. Inside the confirmation, `r` checks the worktree again, for example after you close a blocking pane. A worktree whose directory is gone has nothing to lose, so `Enter` removes its record. A locked worktree is refused; run `git worktree unlock` first.
 
 ### Git
 

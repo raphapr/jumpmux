@@ -689,6 +689,12 @@ func parseWorktrees(output []byte) []worktree {
 func gitOutput(dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), metadataTimeout)
 	defer cancel()
+	return gitOutputContext(ctx, dir, args...)
+}
+
+// gitOutputContext is gitOutput for callers that need a longer deadline than
+// metadataTimeout, such as status before a worktree action.
+func gitOutputContext(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := boundedCommand(ctx, "git", append([]string{"-C", dir}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
 	output, err := cmd.Output()

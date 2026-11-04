@@ -40,6 +40,7 @@ func TestBackgroundActionResultKeepsOpenPrompt(t *testing.T) {
 	model.width, model.height, model.tab = 100, 20, tabWorktrees
 	model.worktrees = []item{{kind: "worktree", target: "/feature", cwd: "/feature", branch: "feature"}}
 	model.beginRemove(model.worktrees[0])
+	model.removeChanges = &worktreeChanges{}
 	updated, _ := model.Update(worktreeActionMsg{notice: "Opened PR #1", background: true})
 	if model = updated.(dashboardModel); model.action != actionRemoveWorktree || model.actionTarget.target != "/feature" {
 		t.Fatalf("PR result cleared the removal prompt: %v %#v", model.action, model.actionTarget)

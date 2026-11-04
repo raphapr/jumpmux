@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -124,6 +125,13 @@ type dashboardModel struct {
 	agentPrompt                                                           string
 	agentNameRequest                                                      uint64
 	agentNameFallback                                                     bool
+	branchRefs                                                            *branchRefs
+	branchRefsErr                                                         error
+	branchRefsRequest                                                     uint64
+	removeChanges                                                         *worktreeChanges
+	removeChangesErr                                                      error
+	removePanes                                                           []tmuxPane
+	removeChangesRequest                                                  uint64
 	sessionSelectionAfterRemove                                           string
 	restoreSessionSelection                                               bool
 }
@@ -186,6 +194,23 @@ type actionMenuEntry struct {
 	label  string
 	key    string
 	footer string
+}
+
+// branchRefsMsg carries the snapshot behind the Add worktree panel; request
+// rejects lookups from a prompt that was closed or reopened.
+type branchRefsMsg struct {
+	request uint64
+	refs    branchRefs
+	err     error
+}
+
+// removeChangesMsg carries the changes of a worktree waiting for removal;
+// request rejects lookups from an earlier confirmation.
+type removeChangesMsg struct {
+	request uint64
+	changes worktreeChanges
+	panes   []tmuxPane
+	err     error
 }
 
 // agentNameMsg carries a branch suggestion; request rejects stale or cancelled lookups.
@@ -495,7 +520,8 @@ func (m dashboardModel) executeAction(action menuAction) (tea.Model, tea.Cmd) {
 	case menuRemove:
 		if ok {
 			m.lastClickTarget, m.lastClickAt = "", time.Time{}
-			m.beginRemove(selected)
+			cmd := m.beginRemove(selected)
+			return m, cmd
 		}
 	}
 	return m, nil
@@ -516,7 +542,16 @@ func (m *dashboardModel) beginAddWorktree() tea.Cmd {
 	m.action, m.err = actionAddWorktree, nil
 	m.actionTextInput.SetValue("")
 	m.lastClickTarget, m.lastClickAt = "", time.Time{}
-	return m.actionTextInput.Focus()
+	m.branchRefs, m.branchRefsErr = nil, nil
+	m.branchRefsRequest++
+	request, cwd := m.branchRefsRequest, m.cwd
+	// Load refs once per prompt so the panel matches keystrokes in memory. A
+	// failed load is shown; Enter still resolves the branch again.
+	load := func() tea.Msg {
+		refs, err := loadBranchRefs(cwd)
+		return branchRefsMsg{request: request, refs: refs, err: err}
+	}
+	return tea.Batch(m.actionTextInput.Focus(), load)
 }
 
 var newAgentMenuEntry = actionMenuEntry{menuNewAgent, "New agent from prompt", "A", "Agent"}
@@ -579,11 +614,11 @@ func (m *dashboardModel) beginWorktreeOperation(selected item, action dashboardA
 	m.action, m.actionTarget, m.err = action, selected, nil
 }
 
-func (m *dashboardModel) beginRemove(selected item) {
+func (m *dashboardModel) beginRemove(selected item) tea.Cmd {
 	if m.tab == tabSessions {
 		if selected.muxSessionID == "" {
 			m.err = errors.New("this session is not running")
-			return
+			return nil
 		}
 		rows := m.rows()
 		m.sessionSelectionAfterRemove = ""
@@ -594,24 +629,57 @@ func (m *dashboardModel) beginRemove(selected item) {
 			m.sessionSelectionAfterRemove = rows[m.index-1].target
 		}
 		m.action, m.actionTarget = actionRemoveSession, selected
-		return
+		return nil
 	}
 	if m.tab == tabAgents {
 		m.action, m.actionTarget, m.err = actionRemoveAgent, selected, nil
-		return
+		return nil
 	}
 	if m.tab != tabWorktrees {
-		return
+		return nil
 	}
 	if selected.current {
 		m.err = errors.New("cannot remove the current worktree")
-		return
+		return nil
 	}
 	if selected.primary {
 		m.err = errors.New("cannot remove the primary worktree")
-		return
+		return nil
 	}
 	m.action, m.actionTarget, m.err = actionRemoveWorktree, selected, nil
+	// The list's dirty flag may be stale, so the confirmation reads Git and
+	// tmux again and offers keys only after it knows. removeWorktree repeats
+	// both checks, since panes and files can change while it waits.
+	m.removeChanges, m.removeChangesErr, m.removePanes = nil, nil, nil
+	m.removeChangesRequest++
+	request, path := m.removeChangesRequest, selected.cwd
+	return func() tea.Msg {
+		panes, err := worktreePanes(path)
+		if err != nil {
+			return removeChangesMsg{request: request, err: err}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), worktreeActionTimeout)
+		defer cancel()
+		changes, err := readWorktreeChanges(ctx, path)
+		return removeChangesMsg{request: request, changes: changes, panes: panes, err: err}
+	}
+}
+
+// removeMode maps a confirmation key to a removal, if the key applies: Enter
+// for a clean worktree, s or F once changes are found or cannot be read, and
+// none while a tmux pane is open in the worktree.
+func (m dashboardModel) removeMode(key string) (removeMode, bool) {
+	switch {
+	case m.removeChanges == nil || len(m.removePanes) > 0:
+		return 0, false
+	case m.removeChangesErr == nil && !m.removeChanges.dirty():
+		return removeClean, key == "enter"
+	case key == "s":
+		return removeStash, true
+	case key == "F":
+		return removeDiscard, true
+	}
+	return 0, false
 }
 
 func (m *dashboardModel) resizeInputs() {
@@ -1459,6 +1527,19 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case removeChangesMsg:
+		if msg.request == m.removeChangesRequest && m.action == actionRemoveWorktree {
+			m.removeChanges, m.removeChangesErr, m.removePanes = &msg.changes, msg.err, msg.panes
+		}
+		return m, nil
+	case branchRefsMsg:
+		if msg.request == m.branchRefsRequest && m.action == actionAddWorktree {
+			m.branchRefsErr = msg.err
+			if msg.err == nil {
+				m.branchRefs = &msg.refs
+			}
+		}
+		return m, nil
 	case agentNameMsg:
 		if msg.request != m.agentNameRequest || m.action != actionAgentNaming {
 			return m, nil
@@ -2122,12 +2203,13 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			action := m.action
 			m.action, m.err = actionRunning, nil
 			m.actionTextInput.Blur()
+			cwd := m.cwd
 			return m, func() tea.Msg {
-				created, err := addWorktree(m.cwd, value)
+				added, plan, err := addWorktree(cwd, value, true)
 				if err == nil {
-					err = openTmuxWorktree(created)
+					err = openAddedWorktree(cwd, added, plan)
 				}
-				return worktreeActionMsg{action: action, notice: "Created worktree " + value, quit: true, err: err}
+				return worktreeActionMsg{action: action, notice: plan.notice(value), quit: true, err: err}
 			}
 		default:
 			var command tea.Cmd
@@ -2144,7 +2226,16 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cmd := m.resumeRefreshes()
 			return m, cmd
 		}
-		if key != "enter" {
+		// r re-checks changes and panes, as the pane-blocked prompt suggests.
+		if m.action == actionRemoveWorktree && key == "r" {
+			cmd := m.beginRemove(m.actionTarget)
+			return m, cmd
+		}
+		mode, ok := m.removeMode(key)
+		if m.action != actionRemoveWorktree {
+			ok = key == "enter"
+		}
+		if !ok {
 			return m, nil
 		}
 		action, target := m.action, m.actionTarget
@@ -2166,7 +2257,18 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				return worktreeActionMsg{action: action, notice: notice, err: updateWorktree(target.cwd, target.branch, operation)}
 			}
-			return worktreeActionMsg{action: action, notice: "Removed worktree " + m.displayWorktree(target), err: removeWorktree(m.cwd, target.cwd)}
+			notice := "Removed worktree " + m.displayWorktree(target)
+			switch mode {
+			case removeStash:
+				notice += "; any changes are in git stash list"
+			case removeDiscard:
+				notice += " and discarded its changes"
+			}
+			err := removeWorktree(m.cwd, target.cwd, mode)
+			if dirty := (dirtyWorktreeError{}); errors.As(err, &dirty) {
+				err = fmt.Errorf("%w; press r again to stash or discard them", err)
+			}
+			return worktreeActionMsg{action: action, notice: notice, err: err}
 		}
 	}
 	return m, nil

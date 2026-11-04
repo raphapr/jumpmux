@@ -447,7 +447,7 @@ func TestConfirmedActionsDispatchToTheirOperation(t *testing.T) {
 		actionRemoveWorktree:  {"Removed worktree feature", "not a git repository"},
 	} {
 		model := newDashboard(dir)
-		model.action = action
+		model.action, model.removeChanges = action, &worktreeChanges{}
 		model.actionTarget = item{kind: "worktree", target: "dev", title: "dev", cwd: dir, branch: "feature", pane: "%7", muxSessionID: "$1", prunable: true}
 		updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		if updated.(dashboardModel).action != actionRunning || command == nil {

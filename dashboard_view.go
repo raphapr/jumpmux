@@ -468,8 +468,16 @@ func (m dashboardModel) matchingWorktree(session item) (item, bool) {
 	return best, best.cwd != ""
 }
 
+// prompting reports whether the preview panel shows a prompt instead of a preview.
+func (m dashboardModel) prompting() bool {
+	return m.confirming() || m.action == actionAddWorktree
+}
+
+// confirmationNeedsFullHeight takes the table's rows when the full prompt does
+// not fit the preview panel; renderPreview falls back to the compact prompt
+// only when even the full height is too short.
 func (m dashboardModel) confirmationNeedsFullHeight() bool {
-	return m.confirming() && m.previewHeight() < len(m.removePreviewLines())+2
+	return m.prompting() && m.previewHeight() < len(m.promptLines(false))+2
 }
 
 func (m dashboardModel) renderPreview(width int) string {
@@ -483,9 +491,11 @@ func (m dashboardModel) renderPreview(width int) string {
 	if m.actionMenu {
 		return m.renderActionMenu(width, height)
 	}
-	if m.confirming() {
+	if m.prompting() {
 		title := "Remove worktree"
 		switch m.action {
+		case actionAddWorktree:
+			title = "Add worktree"
 		case actionRemoveSession:
 			title = "Remove session"
 		case actionRemoveAgent:
@@ -497,7 +507,20 @@ func (m dashboardModel) renderPreview(width int) string {
 		case actionMergeWorktree:
 			title = "Merge worktree"
 		}
-		return renderPanel(title, m.removePreviewLines(), width, height, 0, 0, false, true)
+		lines := m.promptLines(false)
+		if len(lines) > height-2 {
+			lines = m.promptLines(true)
+		}
+		if width >= 60 {
+			padded := make([]string, len(lines))
+			for index, line := range lines {
+				if line != "" {
+					padded[index] = " " + line
+				}
+			}
+			lines = padded
+		}
+		return renderPanel(title, lines, width, height, 0, 0, false, true)
 	}
 	selected, hasSelection := m.selected()
 	if !hasSelection {
@@ -671,49 +694,166 @@ func actionMenuGroup(action menuAction) string {
 	}
 }
 
-func (m dashboardModel) removePreviewLines() []string {
-	if m.action == actionRebaseWorktree {
-		return []string{
-			"Will rebase " + safeText(m.actionTarget.branch) + " onto the local default branch.",
-			"Commits may be rewritten. Conflicts leave the rebase open.",
-			"This does not fetch or remove the worktree.",
-			"Enter Rebase    Esc Cancel",
+// promptOption explains a footer choice; the label matches the footer's, so
+// the panel never repeats the keys.
+func promptOption(label, note string, noteStyle lipgloss.Style) string {
+	return paint(headerStyle, fmt.Sprintf("%-8s", label)) + " " + noteStyle.Render(note)
+}
+
+// promptStatus renders a status line whose words carry the meaning; the icon
+// and color only reinforce them.
+func promptStatus(style lipgloss.Style, nerd, plain, text string) string {
+	return style.Render(dashboardIcon(nerd, plain) + " " + text)
+}
+
+func promptDetail(text string) string {
+	return mutedStyle.Render("  " + text)
+}
+
+// worktreePrompt lays out a worktree prompt: branch and path, then the body.
+// The keys live in the footer. The compact form drops the heading so the body
+// still fits a short panel.
+func worktreePrompt(name, path string, body []string, compact bool) []string {
+	var lines []string
+	if !compact {
+		if name != "" {
+			lines = append(lines, headerStyle.Render(safeText(name)))
+		}
+		if path != "" {
+			lines = append(lines, mutedStyle.Render(safeText(compactHome(path))))
+		}
+		if len(lines) > 0 {
+			lines = append(lines, "")
 		}
 	}
-	if m.action == actionMergeWorktree {
+	return append(lines, body...)
+}
+
+func (m dashboardModel) promptLines(compact bool) []string {
+	target := m.actionTarget
+	switch m.action {
+	case actionAddWorktree:
+		return m.addWorktreeLines(compact)
+	case actionRemoveWorktree:
+		return m.removeWorktreeLines(compact)
+	case actionRebaseWorktree:
+		return worktreePrompt(m.displayWorktree(target), target.cwd, []string{
+			textStyle.Render("Will rebase " + safeText(target.branch) + " onto the local default branch."),
+			promptDetail("Commits may be rewritten. Conflicts leave the rebase open."),
+			promptDetail("This does not fetch or remove the worktree."),
+		}, compact)
+	case actionMergeWorktree:
+		return worktreePrompt(m.displayWorktree(target), target.cwd, []string{
+			textStyle.Render("Will merge " + safeText(target.branch) + " into the local default branch."),
+			promptDetail("Needs clean worktrees; keeps it."),
+			promptDetail("Fast-forward only; commits stay intact."),
+		}, compact)
+	case actionCleanupWorktree:
+		return worktreePrompt("", "", []string{
+			textStyle.Render("Will remove stale record " + safeText(compactHome(target.cwd)) + "."),
+			promptDetail("Other worktrees and the branch stay."),
+		}, compact)
+	case actionRemoveAgent:
 		return []string{
-			"Will merge " + safeText(m.actionTarget.branch) + " into the local default branch.",
-			"Needs clean worktrees; keeps it.",
-			"Fast-forward only; commits stay intact.",
-			"Enter Merge    Esc Cancel",
-		}
-	}
-	if m.action == actionCleanupWorktree {
-		return []string{
-			"Will remove stale record " + safeText(compactHome(m.actionTarget.cwd)) + ".",
-			"Other worktrees and the branch stay.",
-			"Enter Clean up    Esc Cancel",
-		}
-	}
-	if m.action == actionRemoveAgent {
-		return []string{
-			"Will close Pi in tmux pane " + safeText(m.actionTarget.pane) + ".",
+			"Will close Pi in tmux pane " + safeText(target.pane) + ".",
 			"Other panes and the worktree stay.",
-			"Enter Remove    Esc Cancel",
 		}
-	}
-	if m.action == actionRemoveSession {
+	case actionRemoveSession:
 		return []string{
-			"Will kill tmux session " + safeText(m.actionTarget.title) + ".",
+			"Will kill tmux session " + safeText(target.title) + ".",
 			"Configured entry stays in config.toml.",
-			"Enter Remove    Esc Cancel",
 		}
 	}
-	return []string{
-		"Will remove worktree " + safeText(compactHome(m.actionTarget.cwd)) + ".",
-		"The branch stays.",
-		"Enter Remove    Esc Cancel",
+	return nil
+}
+
+func (m dashboardModel) addWorktreeLines(compact bool) []string {
+	branch := strings.TrimSpace(m.actionTextInput.Value())
+	path := ""
+	var body []string
+	switch {
+	case branch == "":
+		body = []string{promptDetail("Type a branch name. Existing branches are reused.")}
+	case m.branchRefsErr != nil:
+		body = []string{promptStatus(dangerStyle, "󰅙", "X", "Could not read branches: "+safeText(m.branchRefsErr.Error()))}
+	case m.branchRefs == nil:
+		body = []string{promptDetail("Checking branches…")}
+	case !validBranchName(branch):
+		body = []string{promptStatus(dangerStyle, "󰅙", "X", "Not a valid branch name")}
+	default:
+		plan := m.branchRefs.plan(branch)
+		if m.branchRefs.root != "" {
+			path = worktreePath(m.branchRefs.root, branch)
+		}
+		arrow := func(text string) string { return promptStatus(infoStyle, "→", "->", text) }
+		// Enter would fail in these cases, so say why instead of showing a path.
+		problem := ""
+		switch {
+		case plan.source == branchRemoteName:
+			problem = remoteNameError(branch, plan.ref).Error()
+		case plan.source == branchNew && plan.ref == "":
+			problem = "No local default branch; set origin/HEAD or create main"
+		case plan.source == branchNew && !m.branchRefs.local[plan.ref]:
+			problem = "Default branch " + plan.ref + " is not available locally"
+		}
+		if problem != "" {
+			path, body = "", []string{promptStatus(dangerStyle, "󰅙", "X", safeText(problem))}
+			break
+		}
+		switch plan.source {
+		case branchCheckedOut:
+			path = plan.ref
+			body = []string{arrow("Already checked out here")}
+		case branchLocal:
+			body = []string{arrow("Uses the existing local branch")}
+		case branchRemote:
+			body = []string{arrow("Tracks " + safeText(plan.ref)), promptDetail("Creates a local branch from it.")}
+		default:
+			text := "New branch"
+			if plan.ref != "" {
+				text += " from " + safeText(plan.ref)
+			}
+			body = []string{arrow(text)}
+		}
 	}
+	return worktreePrompt(branch, path, body, compact)
+}
+
+func (m dashboardModel) removeWorktreeLines(compact bool) []string {
+	branchStays := promptDetail("The branch stays.")
+	// The footer offers s Stash and F Discard; the panel says what each does.
+	// Short or narrow panels skip this, since a clipped note reads worse than
+	// none and the footer labels stand alone.
+	var options []string
+	if !compact && m.width >= 70 {
+		options = []string{"",
+			promptOption("Stash", "Keeps changes in git stash list", mutedStyle),
+			promptOption("Discard", "Deletes changes; cannot be undone", dangerStyle),
+		}
+	}
+	var body []string
+	switch {
+	case m.removeChanges == nil:
+		body = []string{promptDetail("Checking for changes and open panes…")}
+	case len(m.removePanes) > 0:
+		// Closing panes kills what runs in them, so jumpmux leaves that to you.
+		status, next := "Open in 1 tmux pane", "Close it, then press r again."
+		if len(m.removePanes) > 1 {
+			status, next = fmt.Sprintf("Open in %d tmux panes", len(m.removePanes)), "Close them, then press r again."
+		}
+		body = []string{promptStatus(dangerStyle, "󰅙", "X", status)}
+		for _, location := range paneLocations(m.removePanes) {
+			body = append(body, textStyle.Render("  "+location))
+		}
+		body = append(body, promptDetail(next))
+	case m.removeChangesErr != nil:
+		body = append([]string{promptStatus(dangerStyle, "󰅙", "X", "Could not check the worktree: "+safeText(m.removeChangesErr.Error())), branchStays}, options...)
+	case m.removeChanges.dirty():
+		body = append([]string{promptStatus(warningStyle, "\uf071", "!", "Has "+m.removeChanges.String()), branchStays}, options...)
+	default:
+		body = []string{promptStatus(successStyle, "󰄬", "OK", "No uncommitted changes"), branchStays}
+	}
+	return worktreePrompt(m.displayWorktree(m.actionTarget), m.actionTarget.cwd, body, compact)
 }
 
 func (m dashboardModel) renderFooter(width int) string {
@@ -733,6 +873,9 @@ func (m dashboardModel) renderFooter(width int) string {
 			label, verb = "prompt: ", "Name"
 		case m.action == actionAgentBranch && m.agentNameFallback:
 			label = "naming failed, branch: "
+		}
+		if m.action == actionAddWorktree && m.branchRefs != nil && m.branchRefs.plan(strings.TrimSpace(m.actionTextInput.Value())).source == branchCheckedOut {
+			verb = "Open"
 		}
 		prefix := "  " + textStyle.Render(label)
 		create := footerCommand("Enter", verb)
@@ -761,8 +904,25 @@ func (m dashboardModel) renderFooter(width int) string {
 		case actionMergeWorktree:
 			verb = "Merge"
 		}
-		footer := "  " + warningStyle.Render(verb+" "+safeText(name)+"?") + "  " + footerCommand(key, verb)
-		return padANSI(footer+" "+footerCommand("Esc", "Cancel"), width)
+		keys := footerCommand(key, verb) + " "
+		if m.action == actionRemoveWorktree {
+			keys = ""
+			_, clean := m.removeMode("enter")
+			switch {
+			case clean:
+				keys = footerCommand(key, verb) + " "
+			case m.removeChanges != nil && len(m.removePanes) == 0:
+				keys = footerCommand("s", "Stash") + " " + footerCommand("F", "Discard") + " "
+			}
+		}
+		keys += footerCommand("Esc", "Cancel")
+		// The footer is the only place the keys appear, so they win over the
+		// question when the line is short; the panel already names the target.
+		question := warningStyle.Render(verb+" "+safeText(name)+"?") + "  "
+		if ansi.StringWidth(question+keys)+2 > width {
+			question = ""
+		}
+		return padANSI("  "+question+keys, width)
 	}
 
 	viewErr := m.agentErr

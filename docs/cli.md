@@ -23,6 +23,8 @@ jumpmux --help
 
 Worktree `remove`, `cleanup`, `rebase`, and `merge`, plus Session `remove`, ask for confirmation. For non-interactive use, append `--yes` as the final argument.
 
+`jumpmux worktree remove <id>` refuses a worktree with changed or untracked files. Add `--stash` to save them in the Git stash first, or `--force` to discard them, as in `jumpmux worktree remove <id> --stash --yes`.
+
 ## Start an agent from a prompt
 
 ```console
@@ -32,7 +34,7 @@ jumpmux agent new <prompt> [--branch <name>] [--repo <path>] [--background]
 `agent new` turns a prompt into a running agent in four steps:
 
 1. It runs `agent.name_command` to choose a branch name such as `fix/flaky-cache-test`. `--branch` skips this step.
-2. It creates the branch and worktree from the local default branch, like `worktree add`.
+2. It creates the branch and worktree from the local default branch. Unlike `worktree add`, it never reuses a branch: if the name exists locally or on a remote, it appends `-2`, `-3`, and so on. If another command takes the name in the meantime, the agent fails instead of joining that worktree.
 3. It finds the project's tmux session: a live session started at the repository root, else the configured or discovered session for that root, else a session named after the repository. It creates that session at the root if it is not running.
 4. It opens a window named after the branch in that session, starts `agent.command` there with the prompt, and switches to the window. Outside tmux, it attaches instead.
 
