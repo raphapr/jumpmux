@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -81,6 +82,7 @@ type dashboardModel struct {
 	tab, index                                                int
 	width, height                                             int
 	agents, allAgents                                         []item
+	agentSlots                                                map[string]int // agent target -> jump number, kept while the agent lives
 	worktrees, sessions                                       []item
 	agentGit, gitCache, prCache                               map[string]item
 	scope                                                     scopeMode
@@ -89,6 +91,7 @@ type dashboardModel struct {
 	worktreeGeneration, sessionGeneration                     uint64
 	previewRequest, diffRequest                               uint64
 	filter, diff, help, themePicker                           bool
+	diffBase                                                  bool // the diff view compares with the default branch
 	query                                                     string
 	queries, tabTargets                                       [tabCount]string
 	filterInputs                                              [tabCount]textinput.Model
@@ -134,6 +137,16 @@ type dashboardModel struct {
 	removeChangesRequest                                                  uint64
 	sessionSelectionAfterRemove                                           string
 	restoreSessionSelection                                               bool
+	// worktreeScopeAll adds the repositories of agents and configured sessions
+	// to the Worktrees tab. It resets when jumpmux exits.
+	worktreeScopeAll bool
+	fetching         bool
+	// actionDir is the repository an open Add worktree or New agent prompt targets.
+	actionDir string
+	// mergedSkips is nil until the checks behind the merged-removal prompt finish.
+	mergedTargets []item
+	mergedSkips   []string
+	mergedRequest uint64
 }
 
 type dashboardData struct {
@@ -172,6 +185,8 @@ const (
 	actionMergeWorktree
 	actionMarkAgentSeen
 	actionRemoveAgent
+	actionRemoveMerged
+	actionFetch // tags a fetch result; never a prompt
 	actionRunning
 )
 
@@ -187,6 +202,9 @@ const (
 	menuMerge
 	menuRemove
 	menuPreviousSession
+	menuNextAttention
+	menuFetch
+	menuRemoveMerged
 )
 
 type actionMenuEntry struct {
@@ -211,6 +229,13 @@ type removeChangesMsg struct {
 	changes worktreeChanges
 	panes   []tmuxPane
 	err     error
+}
+
+// mergedChecksMsg carries, for each merged worktree waiting for removal, why it
+// would be skipped, or "" when it is ready; request rejects an earlier prompt.
+type mergedChecksMsg struct {
+	request uint64
+	skips   []string
 }
 
 // agentNameMsg carries a branch suggestion; request rejects stale or cancelled lookups.
@@ -441,8 +466,14 @@ func (m dashboardModel) actionMenuEntries() []actionMenuEntry {
 	if gitItem.prNumber != 0 {
 		entries = append(entries, actionMenuEntry{menuPR, "Open pull request", "p", "PR"})
 	}
+	if _, waiting := nextAttentionAgent(m.agents); waiting {
+		entries = append(entries, actionMenuEntry{menuNextAttention, "Next agent needing attention", "n", "Next"})
+	}
 	if m.tab == tabAgents && selected.status == "done" && !selected.seen {
 		entries = append(entries, actionMenuEntry{menuMarkAgentSeen, "Mark seen", "m", "Seen"})
+	}
+	if gitItem.branch != "" && !selected.prunable {
+		entries = append(entries, actionMenuEntry{menuFetch, "Fetch from remote", "f", "Fetch"})
 	}
 	if m.tab == tabAgents {
 		entries = append(entries, actionMenuEntry{menuRemove, "Remove agent", "r", "Remove"}, newAgentMenuEntry)
@@ -458,11 +489,58 @@ func (m dashboardModel) actionMenuEntries() []actionMenuEntry {
 		if selected.prunable && !selected.locked && !selected.current {
 			entries = append(entries, actionMenuEntry{menuCleanup, "Clean up stale record", "x", "Clean"})
 		}
+		if count := len(m.mergedWorktrees()); count > 0 {
+			entries = append(entries, actionMenuEntry{menuRemoveMerged, fmt.Sprintf("Remove merged worktrees (%d)", count), "X", "Merged"})
+		}
 		if !selected.current && !selected.primary {
 			entries = append(entries, actionMenuEntry{menuRemove, "Remove worktree", "r", "Remove"})
 		}
 	}
 	return entries
+}
+
+// mergedWorktrees lists the shown worktrees whose pull request merged.
+func (m dashboardModel) mergedWorktrees() []item {
+	var merged []item
+	for _, worktree := range m.worktrees {
+		if isMergedWorktree(worktree) {
+			merged = append(merged, worktree)
+		}
+	}
+	return merged
+}
+
+// actionRepo is the repository a new worktree or agent is created in: the
+// selected worktree's on the Worktrees tab, which may show other repositories,
+// else the one the dashboard runs in.
+func (m dashboardModel) actionRepo() string {
+	if selected, ok := m.selected(); ok && m.tab == tabWorktrees && selected.repo != "" {
+		return selected.repo
+	}
+	return m.cwd
+}
+
+// worktreeRoots lists the directories whose repositories join the Worktrees
+// tab in the all-repositories scope: agent directories and configured sessions.
+func (m dashboardModel) worktreeRoots() []string {
+	if !m.worktreeScopeAll {
+		return nil
+	}
+	var roots []string
+	for _, agent := range m.allAgents {
+		roots = append(roots, agent.cwd)
+	}
+	for _, session := range m.sessions {
+		if session.sessionSource == "config" {
+			roots = append(roots, session.cwd)
+		}
+	}
+	slices.Sort(roots)
+	return slices.DeleteFunc(slices.Compact(roots), func(root string) bool { return root == "" })
+}
+
+func (m dashboardModel) refreshWorktrees() tea.Cmd {
+	return refreshWorktreeList(m.cwd, m.worktreeRoots(), m.worktreeGeneration)
 }
 
 func (m dashboardModel) executeAction(action menuAction) (tea.Model, tea.Cmd) {
@@ -489,9 +567,9 @@ func (m dashboardModel) executeAction(action menuAction) (tea.Model, tea.Cmd) {
 		}
 	case menuDiff:
 		if ok {
-			m.diff, m.loading, m.panelFocus = true, true, panelLeft
+			m.diff, m.diffBase, m.loading, m.panelFocus = true, false, true, panelLeft
 			m.diffRequest++
-			return m, loadDiff(selected, m.diffRequest)
+			return m, loadDiff(selected, m.diffRequest, false)
 		}
 	case menuPR:
 		if ok {
@@ -505,6 +583,25 @@ func (m dashboardModel) executeAction(action menuAction) (tea.Model, tea.Cmd) {
 			cmd := m.beginMarkAgentSeen(selected)
 			return m, cmd
 		}
+	case menuNextAttention:
+		if agent, waiting := nextAttentionAgent(m.agents); waiting {
+			m.action, m.err = actionRunning, nil
+			return m, tea.Exec(dashboardJumpCommand{agent}, func(err error) tea.Msg {
+				return worktreeActionMsg{quit: true, err: err}
+			})
+		}
+	case menuFetch:
+		// One fetch at a time; the header shows it until the result arrives.
+		if ok && !m.fetching {
+			m.fetching = true
+			dir, name := selected.cwd, projectName(selected.cwd)
+			return m, func() tea.Msg {
+				return worktreeActionMsg{action: actionFetch, notice: "Fetched " + name, background: true, err: fetchRemote(dir)}
+			}
+		}
+	case menuRemoveMerged:
+		cmd := m.beginRemoveMerged()
+		return m, cmd
 	case menuCleanup:
 		if ok {
 			m.beginCleanup(selected)
@@ -544,7 +641,8 @@ func (m *dashboardModel) beginAddWorktree() tea.Cmd {
 	m.lastClickTarget, m.lastClickAt = "", time.Time{}
 	m.branchRefs, m.branchRefsErr = nil, nil
 	m.branchRefsRequest++
-	request, cwd := m.branchRefsRequest, m.cwd
+	m.actionDir = m.actionRepo()
+	request, cwd := m.branchRefsRequest, m.actionDir
 	// Load refs once per prompt so the panel matches keystrokes in memory. A
 	// failed load is shown; Enter still resolves the branch again.
 	load := func() tea.Msg {
@@ -562,10 +660,12 @@ func (m *dashboardModel) beginNewAgent() tea.Cmd {
 		return nil
 	}
 	// Fail before the prompt is typed, not after naming runs.
-	if _, err := primaryWorktree(m.cwd); err != nil {
+	repo := m.actionRepo()
+	if _, err := primaryWorktree(repo); err != nil {
 		m.err = err
 		return nil
 	}
+	m.actionDir = repo
 	m.action, m.err, m.agentPrompt, m.agentNameFallback = actionAgentPrompt, nil, "", false
 	m.actionTextInput.SetValue("")
 	m.lastClickTarget, m.lastClickAt = "", time.Time{}
@@ -596,6 +696,101 @@ func (m *dashboardModel) beginMarkAgentSeen(selected item) tea.Cmd {
 		}
 		return worktreeActionMsg{action: actionMarkAgentSeen, notice: notice, err: err}
 	}
+}
+
+// beginRemoveMerged opens the prompt for every worktree whose pull request
+// merged. Like a single removal, it reads tmux and Git again before offering
+// keys; removeMergedWorktree repeats the checks when it runs.
+func (m *dashboardModel) beginRemoveMerged() tea.Cmd {
+	targets := m.mergedWorktrees()
+	if m.tab != tabWorktrees || len(targets) == 0 {
+		m.err = errors.New("no worktree has a merged pull request")
+		return nil
+	}
+	m.action, m.actionTarget, m.err = actionRemoveMerged, item{}, nil
+	m.mergedTargets, m.mergedSkips = targets, nil
+	m.lastClickTarget, m.lastClickAt = "", time.Time{}
+	m.mergedRequest++
+	request := m.mergedRequest
+	return func() tea.Msg {
+		skips := make([]string, len(targets))
+		for index, target := range targets {
+			skips[index] = mergedSkipReason(target.cwd)
+		}
+		return mergedChecksMsg{request: request, skips: skips}
+	}
+}
+
+// mergedSkipReason says why a merged worktree stays, or "" when it can go: a
+// bulk removal never stashes or discards changes, and never closes panes.
+func mergedSkipReason(path string) string {
+	panes, err := worktreePanes(path)
+	if err != nil {
+		return "could not check tmux panes"
+	}
+	if len(panes) > 0 {
+		return "open in " + describePanes(panes)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), worktreeActionTimeout)
+	defer cancel()
+	changes, err := readWorktreeChanges(ctx, path)
+	if err != nil {
+		return "could not check for changes"
+	}
+	if changes.dirty() {
+		return "has " + changes.String()
+	}
+	return ""
+}
+
+// mergedReady lists the merged worktrees the checks cleared for removal.
+func (m dashboardModel) mergedReady() []item {
+	var ready []item
+	for index, target := range m.mergedTargets {
+		if index < len(m.mergedSkips) && m.mergedSkips[index] == "" {
+			ready = append(ready, target)
+		}
+	}
+	return ready
+}
+
+// removeMergedWorktrees removes each worktree and reports the totals. One
+// failure does not stop the rest.
+func removeMergedWorktrees(targets []item, deleteBranches bool) worktreeActionMsg {
+	removed, deleted := 0, 0
+	var failures []error
+	for _, target := range targets {
+		branchDeleted, err := removeMergedWorktree(target.repo, target, deleteBranches)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", target.branch, err))
+			continue
+		}
+		removed++
+		if branchDeleted {
+			deleted++
+		}
+	}
+	plural := func(count int, one, many string) string {
+		if count == 1 {
+			return "1 " + one
+		}
+		return fmt.Sprintf("%d %s", count, many)
+	}
+	notice := "Removed " + plural(removed, "merged worktree", "merged worktrees")
+	if deleteBranches {
+		notice += " and deleted " + plural(deleted, "branch", "branches")
+		if kept := removed - deleted; kept > 0 {
+			notice += fmt.Sprintf("; kept %d that changed after merging", kept)
+		}
+	}
+	message := worktreeActionMsg{action: actionRemoveMerged, notice: notice}
+	if len(failures) > 0 {
+		message.err = fmt.Errorf("removed %d of %d; %w", removed, len(targets), failures[0])
+		if extra := len(failures) - 1; extra > 0 {
+			message.err = fmt.Errorf("%w (+%d more)", message.err, extra)
+		}
+	}
+	return message
 }
 
 func (m *dashboardModel) beginCleanup(selected item) {
@@ -722,7 +917,7 @@ func newDashboardForLaunch(cwd, launchSessionID string) dashboardModel {
 }
 
 func (m dashboardModel) Init() tea.Cmd {
-	return tea.Batch(refreshAgents(), refreshWorktreeList(m.cwd, m.worktreeGeneration), refreshSessions(m.sessionGeneration), nextTick(), nextClockAfter(clockInterval), tea.EnableReportFocus)
+	return tea.Batch(refreshAgents(), m.refreshWorktrees(), refreshSessions(m.sessionGeneration), nextTick(), nextClockAfter(clockInterval), tea.EnableReportFocus)
 }
 
 func nextTick() tea.Cmd {
@@ -785,9 +980,9 @@ func refreshSessions(generation uint64) tea.Cmd {
 	}
 }
 
-func refreshWorktreeList(cwd string, generation uint64) tea.Cmd {
+func refreshWorktreeList(cwd string, others []string, generation uint64) tea.Cmd {
 	return func() tea.Msg {
-		items, err := listWorktreeItems(cwd)
+		items, err := listRepositoryWorktrees(cwd, others)
 		return worktreeDataMsg{stage: worktreeListStage, generation: generation, worktrees: items, err: err}
 	}
 }
@@ -811,7 +1006,7 @@ func (m *dashboardModel) queueRefreshes() []tea.Cmd {
 	if !m.worktreesInFlight {
 		m.worktreesInFlight = true
 		m.worktreeGeneration++
-		commands = append(commands, refreshWorktreeList(m.cwd, m.worktreeGeneration))
+		commands = append(commands, m.refreshWorktrees())
 	}
 	if !m.sessionsInFlight {
 		m.sessionsInFlight = true
@@ -834,15 +1029,13 @@ func refreshWorktreeGit(items []item, generation uint64, stream bool) tea.Cmd {
 		}
 	}
 	limit := make(chan struct{}, min(4, len(items)))
-	var baseOnce sync.Once
-	var baseBranch string
+	baseBranch := defaultBranchLookup(items[0].cwd)
 	commands := make([]tea.Cmd, 0, len(items))
 	for _, worktree := range items {
 		commands = append(commands, func() tea.Msg {
 			limit <- struct{}{}
 			defer func() { <-limit }()
-			baseOnce.Do(func() { baseBranch = localDefaultBranch(items[0].cwd) })
-			return worktreeDataMsg{stage: worktreeGitStage, generation: generation, worktrees: []item{loadGitDetails(worktree, baseBranch)}}
+			return worktreeDataMsg{stage: worktreeGitStage, generation: generation, worktrees: []item{loadGitDetails(worktree, baseBranch(worktree))}}
 		})
 	}
 	return tea.Batch(commands...)
@@ -1006,10 +1199,27 @@ func loadWorktreeLog(item item, request uint64) tea.Cmd {
 	}
 }
 
-func loadDiff(item item, request uint64) tea.Cmd {
+// loadDiff reads the uncommitted changes of a worktree. With base set it reads
+// every change since the branch left the default branch instead, so work an
+// agent already committed shows up too.
+func loadDiff(item item, request uint64, base bool) tea.Cmd {
 	return func() tea.Msg {
 		if _, err := gitOutput(item.cwd, "rev-parse", "--is-inside-work-tree"); err != nil {
 			return diffMsg{request: request, target: item.target, title: "WIP", lines: []string{gitErrorLine(err)}}
+		}
+		baseBranch, revision := "", ""
+		if base {
+			fail := func(line string) tea.Msg {
+				return diffMsg{request: request, target: item.target, title: "Branch", lines: []string{line}}
+			}
+			if baseBranch = localDefaultBranch(item.cwd); baseBranch == "" {
+				return fail("No local default branch to compare with.")
+			}
+			mergeBase, err := gitOutput(item.cwd, "merge-base", "refs/heads/"+baseBranch, "HEAD")
+			if err != nil {
+				return fail(gitErrorLine(err))
+			}
+			revision = strings.TrimSpace(mergeBase)
 		}
 		// The reads are independent, so run them at once; in a large repo this
 		// halves the time before the diff opens.
@@ -1018,18 +1228,32 @@ func loadDiff(item item, request uint64) tea.Cmd {
 		var unstagedErr, stagedErr, untrackedErr, statusErr, branchErr error
 		var added, removed int
 		var group sync.WaitGroup
-		for _, read := range []func(){
+		reads := []func(){
 			func() {
 				unstaged, unstagedTruncated, unstagedErr = gitOutputLimited(item.cwd, maxDiffOutput, "diff", "--no-ext-diff", "--no-color")
 			},
 			func() {
 				staged, stagedTruncated, stagedErr = gitOutputLimited(item.cwd, maxDiffOutput, "diff", "--no-ext-diff", "--no-color", "--cached")
 			},
-			func() { untracked, untrackedErr = gitOutput(item.cwd, "ls-files", "--others", "--exclude-standard") },
 			func() { status, statusErr = gitOutput(item.cwd, "status", "--porcelain") },
-			func() { branch, branchErr = gitOutput(item.cwd, "branch", "--show-current") },
 			func() { added, removed = diffStats(item.cwd) },
-		} {
+		}
+		if base {
+			// One diff from the merge base to the working tree covers committed,
+			// staged, and unstaged changes.
+			reads = []func(){
+				func() {
+					unstaged, unstagedTruncated, unstagedErr = gitOutputLimited(item.cwd, maxDiffOutput, "diff", "--no-ext-diff", "--no-color", revision)
+				},
+				func() { status, statusErr = gitOutput(item.cwd, "diff", "--name-status", revision) },
+				func() { added, removed = diffStatsRange(item.cwd, revision) },
+			}
+		}
+		reads = append(reads,
+			func() { untracked, untrackedErr = gitOutput(item.cwd, "ls-files", "--others", "--exclude-standard") },
+			func() { branch, branchErr = gitOutput(item.cwd, "branch", "--show-current") },
+		)
+		for _, read := range reads {
 			group.Add(1)
 			go func() { defer group.Done(); read() }()
 		}
@@ -1065,12 +1289,30 @@ func loadDiff(item item, request uint64) tea.Cmd {
 		}
 		if len(lines) == 0 {
 			lines = []string{"Working tree is clean."}
+			if base {
+				lines = []string{"No changes since " + safeLine(baseBranch) + "."}
+			}
 		}
 		var files []string
-		if statusErr != nil {
+		switch {
+		case statusErr != nil:
 			files = append(files, gitErrorLine(statusErr))
-		} else {
+		case base:
+			// name-status lines are "M\tpath"; untracked files are not in a diff.
 			for _, line := range strings.Split(strings.TrimSpace(status), "\n") {
+				if code, name, ok := strings.Cut(line, "\t"); ok {
+					files = append(files, safeLine(fmt.Sprintf("%-2s %s", code, strings.ReplaceAll(name, "\t", " -> "))))
+				}
+			}
+			if untrackedErr == nil && strings.TrimSpace(untracked) != "" {
+				for _, name := range strings.Split(strings.TrimSpace(untracked), "\n") {
+					files = append(files, safeLine("?? "+name))
+				}
+			}
+		default:
+			// Keep leading spaces: an unstaged change starts with one, and
+			// trimming it would shift the first file's name into the status.
+			for _, line := range strings.Split(strings.TrimRight(status, "\n"), "\n") {
 				if len(line) >= 4 {
 					files = append(files, safeLine(line[:2]+" "+line[3:]))
 				}
@@ -1080,6 +1322,9 @@ func loadDiff(item item, request uint64) tea.Cmd {
 		if branchErr != nil || strings.TrimSpace(branch) == "" {
 			title = "WIP"
 		}
+		if base {
+			title = "Branch: " + cmp.Or(strings.TrimSpace(branch), "detached") + " vs " + baseBranch
+		}
 		if added > 0 {
 			title += fmt.Sprintf(" +%d", added)
 		}
@@ -1088,6 +1333,25 @@ func loadDiff(item item, request uint64) tea.Cmd {
 		}
 		return diffMsg{request: request, target: item.target, title: title, lines: lines, files: files}
 	}
+}
+
+// diffFileOffset returns the line where the next or previous file starts in a
+// diff, or offset when there is none in that direction.
+func diffFileOffset(lines []string, offset int, next bool) int {
+	if next {
+		for index := offset + 1; index < len(lines); index++ {
+			if strings.HasPrefix(lines[index], "diff --git ") {
+				return index
+			}
+		}
+		return offset
+	}
+	for index := min(offset, len(lines)) - 1; index >= 0; index-- {
+		if strings.HasPrefix(lines[index], "diff --git ") {
+			return index
+		}
+	}
+	return offset
 }
 
 func (m *dashboardModel) requestPreview(item item) tea.Cmd {
@@ -1527,6 +1791,11 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case mergedChecksMsg:
+		if msg.request == m.mergedRequest && m.action == actionRemoveMerged {
+			m.mergedSkips = msg.skips
+		}
+		return m, nil
 	case removeChangesMsg:
 		if msg.request == m.removeChangesRequest && m.action == actionRemoveWorktree {
 			m.removeChanges, m.removeChangesErr, m.removePanes = &msg.changes, msg.err, msg.panes
@@ -1569,7 +1838,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.worktreesInFlight = true
 			m.worktreeGeneration++
-			cmd := tea.Batch(refreshWorktreeList(m.cwd, m.worktreeGeneration), m.resumeRefreshes())
+			cmd := tea.Batch(m.refreshWorktrees(), m.resumeRefreshes())
 			return m, cmd
 		}
 		if msg.action == actionRemoveSession {
@@ -1585,10 +1854,20 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd := m.resumeRefreshes()
 			return m, cmd
 		}
-		if (msg.err == nil && (msg.action == actionRemoveWorktree || msg.action == actionCleanupWorktree)) || msg.action == actionRebaseWorktree || msg.action == actionMergeWorktree {
+		if msg.action == actionFetch {
+			m.fetching = false
+			// Upstream counts changed, so the next refresh reads Git again.
+			m.worktreeGitRefreshed, m.worktreeFullRefreshed, m.agentGitRefreshed = time.Time{}, time.Time{}, time.Time{}
+			if m.refreshPaused() {
+				return m, nil
+			}
+			return m, tea.Batch(m.queueRefreshes()...)
+		}
+		// A bulk removal that failed partway still removed worktrees.
+		if (msg.err == nil && (msg.action == actionRemoveWorktree || msg.action == actionCleanupWorktree)) || msg.action == actionRebaseWorktree || msg.action == actionMergeWorktree || msg.action == actionRemoveMerged {
 			m.worktreesInFlight = true
 			m.worktreeGeneration++
-			return m, refreshWorktreeList(m.cwd, m.worktreeGeneration)
+			return m, m.refreshWorktrees()
 		}
 		if msg.err == nil && msg.action == actionRemoveSession {
 			m.sessionsInFlight = true
@@ -1652,6 +1931,15 @@ func (m dashboardModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				delta = -delta
 			}
 			m.helpOffset = m.clampHelpOffset(m.helpOffset + delta)
+		}
+		return m, nil
+	}
+	// A click runs a menu entry like its key. Confirmations stay keyboard-only,
+	// so a stray click cannot remove anything.
+	if m.actionMenu && !m.diff && msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+		if index, ok := m.actionMenuEntryAt(msg.X, msg.Y); ok {
+			m.actionMenuIndex = index
+			return m.handleActionMenuKey(tea.KeyMsg{Type: tea.KeyEnter})
 		}
 		return m, nil
 	}
@@ -1933,6 +2221,15 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.xOffset = max(0, m.xOffset-4)
 		case "l", "right":
 			m.xOffset = m.clampX(m.xOffset + 4)
+		case "b":
+			if selected, ok := m.selected(); ok {
+				m.diffBase, m.loading, m.panelFocus = !m.diffBase, true, panelLeft
+				m.diffRequest++
+				return m, loadDiff(selected, m.diffRequest, m.diffBase)
+			}
+		case "]", "[":
+			m.panelFocus = panelLeft
+			m.diffOff = m.clampDiffOffset(diffFileOffset(m.preview.lines, m.diffOff, key == "]"), m.preview.lines)
 		}
 		return m, nil
 	}
@@ -1972,10 +2269,11 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.tab != tabSessions && len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
-		index := int(key[0] - '1')
-		if index < len(m.rows()) {
-			m.index = index
-			return m.executeAction(menuOpen)
+		for index, row := range m.rows() {
+			if m.jumpNumber(row, index) == int(key[0]-'0') {
+				m.index = index
+				return m.executeAction(menuOpen)
+			}
 		}
 	}
 
@@ -2018,6 +2316,22 @@ func (m dashboardModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 	case "s":
+		if m.tab == tabWorktrees {
+			m.clearActionError()
+			m.worktreeScopeAll = !m.worktreeScopeAll
+			m.setNotice("Worktrees: " + map[bool]string{true: "All repos", false: "This repo"}[m.worktreeScopeAll])
+			if !m.worktreeScopeAll {
+				// Drop other repositories now; a failed listing keeps the last rows.
+				target := m.selectedTarget()
+				m.worktrees = slices.DeleteFunc(slices.Clone(m.worktrees), func(worktree item) bool { return worktree.repo != m.cwd })
+				m.restoreSelection(target)
+			}
+			// Replace any list still loading for the other scope.
+			m.worktreeGitRefreshed, m.worktreeFullRefreshed = time.Time{}, time.Time{}
+			m.worktreesInFlight = true
+			m.worktreeGeneration++
+			return m, m.refreshWorktrees()
+		}
 		if m.tab != tabAgents {
 			return m, nil
 		}
@@ -2162,7 +2476,7 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.actionTextInput.Blur()
-			cwd := m.cwd
+			cwd := m.actionDir
 			if m.action == actionAgentPrompt {
 				m.action, m.agentPrompt = actionAgentNaming, value
 				m.agentNameRequest++
@@ -2203,7 +2517,7 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			action := m.action
 			m.action, m.err = actionRunning, nil
 			m.actionTextInput.Blur()
-			cwd := m.cwd
+			cwd := m.actionDir
 			return m, func() tea.Msg {
 				added, plan, err := addWorktree(cwd, value, true)
 				if err == nil {
@@ -2231,6 +2545,15 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cmd := m.beginRemove(m.actionTarget)
 			return m, cmd
 		}
+		if m.action == actionRemoveMerged {
+			ready := m.mergedReady()
+			if len(ready) == 0 || (key != "enter" && key != "D") {
+				return m, nil
+			}
+			deleteBranches := key == "D"
+			m.action, m.err = actionRunning, nil
+			return m, func() tea.Msg { return removeMergedWorktrees(ready, deleteBranches) }
+		}
 		mode, ok := m.removeMode(key)
 		if m.action != actionRemoveWorktree {
 			ok = key == "enter"
@@ -2239,6 +2562,7 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		action, target := m.action, m.actionTarget
+		repo := cmp.Or(target.repo, m.cwd)
 		m.action, m.err = actionRunning, nil
 		return m, func() tea.Msg {
 			if action == actionRemoveSession {
@@ -2248,7 +2572,7 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return worktreeActionMsg{action: action, notice: "Removed agent in pane " + target.pane, err: removeAgent(target)}
 			}
 			if action == actionCleanupWorktree {
-				return worktreeActionMsg{action: action, notice: "Cleaned up stale worktree record", err: cleanupPrunableWorktree(m.cwd, target)}
+				return worktreeActionMsg{action: action, notice: "Cleaned up stale worktree record", err: cleanupPrunableWorktree(repo, target)}
 			}
 			if action == actionRebaseWorktree || action == actionMergeWorktree {
 				operation, notice := "rebase", "Rebased "+target.branch
@@ -2264,7 +2588,7 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case removeDiscard:
 				notice += " and discarded its changes"
 			}
-			err := removeWorktree(m.cwd, target.cwd, mode)
+			err := removeWorktree(repo, target.cwd, mode)
 			if dirty := (dirtyWorktreeError{}); errors.As(err, &dirty) {
 				err = fmt.Errorf("%w; press r again to stash or discard them", err)
 			}
@@ -2277,7 +2601,7 @@ func (m dashboardModel) handleActionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // confirming reports whether a destructive action is waiting for Enter.
 func (m dashboardModel) confirming() bool {
 	switch m.action {
-	case actionRemoveWorktree, actionRemoveSession, actionRemoveAgent, actionCleanupWorktree, actionRebaseWorktree, actionMergeWorktree:
+	case actionRemoveWorktree, actionRemoveSession, actionRemoveAgent, actionCleanupWorktree, actionRebaseWorktree, actionMergeWorktree, actionRemoveMerged:
 		return true
 	default:
 		return false
@@ -2312,7 +2636,7 @@ func (m dashboardModel) switchTab(tab int) (tea.Model, tea.Cmd) {
 		m.worktreeGitRefreshed, m.worktreeFullRefreshed = time.Time{}, time.Time{}
 		m.worktreesInFlight = true
 		m.worktreeGeneration++
-		refresh = refreshWorktreeList(m.cwd, m.worktreeGeneration)
+		refresh = m.refreshWorktrees()
 	}
 	m.queries[m.tab], m.tabTargets[m.tab] = m.query, m.selectedTarget()
 	m.filterInputs[m.tab].Blur()
@@ -2446,7 +2770,9 @@ func helpSections() []helpSection {
 			{"p", "Open the pull request"},
 			{"b/m", "Rebase onto / merge into default"},
 			{"x", "Clean up a stale record"},
+			{"X", "Remove merged worktrees (asks first)"},
 			{"r", "Remove the worktree (asks first)"},
+			{"s", "Show this repo or all repos"},
 		}},
 		{"Sessions tab", tabSessions, []helpRow{
 			{"type", "Search (every letter except O, P)"},
@@ -2465,9 +2791,11 @@ func helpSections() []helpSection {
 			{"j/k, ↓/↑", "Move down / up (Agents, Worktrees)"},
 			{"g/G, Home/End", "First / last row"},
 			{"1–9", "Open row by number"},
+			{"n", "Open the next agent that needs you"},
+			{"f", "Fetch from the remote (Agents, Worktrees)"},
 			{"Space", "Actions for the selected row"},
 			{"Tab/Shift+Tab", "Next / previous tab"},
-			{"/", "Filter rows (Agents, Worktrees)"},
+			{"/", "Fuzzy-filter rows (Agents, Worktrees)"},
 			{"t", "Choose a theme"},
 			{"Enter/Esc", "Confirm / cancel a prompt"},
 			{"?", "Toggle this help"},
@@ -2482,6 +2810,7 @@ func helpSections() []helpSection {
 			{"g/G, Home/End", "Top / bottom"},
 			{"G, End", "Resume a paused live preview"},
 			{"h/l, ←/→", "Pan long lines left / right"},
+			{"b, [ / ]", "Diff: whole branch or WIP; previous / next file"},
 		}},
 		{"Theme picker", tabCount, []helpRow{
 			{"type", "Filter themes"},
@@ -2489,7 +2818,7 @@ func helpSections() []helpSection {
 			{"Enter/Esc", "Apply / restore"},
 		}},
 		{"Mouse", tabCount, []helpRow{
-			{"click", "Select a row"},
+			{"click", "Select a row, or run a menu action"},
 			{"double-click", "Open a row"},
 			{"wheel", "Scroll the table, preview, or help"},
 		}},
@@ -2626,29 +2955,24 @@ func (m dashboardModel) rows() []item {
 		}
 		return rows
 	}
-	if m.tab == tabSessions {
-		targets := make([]string, len(rows))
-		for index, item := range rows {
+	// Every tab matches fuzzily and sorts by score, so a query behaves the same
+	// wherever it is typed.
+	targets := make([]string, len(rows))
+	for index, item := range rows {
+		switch m.tab {
+		case tabSessions:
 			targets[index] = item.title + " " + compactHome(item.cwd) + " " + item.cwd
-		}
-		matches := fuzzy.Find(m.query, targets)
-		filtered := make([]item, 0, len(matches))
-		for _, match := range matches {
-			filtered = append(filtered, rows[match.Index])
-		}
-		return filtered
-	}
-	query := strings.ToLower(m.query)
-	filtered := make([]item, 0, len(rows))
-	for _, item := range rows {
-		fields := item.title + " " + item.cwd + " " + item.branch + " " + item.sessionTitle
-		if m.tab == tabAgents {
+		case tabAgents:
 			// Match the Title tag too, so /@labs and /labs:4 find what the row shows.
-			fields += " @" + item.muxSessionName + ":" + item.muxWindowIndex
+			targets[index] = item.title + " " + item.cwd + " " + item.branch + " " + item.sessionTitle + " @" + item.muxSessionName + ":" + item.muxWindowIndex
+		default:
+			targets[index] = item.title + " " + item.cwd + " " + item.branch + " " + item.sessionTitle
 		}
-		if strings.Contains(strings.ToLower(fields), query) {
-			filtered = append(filtered, item)
-		}
+	}
+	matches := fuzzy.Find(m.query, targets)
+	filtered := make([]item, 0, len(matches))
+	for _, match := range matches {
+		filtered = append(filtered, rows[match.Index])
 	}
 	return filtered
 }
@@ -2686,6 +3010,46 @@ func (m *dashboardModel) applyAgentScope() {
 			return m.launchSessionID == "" || item.muxSessionID != m.launchSessionID
 		})
 	}
+	m.assignAgentSlots()
+}
+
+// assignAgentSlots gives each shown agent a jump number and keeps it for as
+// long as the agent lives. Rows re-sort when a status changes, so a number tied
+// to the row position could open a different agent than the one it was read
+// beside. A freed number goes to the next new agent.
+func (m *dashboardModel) assignAgentSlots() {
+	slots := make(map[string]int, len(m.allAgents))
+	var used [10]bool
+	for _, agent := range m.allAgents {
+		if slot := m.agentSlots[agent.target]; slot > 0 {
+			slots[agent.target], used[slot] = slot, true
+		}
+	}
+	for _, agent := range m.agents {
+		if slots[agent.target] > 0 {
+			continue
+		}
+		for slot := 1; slot <= 9; slot++ {
+			if !used[slot] {
+				slots[agent.target], used[slot] = slot, true
+				break
+			}
+		}
+	}
+	m.agentSlots = slots
+}
+
+// jumpNumber returns the digit that opens a row, or 0 for none. Worktree rows
+// keep a stable order and number by position, as agent rows do until the first
+// agent refresh assigns their numbers.
+func (m dashboardModel) jumpNumber(row item, index int) int {
+	if m.tab == tabAgents && m.agentSlots != nil {
+		return m.agentSlots[row.target]
+	}
+	if index < 9 {
+		return index + 1
+	}
+	return 0
 }
 
 func mergeWorktreeData(current, incoming []item, stage worktreeStage) []item {
@@ -2699,7 +3063,7 @@ func mergeWorktreeData(current, incoming []item, stage worktreeStage) []item {
 			fresh.current = false // The later tmux stage owns the active-client marker.
 			if old, ok := existing[fresh.target]; ok {
 				branchChanged := old.branch != fresh.branch
-				old.kind, old.cwd, old.branch, old.title = fresh.kind, fresh.cwd, fresh.branch, fresh.title
+				old.kind, old.cwd, old.repo, old.branch, old.title = fresh.kind, fresh.cwd, fresh.repo, fresh.branch, fresh.title
 				old.primary, old.locked, old.prunable = fresh.primary, fresh.locked, fresh.prunable
 				if branchChanged {
 					old.prNumber, old.prState, old.prDraft, old.prCheck, old.prLoaded = 0, "", false, "", false

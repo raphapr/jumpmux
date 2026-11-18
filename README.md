@@ -27,7 +27,7 @@ View worktrees from the current repository with Project, Worktree, Git, PR, Mux,
 <details>
 <summary><strong>Sessions</strong></summary>
 
-Browse configured locations, discovered repositories, and live tmux sessions with Session, Path, Windows, and Last-attached columns.
+Browse configured locations, discovered repositories, and live tmux sessions with Session, Path, Agent, Windows, and Last-attached columns.
 
 ![Sessions tab showing configured and live tmux sessions](docs/images/sessions.png)
 

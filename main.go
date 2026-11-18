@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -87,6 +88,9 @@ type item struct {
 	untracked        int
 	// agents lists every live agent in a worktree; the fields above describe the representative.
 	agents []item
+	// repo is a directory Git can list a worktree's repository from. Commands that
+	// need the repository run there, since a worktree's own directory may be gone.
+	repo string
 }
 
 type worktree struct {
@@ -249,6 +253,10 @@ func listWorktreeItems(cwd string) ([]item, error) {
 	if err != nil {
 		return nil, err
 	}
+	return worktreeItems(worktrees, current, cwd), nil
+}
+
+func worktreeItems(worktrees []worktree, current, repo string) []item {
 	items := make([]item, 0, len(worktrees))
 	for index, wt := range worktrees {
 		// A bare repository has no working tree to show or act on.
@@ -259,6 +267,7 @@ func listWorktreeItems(cwd string) ([]item, error) {
 			kind:     "worktree",
 			target:   wt.path,
 			cwd:      wt.path,
+			repo:     repo,
 			branch:   wt.branch,
 			title:    wt.branch,
 			current:  samePath(wt.path, current),
@@ -267,7 +276,61 @@ func listWorktreeItems(cwd string) ([]item, error) {
 			prunable: wt.prunable,
 		})
 	}
-	return items, nil
+	return items
+}
+
+// listRepositoryWorktrees lists the worktrees of cwd's repository, then those
+// of the repository behind each directory in others. A directory that is not
+// in a repository is skipped, and each worktree is listed once. The error for
+// cwd is returned only when no worktree is found anywhere.
+func listRepositoryWorktrees(cwd string, others []string) ([]item, error) {
+	items, err := listWorktreeItems(cwd)
+	seen := make(map[string]bool, len(items))
+	for _, item := range items {
+		seen[filepath.Clean(item.cwd)] = true
+	}
+	for _, dir := range others {
+		if seen[filepath.Clean(dir)] {
+			continue
+		}
+		worktrees, _, listErr := listWorktrees(dir)
+		if listErr != nil || len(worktrees) == 0 {
+			continue
+		}
+		// Prefer the main worktree, which outlives the others. A bare
+		// repository cannot report a top-level directory, so keep dir for it.
+		repo := dir
+		if !worktrees[0].bare {
+			repo = worktrees[0].path
+		}
+		for _, item := range worktreeItems(worktrees, "", repo) {
+			if path := filepath.Clean(item.cwd); !seen[path] {
+				seen[path] = true
+				items = append(items, item)
+			}
+		}
+	}
+	if len(items) > 0 {
+		return items, nil
+	}
+	return items, err
+}
+
+// defaultBranchLookup resolves the local default branch once per repository.
+// Items without a repository share one lookup from fallback.
+func defaultBranchLookup(fallback string) func(item) string {
+	var mu sync.Mutex
+	branches := map[string]string{}
+	return func(item item) string {
+		mu.Lock()
+		defer mu.Unlock()
+		branch, ok := branches[item.repo]
+		if !ok {
+			branch = localDefaultBranch(cmp.Or(item.repo, fallback))
+			branches[item.repo] = branch
+		}
+		return branch
+	}
 }
 
 func worktreeGitDetails(items []item) []item {
@@ -275,8 +338,8 @@ func worktreeGitDetails(items []item) []item {
 	if len(items) == 0 {
 		return items
 	}
-	baseBranch := localDefaultBranch(items[0].cwd)
-	loadGitDetailsParallel(items, func(item item) item { return loadGitDetails(item, baseBranch) })
+	baseBranch := defaultBranchLookup(items[0].cwd)
+	loadGitDetailsParallel(items, func(item item) item { return loadGitDetails(item, baseBranch(item)) })
 	return items
 }
 
@@ -559,9 +622,31 @@ func worktreePRDetails(repo string, items []item) []item {
 	if len(items) == 0 {
 		return items
 	}
-	pullRequests, loaded := listPullRequests(repo)
+	// Worktrees of other repositories carry their own; each is queried once.
+	type result struct {
+		pullRequests map[string][]pullRequest
+		loaded       bool
+	}
+	results := map[string]*result{}
+	for _, item := range items {
+		results[cmp.Or(item.repo, repo)] = &result{}
+	}
+	var group sync.WaitGroup
+	limit := make(chan struct{}, 4)
+	for dir, result := range results {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			limit <- struct{}{}
+			defer func() { <-limit }()
+			result.pullRequests, result.loaded = listPullRequests(dir)
+		}()
+	}
+	group.Wait()
 	for index := range items {
-		items[index].prLoaded = loaded
+		result := results[cmp.Or(items[index].repo, repo)]
+		pullRequests := result.pullRequests
+		items[index].prLoaded = result.loaded
 		if items[index].branch == "main" || items[index].branch == "master" {
 			continue
 		}

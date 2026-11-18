@@ -5,6 +5,7 @@
 | Key                                       | Action                                                                 |
 | ----------------------------------------- | ---------------------------------------------------------------------- |
 | Mouse click / double-click                | Select / focus an agent, worktree, or tmux session                     |
+| Mouse click in the action menu            | Run that action                                                        |
 | Mouse wheel                               | Scroll the table, focused panel, or Help                               |
 | `j`/`k`, arrows                           | Move in Agents/Worktrees, browse themes, or scroll a diff/help panel   |
 | `g`/`Home`, `G`/`End`                     | First/last row in Agents and Worktrees; top/bottom in diff or Help     |
@@ -13,24 +14,28 @@
 | `1`–`9`                                   | Open that numbered row in Agents or Worktrees                          |
 | `Tab` / `Shift+Tab`                       | Next / previous tab                                                    |
 | `Enter`                                   | Focus the selected agent/worktree or switch/create a tmux session      |
-| `/`                                       | Filter Agents or Worktrees                                             |
+| `/`                                       | Fuzzy-filter Agents or Worktrees                                       |
 | Type, except `O` / `P` / initial `?`      | Search Sessions immediately                                            |
 | `Ctrl+f`                                  | Cycle Sessions through All, Live, Inactive, Configured, and Discovered |
 | `Ctrl+g`                                  | Toggle Sessions between grouped and most-recently-attached order       |
 | `Shift+Left` / `Shift+Right`              | Focus the left or right preview/diff panel                             |
 | `Space`                                   | Open actions; press the shown key or `Enter` to run one                |
 | `G` / `End` in a paused live preview      | Resume bottom-follow                                                   |
-| `s`                                       | Toggle agent scope between all and current tmux session                |
+| `s`                                       | Agents: all or this tmux session; Worktrees: this repo or all repos    |
 | `t`                                       | Open the theme picker                                                  |
 | `Enter` in the theme picker               | Apply the selected theme                                               |
 | `Esc` in the theme picker                 | Restore the previous theme and close                                   |
 | Type in the theme picker                  | Filter theme names                                                     |
 | `Enter` while filtering                   | Accept an Agents/Worktrees filter or open a Session                    |
 | `Esc` while filtering                     | Clear and close the filter                                             |
-| Agents: `o`, `d`, `p`, `m`, `r`           | Open, diff, open PR, mark an unseen completion seen, or remove         |
+| Agents: `o`, `d`, `p`, `m`, `f`, `r`      | Open, diff, open PR, mark a completion seen, fetch, or remove          |
+| Agents and Worktrees: `n`                 | Open the next agent that asked a question or finished unseen           |
 | Agents and Worktrees: `A`                 | Start an agent from a prompt: name the branch, edit it, then create    |
 | Worktrees: `a`, `o`, `d`, `p`             | Add, open, diff, or open PR when available                             |
 | Worktrees: `b`, `m`, `x`, `r`             | Rebase, merge, clean up, or remove; `Enter`, `s`, or `F` confirms      |
+| Worktrees: `f`, `X`                       | Fetch, or remove worktrees whose pull request merged                   |
+| `b` in a diff                             | Switch between uncommitted changes and the whole branch                |
+| `[` / `]` in a diff                       | Jump to the previous / next file                                       |
 | Sessions: `O`, `Ctrl+r`, `P`              | Open, remove (`Enter` confirms), or switch to the previous session     |
 | `PgUp` / `PgDn`                           | Page diff/Help, or the Session preview                                 |
 | `Ctrl+u` / `Ctrl+d`                       | Page the focused preview, diff panel, or Help                          |
@@ -51,6 +56,10 @@ The Pi extension writes agent status records. Before displaying a record, jumpmu
 `jumpmux agent list` shows live Pi agents, and `jumpmux agent open <session-id|pane-id>` focuses one. Session IDs that identify more than one pane are ambiguous; use a pane ID.
 
 To start an agent on a new task, press `A` on the Agents or Worktrees tab and type a one-line prompt. jumpmux asks `agent.name_command` for a branch name and fills the branch input with it; edit it if needed and press `Enter`. jumpmux then creates the worktree, opens a window for it in the project's tmux session, starts the agent with the prompt, and switches to that window. `Esc` cancels while naming runs. If naming fails, the input reads `naming failed, branch:` and holds a name built from the prompt. The CLI equivalent is [`jumpmux agent new`](cli.md#start-an-agent-from-a-prompt).
+
+Agents sort by what needs you first: open questions, then completions you have not seen, then working agents, then the rest by latest update. Each agent keeps its `#` number while it lives, so `1`–`9` opens the agent the number was shown beside even after the rows re-sort. A closed agent's number goes to the next new agent.
+
+Press `n` on the Agents or Worktrees tab to open the next agent that asked a question or finished unseen. It skips the pane you are in and continues after it, so repeated presses visit every waiting agent. The key appears in the footer only while an agent waits.
 
 A completion is seen when its pane is focused or explicitly marked seen from the dashboard. On an unseen completed agent, press `m` directly or choose Mark seen from `Space`. Acknowledgement clears its tmux completion marker.
 
@@ -81,9 +90,9 @@ Session icons:
 - ``: discovered
 - Plain mode: `L`, `C`, and `R`
 
-Live previews capture the active pane every 500 ms, including alternate-screen programs such as `btop`. Inactive configured entries show a creation hint. Sessions do not yet aggregate agent attention; acknowledged completion is shown in the Agents and Worktrees tabs.
+Live previews capture the active pane every 500 ms, including alternate-screen programs such as `btop`. Inactive configured entries show a creation hint. When an agent is running and the terminal is at least 80 columns wide, an Agent column shows, for each live session, the status of the agent that most needs attention and `+N` for its other agents.
 
-jumpmux merges rows with the same name, and drops a discovered directory that a configured entry already covers. Configured paths take precedence; live-only rows use the active pane path. Rows appear in three groups: live, configured, and discovered. Each group sorts by name. Press `Ctrl+g` to sort by the `Last` column until jumpmux exits. Searches sort by fuzzy match score.
+jumpmux merges rows with the same name, and drops a discovered directory that a configured entry already covers. Configured paths take precedence; live-only rows use the active pane path. Rows appear in three groups: live, configured, and discovered. Each group sorts by name. Press `Ctrl+g` to sort by the `Last` column until jumpmux exits. Searches sort by fuzzy match score. The `/` filter on Agents and Worktrees matches and sorts the same way.
 
 Press `Space` for actions available on the selected row. Press the shown key from the table or menu, or select an action and press `Enter`. The Sessions `P` action switches to the previous session even when no row is selected. Opening a selected row, adding a worktree, or switching to the previous session exits the dashboard; failures leave it open. Worktree actions include add, open, diff, PR, rebase, merge, cleanup, and removal. Worktree rebase and merge use native Git against the local default branch. Merge is fast-forward-only and runs in the worktree that has the default branch checked out. It requires both worktrees to be clean, preserves commits, and keeps the worktree. In a bare repository layout, the bare directory is not listed. Existing `worktree_backend` settings are unsupported and must be removed. Removing a live session does not delete its configured entry.
 
@@ -94,11 +103,19 @@ Before removing a worktree, jumpmux checks tmux and reads `git status`. If a tmu
 
 Ignored files are not stashed; Git deletes them with the worktree. If the worktree changes after you confirm a clean removal, jumpmux stops and asks you to press `r` again. Inside the confirmation, `r` checks the worktree again, for example after you close a blocking pane. A worktree whose directory is gone has nothing to lose, so `Enter` removes its record. A locked worktree is refused; run `git worktree unlock` first.
 
+Press `X` to remove every worktree whose pull request merged. The confirmation lists each one. A worktree with changed or untracked files, or one open in a tmux pane, is skipped and says why; jumpmux never stashes or discards in bulk. `Enter` removes the rest and keeps their branches. `D` also deletes each branch that still points at the commit that merged; a branch with later commits stays. Before each removal jumpmux reads the pull request again, from GitHub data at most a minute old. The primary, current, locked, and stale worktrees are never offered.
+
+Press `s` on the Worktrees tab to also list the worktrees of other repositories: those where an agent runs and those of configured sessions. The tab label then reads `Worktrees N · All`, and the choice resets when jumpmux exits. Actions run in the selected row's repository, including `a` and `A`. Each repository uses its own default branch, and jumpmux calls `gh pr list` once per listed repository.
+
 ### Git
 
 Worktree rows use the current repository. Agent rows read Git state from each agent's working directory. Agent Git cells compactly show loading, dirty line counts, rebase or conflict state, and upstream ahead and behind counts. Worktree Git cells also show the non-default base branch and distinguish committed from uncommitted line counts.
 
 jumpmux reads the default branch from local Git metadata: `origin/HEAD`, then local `main`, then local `master`. Base-dependent actions fail clearly when no usable local default branch exists; jumpmux does not fetch automatically.
+
+Press `f` on an agent or worktree row to run `git fetch` in that repository. The header shows `fetching` until it finishes. Fetch updates remote-tracking branches and the upstream ahead and behind counts. It does not move the local default branch that rebase, merge, and the branch diff compare with. Git runs without a terminal, so a fetch that needs a password or passphrase fails instead of prompting.
+
+The diff view (`d`) opens on uncommitted changes. Press `b` to compare the working tree with the commit where the branch left the local default branch, which includes committed work, and `b` again to return. `[` and `]` jump to the previous and next file.
 
 jumpmux loads `git_status_cache.json` before the first render, refreshes Git data in the background, and saves the cache on exit.
 

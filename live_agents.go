@@ -226,15 +226,53 @@ func listLiveAgents() ([]item, error) {
 		})
 	}
 	sort.Slice(agents, func(i, j int) bool {
-		if (agents[i].status == "question") != (agents[j].status == "question") {
-			return agents[i].status == "question"
-		}
-		if (agents[i].status == "working") != (agents[j].status == "working") {
-			return agents[i].status == "working"
+		if left, right := attentionRank(agents[i]), attentionRank(agents[j]); left != right {
+			return left < right
 		}
 		return agents[i].updated.After(agents[j].updated)
 	})
 	return agents, nil
+}
+
+// attentionRank orders agents by how much they need the user: an open
+// question, then a completion nobody has seen, then work in progress.
+func attentionRank(agent item) int {
+	switch {
+	case agent.status == "question":
+		return 0
+	case needsAttention(agent):
+		return 1
+	case agent.status == "working":
+		return 2
+	}
+	return 3
+}
+
+// needsAttention reports whether an agent waits on the user: it asked a
+// question or finished without being seen.
+func needsAttention(agent item) bool {
+	return agent.status == "question" || (agent.status == "done" && !agent.seen)
+}
+
+// nextAttentionAgent picks the agent to visit next from a list in attention
+// order. It skips the focused pane and continues after it, so repeated calls
+// walk every waiting agent instead of returning to an unanswered question.
+func nextAttentionAgent(agents []item) (item, bool) {
+	var waiting []item
+	current := -1
+	for _, agent := range agents {
+		if !needsAttention(agent) {
+			continue
+		}
+		if agent.current {
+			current = len(waiting)
+		}
+		waiting = append(waiting, agent)
+	}
+	if len(waiting) == 0 || (current >= 0 && len(waiting) == 1) {
+		return item{}, false
+	}
+	return waiting[(current+1)%len(waiting)], true
 }
 
 func cachedTmuxPanes() ([]tmuxPane, error) {

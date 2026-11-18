@@ -9,12 +9,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
 const (
 	worktreeActionTimeout = 2 * time.Minute
 	worktreeMergeTimeout  = 30 * time.Minute
+	fetchTimeout          = time.Minute
 )
 
 type branchSource int
@@ -451,6 +453,88 @@ func updateWorktree(path, branch, operation string) error {
 		return actionError("merge worktree", output, err)
 	}
 	return nil
+}
+
+// fetchRemote updates the remote-tracking branches of the repository at dir.
+// Local branches and worktrees do not change. Git runs without a terminal, so
+// a credential or passphrase prompt fails at once instead of drawing over the
+// dashboard.
+func fetchRemote(dir string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+	defer cancel()
+	command := boundedCommand(ctx, "git", "fetch")
+	command.Dir = dir
+	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	// A new session has no controlling terminal; its process group still has
+	// the command's PID, which is what the timeout kills.
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	output, err := command.CombinedOutput()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil
+	}
+	if ctx.Err() != nil {
+		return errors.New("fetch timed out")
+	}
+	if err != nil {
+		return actionError("fetch", output, err)
+	}
+	return nil
+}
+
+// isMergedWorktree reports whether a worktree is a candidate for merged-branch
+// removal: its pull request merged and nothing protects it.
+func isMergedWorktree(worktree item) bool {
+	return strings.EqualFold(worktree.prState, "MERGED") &&
+		!worktree.primary && !worktree.current && !worktree.locked && !worktree.prunable &&
+		worktree.branch != "" && worktree.branch != "detached"
+}
+
+// removeMergedWorktree removes a clean worktree whose pull request merged and,
+// when asked, its branch. It reports whether the branch was deleted. The
+// branch is deleted only while it points at the commit that merged, because
+// commits made after the merge exist nowhere else.
+func removeMergedWorktree(repo string, target item, deleteBranch bool) (bool, error) {
+	// The row may show a state cached on disk by an earlier run, so read it
+	// again; listPullRequests keeps a result for at most a minute.
+	pullRequests, loaded := listPullRequests(repo)
+	if !loaded {
+		return false, errors.New("cannot read pull requests; check gh")
+	}
+	pr, ok := pullRequestForBranch(target.cwd, target.branch, pullRequests[target.branch])
+	if !ok || !strings.EqualFold(pr.State, "MERGED") {
+		return false, fmt.Errorf("pull request for %s is not merged", target.branch)
+	}
+	worktrees, _, err := listWorktrees(repo)
+	if err != nil {
+		return false, err
+	}
+	found := false
+	for _, worktree := range worktrees {
+		if samePath(worktree.path, target.cwd) && worktree.branch == target.branch {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return false, errors.New("worktree changed; refresh and retry")
+	}
+	if err := removeWorktree(repo, target.cwd, removeClean); err != nil {
+		return false, err
+	}
+	if !deleteBranch {
+		return false, nil
+	}
+	root := worktrees[0].path
+	oid, err := gitOutput(root, "rev-parse", "--verify", "--quiet", "refs/heads/"+target.branch)
+	if err != nil || pr.HeadRefOID == "" || strings.TrimSpace(oid) != pr.HeadRefOID {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), worktreeActionTimeout)
+	defer cancel()
+	if output, err := runActionCommand(ctx, root, "git", "branch", "-D", target.branch); err != nil {
+		return false, actionError("delete branch", output, err)
+	}
+	return true, nil
 }
 
 func cleanupPrunableWorktree(repo string, selected item) error {

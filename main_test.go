@@ -192,14 +192,14 @@ func TestDiffSupportsUnbornRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	item := item{kind: "worktree", target: dir, cwd: dir}
-	clean, ok := loadDiff(item, 1)().(diffMsg)
+	clean, ok := loadDiff(item, 1, false)().(diffMsg)
 	if !ok || len(clean.lines) != 1 || clean.lines[0] != "Working tree is clean." {
 		t.Fatalf("unexpected clean diff: %#v", clean)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("new"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dirty := loadDiff(item, 2)().(diffMsg)
+	dirty := loadDiff(item, 2, false)().(diffMsg)
 	if len(dirty.lines) != 2 || dirty.lines[0] != "Untracked files:" || dirty.lines[1] != "? new.txt" {
 		t.Fatalf("unexpected untracked diff: %#v", dirty)
 	}

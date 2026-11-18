@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -80,6 +81,9 @@ func (m dashboardModel) refreshState() string {
 	if m.refreshPaused() {
 		return ""
 	}
+	if m.fetching {
+		return "fetching"
+	}
 	inFlight := [...]bool{m.agentsInFlight, m.worktreesInFlight, m.sessionsInFlight}[m.tab]
 	loaded := [...]bool{m.agentsLoaded, m.worktreesLoaded, m.sessionsLoaded}[m.tab]
 	if inFlight && !loaded {
@@ -140,11 +144,18 @@ func (m dashboardModel) tabLabels() [tabCount]string {
 		labels[tabSessions] = fmt.Sprintf("[Sessions %d/%d · %s]", liveSessions, len(m.sessions), m.sessionFilter.label())
 	default:
 		labels[m.tab] = "[" + labels[m.tab] + "]"
+		// Only the wider scope is labeled; one repository is the usual view.
+		if m.worktreeScopeAll {
+			labels[m.tab] = fmt.Sprintf("[Worktrees %d · All]", len(m.worktrees))
+		}
 	}
 	if 2+ansi.StringWidth(strings.Join(labels[:], " │ ")) > m.width {
 		labels[tabAgents] = fmt.Sprintf("Agents %d", len(m.agents))
 		if m.tab == tabAgents {
 			labels[tabAgents] = "[" + labels[tabAgents] + "]"
+		}
+		if m.tab == tabWorktrees {
+			labels[tabWorktrees] = fmt.Sprintf("[Worktrees %d]", len(m.worktrees))
 		}
 	}
 	if m.tab == tabSessions && 2+ansi.StringWidth(strings.Join(labels[:], " │ ")) > m.width {
@@ -198,6 +209,9 @@ func (m dashboardModel) renderTable(width int) string {
 			message = "Loading " + label + "…"
 		} else if m.tab == tabWorktrees && m.worktreeErr != nil && strings.Contains(strings.ToLower(m.worktreeErr.Error()), "not a git repository") {
 			message = "Not a Git repo. Run jumpmux in one."
+			if !m.worktreeScopeAll {
+				message += " s shows all repos."
+			}
 		} else if m.query != "" {
 			if m.tab == tabSessions {
 				message = "No sessions match “" + safeText(m.query) + "”. Esc clears search."
@@ -228,7 +242,7 @@ func (m dashboardModel) renderTable(width int) string {
 
 type tableColumns struct {
 	project, worktree, git, pr, status, elapsed, tail int
-	name, path, windows, last                         int
+	name, path, agents, windows, last                 int
 }
 
 func (m dashboardModel) columns(width int, rows []item) tableColumns {
@@ -237,7 +251,11 @@ func (m dashboardModel) columns(width int, rows []item) tableColumns {
 		for _, item := range rows {
 			name = min(28, max(name, ansi.StringWidth(item.title)+8))
 		}
-		return tableColumns{name: name, path: max(1, width-2-name-windows-last), windows: windows, last: last}
+		agents := 0
+		if width >= 80 && len(m.allAgents) > 0 {
+			agents = 12
+		}
+		return tableColumns{name: name, path: max(1, width-2-name-agents-windows-last), agents: agents, windows: windows, last: last}
 	}
 	project, worktree, git, pr := 8, 9, 5, 4
 	for _, item := range rows {
@@ -294,7 +312,11 @@ func (m dashboardModel) columns(width int, rows []item) tableColumns {
 func (m dashboardModel) tableHeader(width int, c tableColumns) string {
 	cells := []string{}
 	if m.tab == tabSessions {
-		cells = append(cells, cell("Session", c.name), cell("Path", c.path), cell("Win", c.windows), cell("Last", c.last))
+		cells = append(cells, cell("Session", c.name), cell("Path", c.path))
+		if c.agents > 0 {
+			cells = append(cells, cell("Agent", c.agents))
+		}
+		cells = append(cells, cell("Win", c.windows), cell("Last", c.last))
 		return headerStyle.Render("  " + ansi.Truncate(strings.Join(cells, ""), width-2, ""))
 	}
 	cells = append(cells, cell("#", 2), cell("Project", c.project), cell("Worktree", c.worktree), cell("Git", c.git), cell("PR", c.pr))
@@ -331,13 +353,17 @@ func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) st
 			last = relativeAge(item.lastAttached)
 		}
 		name := icon + " " + item.title
-		line += renderCell(style, name, c.name, background) + renderCell(textStyle, compactHome(item.cwd), c.path, background) + renderCell(mutedStyle, windows, c.windows, background) + renderCell(mutedStyle, last, c.last, background)
+		line += renderCell(style, name, c.name, background) + renderCell(textStyle, compactHome(item.cwd), c.path, background)
+		if c.agents > 0 {
+			line += sessionAgentsCell(m.sessionAgents(item), c.agents, m.now, background)
+		}
+		line += renderCell(mutedStyle, windows, c.windows, background) + renderCell(mutedStyle, last, c.last, background)
 		return padANSIBackground(line, width, background)
 	}
 	gitItem := m.gitItem(item)
 	jumpKey := ""
-	if index < 9 {
-		jumpKey = strconv.Itoa(index + 1)
+	if number := m.jumpNumber(item, index); number > 0 {
+		jumpKey = strconv.Itoa(number)
 	}
 	line += renderCell(keycapStyle, jumpKey, 2, background) + renderCell(worktreeStyle, projectName(item.cwd), c.project, background) + renderCell(worktreeStyle, m.displayWorktree(item), c.worktree, background)
 	if m.tab == tabAgents {
@@ -352,6 +378,17 @@ func (m dashboardModel) tableRow(item item, index, width int, c tableColumns) st
 		line += muxCell(item, c.status, background) + renderCell(mutedStyle, age, c.elapsed, background) + agentSummaryCell(item, c.tail, m.now, background, m.agentsLoaded, m.agentErr)
 	}
 	return padANSIBackground(line, width, background)
+}
+
+// sessionAgents lists the agents running in a live tmux session, in attention order.
+func (m dashboardModel) sessionAgents(session item) []item {
+	var agents []item
+	for _, agent := range m.allAgents {
+		if agent.muxSessionID == session.muxSessionID {
+			agents = append(agents, agent)
+		}
+	}
+	return agents
 }
 
 // agentTitle returns the agent's title and a tmux location suffix for when the
@@ -506,6 +543,8 @@ func (m dashboardModel) renderPreview(width int) string {
 			title = "Rebase worktree"
 		case actionMergeWorktree:
 			title = "Merge worktree"
+		case actionRemoveMerged:
+			title = "Remove merged worktrees"
 		}
 		lines := m.promptLines(false)
 		if len(lines) > height-2 {
@@ -598,7 +637,47 @@ func (m dashboardModel) previewTitle(selected item, title string) string {
 }
 
 func (m dashboardModel) renderActionMenu(width, height int) string {
+	lines, _, offset := m.actionMenuLines(width, height)
+	if !m.actionSidebar() {
+		return renderPanel("Actions", lines, width, height, offset, 0, false, true)
+	}
+	title := [...]string{"AGENT ACTIONS", "WORKTREE ACTIONS", "SESSION ACTIONS"}[m.tab]
+	return renderActionSidebar(title, lines, width, height, offset)
+}
+
+// actionMenuLines builds the menu body, the line of each entry, and the scroll
+// offset that keeps the selected entry visible.
+func (m dashboardModel) actionMenuLines(width, height int) ([]string, []int, int) {
+	lines, entryLines := m.actionMenuBody(width)
+	selectedLine := 0
+	if len(entryLines) > 0 {
+		selectedLine = entryLines[m.actionMenuIndex%len(entryLines)]
+	}
+	return lines, entryLines, max(0, selectedLine-max(1, height-2)+1)
+}
+
+// actionMenuEntryAt maps a click to the menu entry drawn at that cell.
+func (m dashboardModel) actionMenuEntryAt(x, y int) (int, bool) {
+	left, top, width, height := 0, 2+m.tableHeight(), m.width, max(3, m.previewHeight())
+	if m.actionSidebar() {
+		width = m.actionSidebarWidth()
+		left, top, height = m.width-width, 2, max(6, m.contentHeight()+1)
+	}
+	lines, entryLines, offset := m.actionMenuLines(width, height)
+	inner := height - 2
+	offset = min(offset, max(0, len(lines)-inner))
+	row := y - top - 1
+	if x <= left || x >= left+width-1 || row < 0 || row >= inner {
+		return 0, false
+	}
+	index := slices.Index(entryLines, row+offset)
+	return index, index >= 0
+}
+
+// actionMenuBody returns the menu lines and, for each entry, the line it is on.
+func (m dashboardModel) actionMenuBody(width int) ([]string, []int) {
 	entries := m.actionMenuEntries()
+	entryLines := make([]int, 0, len(entries))
 	selected := 0
 	if len(entries) > 0 {
 		selected = m.actionMenuIndex % len(entries)
@@ -610,13 +689,13 @@ func (m dashboardModel) renderActionMenu(width, height int) string {
 			if index == selected {
 				style, marker = selectedStyle.Inherit(textStyle), "> "
 			}
+			entryLines = append(entryLines, len(lines))
 			lines = append(lines, style.Render(marker+"["+entry.key+"] "+entry.label))
 		}
 		if len(lines) == 0 {
 			lines = []string{mutedStyle.Render("No actions available.")}
 		}
-		offset := max(0, selected-max(1, height-2)+1)
-		return renderPanel("Actions", lines, width, height, offset, 0, false, true)
+		return lines, entryLines
 	}
 	lines := make([]string, 0, len(entries)+8)
 	selectedItem, _ := m.selected()
@@ -629,7 +708,7 @@ func (m dashboardModel) renderActionMenu(width, height int) string {
 		lines = append(lines, mutedStyle.Render(truncate(safeText(compactHome(selectedItem.cwd)), max(1, width-6))))
 	}
 	lines = append(lines, "")
-	lastGroup, selectedLine := "", 0
+	lastGroup := ""
 	for index, entry := range entries {
 		group := actionMenuGroup(entry.action)
 		if group != lastGroup {
@@ -640,8 +719,8 @@ func (m dashboardModel) renderActionMenu(width, height int) string {
 			lastGroup = group
 		}
 		line := "  [" + entry.key + "] " + entry.label
+		entryLines = append(entryLines, len(lines))
 		if index == selected {
-			selectedLine = len(lines)
 			line = selectedStyle.Inherit(textStyle).Width(width - 2).Render("> [" + entry.key + "] " + entry.label)
 		} else if entry.action == menuRemove {
 			line = dangerStyle.Render(line)
@@ -653,9 +732,7 @@ func (m dashboardModel) renderActionMenu(width, height int) string {
 	if len(entries) == 0 {
 		lines = append(lines, mutedStyle.Render("No actions available."))
 	}
-	offset := max(0, selectedLine-max(1, height-2)+1)
-	title := [...]string{"AGENT ACTIONS", "WORKTREE ACTIONS", "SESSION ACTIONS"}[m.tab]
-	return renderActionSidebar(title, lines, width, height, offset)
+	return lines, entryLines
 }
 
 func renderActionSidebar(title string, lines []string, width, height, offset int) string {
@@ -683,11 +760,11 @@ func actionMenuGroup(action menuAction) string {
 		return "Open"
 	case menuAddWorktree:
 		return "Create"
-	case menuMarkAgentSeen:
+	case menuMarkAgentSeen, menuNextAttention:
 		return "Attention"
-	case menuRebase, menuMerge, menuCleanup:
+	case menuRebase, menuMerge, menuCleanup, menuFetch:
 		return "Manage"
-	case menuRemove:
+	case menuRemove, menuRemoveMerged:
 		return "Danger"
 	default:
 		return "Actions"
@@ -736,6 +813,8 @@ func (m dashboardModel) promptLines(compact bool) []string {
 		return m.addWorktreeLines(compact)
 	case actionRemoveWorktree:
 		return m.removeWorktreeLines(compact)
+	case actionRemoveMerged:
+		return m.removeMergedLines(compact)
 	case actionRebaseWorktree:
 		return worktreePrompt(m.displayWorktree(target), target.cwd, []string{
 			textStyle.Render("Will rebase " + safeText(target.branch) + " onto the local default branch."),
@@ -856,6 +935,43 @@ func (m dashboardModel) removeWorktreeLines(compact bool) []string {
 	return worktreePrompt(m.displayWorktree(m.actionTarget), m.actionTarget.cwd, body, compact)
 }
 
+// removeMergedLines lists the merged worktrees with what will happen to each.
+// The list is cut to the panel, since any number of pull requests may merge.
+func (m dashboardModel) removeMergedLines(compact bool) []string {
+	var lines []string
+	if m.mergedSkips == nil {
+		lines = append(lines, promptDetail("Checking for changes and open panes…"))
+	}
+	shown := min(len(m.mergedTargets), max(3, m.contentHeight()-8))
+	for index, target := range m.mergedTargets[:shown] {
+		label := fmt.Sprintf("%s #%d", safeText(target.branch), target.prNumber)
+		if m.worktreeScopeAll {
+			label = safeText(projectName(target.cwd)) + " " + label
+		}
+		switch {
+		case index >= len(m.mergedSkips):
+			lines = append(lines, textStyle.Render("  "+label))
+		case m.mergedSkips[index] == "":
+			lines = append(lines, promptStatus(successStyle, "󰄬", "OK", label))
+		default:
+			lines = append(lines, promptStatus(warningStyle, "\uf071", "!", label+": skipped, "+safeText(m.mergedSkips[index])))
+		}
+	}
+	if hidden := len(m.mergedTargets) - shown; hidden > 0 {
+		lines = append(lines, promptDetail(fmt.Sprintf("… and %d more", hidden)))
+	}
+	if m.mergedSkips != nil && len(m.mergedReady()) == 0 {
+		return append(lines, "", promptDetail("Nothing to remove. Commit, stash, or close panes first."))
+	}
+	if compact || m.width < 70 {
+		return lines
+	}
+	return append(lines, "",
+		promptOption("Remove", "Removes the worktrees; the branches stay", mutedStyle),
+		promptOption("+Branch", "Also deletes each branch that still matches its merged PR", mutedStyle),
+	)
+}
+
 func (m dashboardModel) renderFooter(width int) string {
 	if m.themePicker {
 		return m.renderThemePickerFooter(width)
@@ -890,6 +1006,17 @@ func (m dashboardModel) renderFooter(width int) string {
 		return padANSI("  "+infoStyle.Render("Working…"), width)
 	case actionAgentNaming:
 		return padANSI("  "+infoStyle.Render("Naming branch…")+"  "+footerCommand("Esc", "Cancel"), width)
+	}
+	if m.action == actionRemoveMerged {
+		keys, question := footerCommand("Esc", "Cancel"), ""
+		if ready := len(m.mergedReady()); ready > 0 {
+			keys = footerCommand("Enter", "Remove") + " " + footerCommand("D", "+Branch") + " " + keys
+			question = warningStyle.Render(fmt.Sprintf("Remove %d merged?", ready)) + "  "
+		}
+		if ansi.StringWidth(question+keys)+2 > width {
+			question = ""
+		}
+		return padANSI("  "+question+keys, width)
 	}
 	if m.confirming() {
 		name, verb, key := m.displayWorktree(m.actionTarget), "Remove", "Enter"
@@ -997,13 +1124,16 @@ func (m dashboardModel) renderFooter(width int) string {
 	}
 	candidates := []string{footerCommand("↵", "Open")}
 	for _, entry := range m.actionMenuEntries() {
-		// ↵ already shows Open; o stays in Help and the action menu.
-		if entry.action != menuOpen {
+		// ↵ already shows Open; o and f stay in Help and the action menu.
+		if entry.action != menuOpen && entry.action != menuFetch {
 			candidates = append(candidates, footerCommand(entry.key, entry.footer))
 		}
 	}
 	if m.tab == tabAgents {
 		candidates = append(candidates, footerToggle("s", "Scope ("+m.scope.displayLabel()+")", m.scope == scopeSession))
+	}
+	if m.tab == tabWorktrees {
+		candidates = append(candidates, footerToggle("s", "Scope ("+map[bool]string{true: "All", false: "Repo"}[m.worktreeScopeAll]+")", m.worktreeScopeAll))
 	}
 	candidates = append(candidates, footerCommand("/", filterLabel), footerCommand("Tab", nextTab), footerCommand("t", "Theme"), footerCommand("Space", "Actions"))
 	return m.prioritizedFooter(width, candidates)
@@ -1156,8 +1286,13 @@ func (m dashboardModel) renderDiff(width int) string {
 	if rightWidth > 0 {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, body, renderPanel(fmt.Sprintf("Files (%d)", len(files)), files, rightWidth, height, m.rightOffset, m.xOffset, false, m.panelFocus == panelRight))
 	}
+	// b names the diff it switches to.
+	other := "Branch diff"
+	if m.diffBase {
+		other = "WIP diff"
+	}
 	footer := m.prioritizedFooterWithBase(width,
-		[]string{footerCommand("j/k", "Scroll"), footerCommand("PgUp/Dn", "Page"), footerCommand("g/G", "Ends"), footerCommand("Shift+←/→", "Focus")},
+		[]string{footerCommand("b", other), footerCommand("[/]", "File"), footerCommand("j/k", "Scroll"), footerCommand("PgUp/Dn", "Page"), footerCommand("g/G", "Ends"), footerCommand("Shift+←/→", "Focus")},
 		[]string{footerCommand("q/Esc", "Close")},
 	)
 	return body + "\n" + footer

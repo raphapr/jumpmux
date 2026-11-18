@@ -526,6 +526,19 @@ func agentSummaryCell(item item, width int, now time.Time, background *lipgloss.
 	return padANSIBackground(value, width, background)
 }
 
+// sessionAgentsCell shows the status of the session's agent that most needs
+// attention, and "+N" for the others.
+func sessionAgentsCell(agents []item, width int, now time.Time, background *lipgloss.AdaptiveColor) string {
+	if len(agents) == 0 {
+		return renderCell(mutedStyle, "-", width, background)
+	}
+	value := withBackground(statusStyle(agents[0], now), background).Render(statusText(agents[0], now))
+	if extra := len(agents) - 1; extra > 0 {
+		value += paint(withBackground(mutedStyle, background), fmt.Sprintf(" +%d", extra))
+	}
+	return padANSIBackground(value, width, background)
+}
+
 func agentSummary(item item, now time.Time) string {
 	if item.sessionTitle == "" {
 		return mutedStyle.Render("-")

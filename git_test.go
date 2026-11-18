@@ -137,7 +137,7 @@ func TestGitFailuresAreNotRenderedAsClean(t *testing.T) {
 	if status.err == nil || log.err == nil || strings.Contains(status.err.Error(), "\x1b") || strings.Contains(log.err.Error(), "\x1b") {
 		t.Fatalf("preview Git failures were not sanitized: status=%v log=%v", status.err, log.err)
 	}
-	diff := loadDiff(item, 1)().(diffMsg)
+	diff := loadDiff(item, 1, false)().(diffMsg)
 	if len(diff.lines) != 1 || strings.Contains(diff.lines[0], "\x1b") || !strings.Contains(diff.lines[0], "Git unavailable") {
 		t.Fatalf("diff hid Git failure: %#v", diff)
 	}
